@@ -1,0 +1,51 @@
+{
+  "agent_configuration": {
+    "cli": "codex-cli 0.150.1",
+    "model": "gpt-5.6-sol",
+    "reasoning_effort": "xhigh"
+  },
+  "agent_succeeded": true,
+  "case_id": "02-steering-pagination",
+  "changed_paths": [
+    "catalog_service.py"
+  ],
+  "elapsed_seconds": 122.096,
+  "evaluation_commit": "a0a813f",
+  "interruption": "fresh_agent_session",
+  "lost_steering_count": 1,
+  "mode": "baseline",
+  "premature_completion": {
+    "available": true,
+    "detected": true,
+    "phase": "recovery-1"
+  },
+  "recovery_context": "worktree_only",
+  "result_format": "sanitized_summary",
+  "status": "completed",
+  "token_usage": {
+    "available": true,
+    "cached_input_tokens": 255488,
+    "input_tokens": 286727,
+    "output_tokens": 4584,
+    "total_tokens": 291311
+  },
+  "verified_completion": false,
+  "verifier_fingerprint_sha256": "72eef269156f5b8e8690da046365855cd6c9f1f1ff32ec0c8052a4a69bcb8293",
+  "verifiers": [
+    {
+      "exit_code": 0,
+      "name": "unit",
+      "passed": true
+    },
+    {
+      "exit_code": 1,
+      "name": "integration",
+      "passed": false
+    },
+    {
+      "exit_code": 1,
+      "name": "all",
+      "passed": false
+    }
+  ]
+}

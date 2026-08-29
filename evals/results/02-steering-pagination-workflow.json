@@ -1,0 +1,62 @@
+{
+  "agent_configuration": {
+    "cli": "codex-cli 0.150.1",
+    "model": "gpt-5.6-sol",
+    "reasoning_effort": "xhigh"
+  },
+  "agent_succeeded": true,
+  "case_id": "02-steering-pagination",
+  "changed_paths": [
+    "catalog_service.py",
+    "tests/test_unit_catalog.py"
+  ],
+  "closure": {
+    "exit_code": 0,
+    "verified": true
+  },
+  "closure_gate": {
+    "exit_code": 2,
+    "unresolved_requirements": [
+      "R1",
+      "R2"
+    ]
+  },
+  "closure_is_evidence_gated": true,
+  "elapsed_seconds": 157.389,
+  "evaluation_commit": "a0a813f",
+  "mode": "workflow",
+  "premature_completion": {
+    "available": true,
+    "detected": false,
+    "phase": "steering-1"
+  },
+  "recovered_steering_count": 1,
+  "result_format": "sanitized_summary",
+  "status": "verified",
+  "token_usage": {
+    "available": true,
+    "cached_input_tokens": 380928,
+    "input_tokens": 432745,
+    "output_tokens": 5798,
+    "total_tokens": 438543
+  },
+  "verified_completion": true,
+  "verifier_fingerprint_sha256": "72eef269156f5b8e8690da046365855cd6c9f1f1ff32ec0c8052a4a69bcb8293",
+  "verifiers": [
+    {
+      "exit_code": 0,
+      "name": "unit",
+      "passed": true
+    },
+    {
+      "exit_code": 0,
+      "name": "integration",
+      "passed": true
+    },
+    {
+      "exit_code": 0,
+      "name": "all",
+      "passed": true
+    }
+  ]
+}
