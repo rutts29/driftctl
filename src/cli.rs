@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 
 use serde_json::json;
 
+use crate::agent::{display_path, run_codex};
 use crate::{ClosureError, Ledger, Snapshot};
 
 const USAGE: &str = "driftctl — durable continuity for coding-agent tasks\n\n\
@@ -12,6 +13,7 @@ Usage:\n\
   driftctl satisfy --id <requirement-id> --evidence <text>\n\
   driftctl status [--json]\n\
   driftctl resume [--json]\n\
+  driftctl run codex\n\
   driftctl close";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -66,6 +68,7 @@ pub fn execute(root: &Path, arguments: impl IntoIterator<Item = String>) -> CliO
         "steer" => steer(root, &arguments),
         "satisfy" => satisfy(root, &arguments),
         "status" | "resume" => status(root, &arguments),
+        "run" => run(root, &arguments),
         "close" => return close(root, &arguments),
         _ => Err(format!("unknown command: {command}\n\n{USAGE}")),
     };
@@ -136,6 +139,18 @@ fn status(root: &Path, arguments: &[String]) -> Result<String, String> {
         .snapshot()
         .map_err(|error| error.to_string())?;
     render_snapshot(&snapshot, json)
+}
+
+fn run(root: &Path, arguments: &[String]) -> Result<String, String> {
+    match arguments {
+        [agent] if agent == "codex" => {}
+        _ => return Err("run currently supports exactly: driftctl run codex".to_owned()),
+    }
+    let snapshot = open_ledger(root)?
+        .snapshot()
+        .map_err(|error| error.to_string())?;
+    let trajectory = run_codex(root, &snapshot).map_err(|error| error.to_string())?;
+    Ok(format!("trajectory: {}", display_path(root, &trajectory)))
 }
 
 fn close(root: &Path, arguments: &[String]) -> CliOutput {

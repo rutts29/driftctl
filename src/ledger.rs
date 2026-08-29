@@ -16,14 +16,44 @@ pub struct Ledger {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Snapshot {
     goal: String,
+    requirements: Vec<RequirementStatus>,
     unresolved_requirement_ids: Vec<String>,
     closed: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RequirementStatus {
+    id: String,
+    text: String,
+    evidence: Option<String>,
+}
+
+impl RequirementStatus {
+    #[must_use]
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+
+    #[must_use]
+    pub fn text(&self) -> &str {
+        &self.text
+    }
+
+    #[must_use]
+    pub fn evidence(&self) -> Option<&str> {
+        self.evidence.as_deref()
+    }
 }
 
 impl Snapshot {
     #[must_use]
     pub fn goal(&self) -> &str {
         &self.goal
+    }
+
+    #[must_use]
+    pub fn requirements(&self) -> &[RequirementStatus] {
+        &self.requirements
     }
 
     #[must_use]
@@ -131,7 +161,6 @@ struct FoldedState {
 
 #[derive(Debug)]
 struct RequirementState {
-    #[allow(dead_code)]
     text: String,
     evidence: Option<String>,
 }
@@ -224,13 +253,23 @@ impl Ledger {
 
     pub fn snapshot(&self) -> Result<Snapshot, LedgerError> {
         let state = self.fold()?;
-        let unresolved_requirement_ids = state
+        let requirements: Vec<RequirementStatus> = state
             .requirements
+            .into_iter()
+            .map(|(id, requirement)| RequirementStatus {
+                id,
+                text: requirement.text,
+                evidence: requirement.evidence,
+            })
+            .collect();
+        let unresolved_requirement_ids = requirements
             .iter()
-            .filter_map(|(id, requirement)| requirement.evidence.is_none().then_some(id.clone()))
+            .filter(|requirement| requirement.evidence.is_none())
+            .map(|requirement| requirement.id.clone())
             .collect();
         Ok(Snapshot {
             goal: state.goal,
+            requirements,
             unresolved_requirement_ids,
             closed: state.closed,
         })
