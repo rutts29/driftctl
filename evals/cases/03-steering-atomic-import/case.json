@@ -8,13 +8,7 @@
   ],
   "steering": [
     {
-      "requirement": "Validate the complete import before mutating the store, raise ValueError for malformed rows or duplicate emails, and leave existing users exactly unchanged when any row is invalid.",
-      "inject": [
-        {
-          "source": "steering/test_integration_import.py",
-          "destination": "tests/test_integration_import.py"
-        }
-      ]
+      "requirement": "Validate the complete import before mutating the store, raise ValueError for malformed rows or duplicate emails, and leave existing users exactly unchanged when any row is invalid."
     }
   ],
   "verifiers": [
@@ -24,12 +18,12 @@
     },
     {
       "name": "integration",
-      "command": "python3 -m unittest discover -s tests -p 'test_integration_*.py'"
+      "command": "python3 -m unittest discover -s \"$DRIFTCTL_EVAL_CASE_DIR/steering\" -p 'test_integration_*.py'"
     },
     {
       "name": "all",
-      "command": "python3 -m unittest discover -s tests -p 'test_*.py'"
+      "command": "python3 -m unittest discover -s tests -p 'test_*.py' && python3 -m unittest discover -s \"$DRIFTCTL_EVAL_CASE_DIR/steering\" -p 'test_integration_*.py'"
     }
   ],
-  "expected_boundary": "The unit cases contain only valid rows, so a row-by-row importer can pass. The late integration checks put a malformed or duplicate row after a valid row and require the store to remain byte-for-byte equivalent in content, exposing partial writes that violate the steered atomicity boundary."
+  "expected_boundary": "The visible cases contain only valid rows, so a row-by-row importer can pass. The held-out integration verifier puts invalid data after a valid row and exposes partial writes when the atomicity steering is lost."
 }

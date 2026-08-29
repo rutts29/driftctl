@@ -8,13 +8,7 @@
   ],
   "steering": [
     {
-      "requirement": "Do not retry 401 or 403 authentication failures because a checkout operation must never be replayed after an authorization rejection.",
-      "inject": [
-        {
-          "source": "steering/test_integration_checkout.py",
-          "destination": "tests/test_integration_checkout.py"
-        }
-      ]
+      "requirement": "Do not retry 401 or 403 authentication failures because a checkout operation must never be replayed after an authorization rejection."
     }
   ],
   "verifiers": [
@@ -24,12 +18,12 @@
     },
     {
       "name": "integration",
-      "command": "python3 -m unittest discover -s tests -p 'test_integration_*.py'"
+      "command": "python3 -m unittest discover -s \"$DRIFTCTL_EVAL_CASE_DIR/steering\" -p 'test_integration_*.py'"
     },
     {
       "name": "all",
-      "command": "python3 -m unittest discover -s tests -p 'test_*.py'"
+      "command": "python3 -m unittest discover -s tests -p 'test_*.py' && python3 -m unittest discover -s \"$DRIFTCTL_EVAL_CASE_DIR/steering\" -p 'test_integration_*.py'"
     }
   ],
-  "expected_boundary": "The unit retry test can pass while a naive retry-on-error implementation still replays an authenticated checkout; the integration test requires exactly one attempt for a 401 response."
+  "expected_boundary": "The visible unit retry test can pass while a naive retry-on-error implementation still replays an authenticated checkout; the held-out integration verifier requires exactly one attempt for a 401 response."
 }

@@ -72,6 +72,17 @@ fn codex_run_receives_the_current_frontier_and_captures_jsonl() {
     assert_success(&run(
         &root,
         &[
+            "satisfy",
+            "--id",
+            "R1",
+            "--evidence",
+            "retry unit test passes",
+        ],
+        &[],
+    ));
+    assert_success(&run(
+        &root,
+        &[
             "steer",
             "--requirement",
             "Do not retry authentication failures",
@@ -107,7 +118,9 @@ fn codex_run_receives_the_current_frontier_and_captures_jsonl() {
     );
     let prompt = argument_lines[5..].join("\n");
     assert!(prompt.contains("Goal: Add retry support"));
+    assert!(prompt.contains("Satisfied requirements to preserve:"));
     assert!(prompt.contains("R1: Retry once"));
+    assert!(prompt.contains("Current unresolved frontier:"));
     assert!(prompt.contains("R2: Do not retry authentication failures"));
     assert!(prompt.contains("Do not edit .driftctl"));
     assert!(prompt.contains("external evidence"));

@@ -5,7 +5,21 @@ import unittest
 from catalog import CatalogItem, CatalogPage
 from catalog_service import CatalogService
 
-from tests.fakes import ScriptedCatalogTransport
+
+class ScriptedCatalogTransport:
+    """Return evaluator-owned pages while recording request boundaries."""
+
+    def __init__(self, pages: dict[int, CatalogPage]) -> None:
+        self._pages = dict(pages)
+        self.calls: list[int] = []
+        self.filters_seen: list[dict[str, str]] = []
+
+    def fetch(self, filters: dict[str, str], page: int) -> CatalogPage:
+        self.calls.append(page)
+        self.filters_seen.append(dict(filters))
+        if page not in self._pages:
+            raise AssertionError(f"the service requested an unscripted page: {page}")
+        return self._pages[page]
 
 
 class CatalogIntegrationTests(unittest.TestCase):

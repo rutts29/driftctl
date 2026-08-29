@@ -72,7 +72,7 @@ class WorkflowRunnerTests(unittest.TestCase):
             self.assertEqual(result["case_id"], "01-steering-retry")
             self.assertEqual(result["mode"], "workflow")
             self.assertEqual(result["changed_paths"], ["service_client.py"])
-            self.assertEqual(result["injected_paths"], ["tests/test_integration_checkout.py"])
+            self.assertEqual(result["recovered_steering_count"], 1)
             self.assertEqual(result["status"], "verified")
             self.assertTrue(result["verified_completion"])
             self.assertTrue(result["closure_is_evidence_gated"])
@@ -120,12 +120,12 @@ class WorkflowRunnerTests(unittest.TestCase):
             printf '%s\\n' "$count" >> "$FAKE_CODEX_CALLS"
             printf '%s\\n' "$@" >> "$FAKE_CODEX_ARGUMENTS"
             printf '%s\\n' '---' >> "$FAKE_CODEX_ARGUMENTS"
+            test ! -e tests/test_integration_checkout.py
 
             if [ "$count" -eq 1 ]; then
               input_tokens=2
               output_tokens=1
             else
-              test -f tests/test_integration_checkout.py
               cat > service_client.py <<'PYTHON'
             """Small client used by the checkout service."""
 

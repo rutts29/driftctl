@@ -22,8 +22,12 @@ class WorkItemRenameIntegrationTests(unittest.TestCase):
         self.assertEqual(resumed.attempts, 1)
 
         legacy = scheduler.submit_payload({"task_id": "legacy-3"})
+        queue.mark_failed("legacy-3")
+        legacy_resumed = scheduler.resume_payload({"task_id": "legacy-3"})
 
         self.assertEqual(legacy.task_id, "legacy-3")
+        self.assertEqual(legacy_resumed.state, "pending")
+        self.assertEqual(legacy_resumed.attempts, 1)
 
     def test_rejects_payload_without_an_identifier(self) -> None:
         scheduler = Scheduler(WorkQueue())

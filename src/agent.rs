@@ -270,9 +270,25 @@ fn changed_protected_files(
 
 fn continuity_prompt(snapshot: &Snapshot) -> String {
     let mut prompt = format!(
-        "Work on the current repository and complete the following durable task.\n\nGoal: {}\n\nUnresolved requirements:\n",
+        "Work on the current repository and complete the following durable task.\n\nGoal: {}\n\n",
         snapshot.goal()
     );
+    if snapshot
+        .requirements()
+        .iter()
+        .any(|requirement| requirement.evidence().is_some())
+    {
+        prompt.push_str("Satisfied requirements to preserve:\n");
+        for requirement in snapshot
+            .requirements()
+            .iter()
+            .filter(|requirement| requirement.evidence().is_some())
+        {
+            prompt.push_str(&format!("- {}: {}\n", requirement.id(), requirement.text()));
+        }
+        prompt.push('\n');
+    }
+    prompt.push_str("Current unresolved frontier:\n");
     for requirement in snapshot
         .requirements()
         .iter()
