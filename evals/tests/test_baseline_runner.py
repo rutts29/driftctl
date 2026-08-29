@@ -55,6 +55,7 @@ class BaselineRunnerTests(unittest.TestCase):
             )
             result = json.loads(completed.stdout)
             self.assertEqual(result["case_id"], "01-steering-retry")
+            self.assertEqual(result["mode"], "baseline")
             self.assertEqual(result["thread_id"], "fixture-thread")
             self.assertEqual(result["changed_paths"], ["service_client.py"])
             self.assertEqual(

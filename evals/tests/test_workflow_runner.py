@@ -70,6 +70,7 @@ class WorkflowRunnerTests(unittest.TestCase):
             )
             result = json.loads(completed.stdout)
             self.assertEqual(result["case_id"], "01-steering-retry")
+            self.assertEqual(result["mode"], "workflow")
             self.assertEqual(result["changed_paths"], ["service_client.py"])
             self.assertEqual(result["injected_paths"], ["tests/test_integration_checkout.py"])
             self.assertEqual(result["status"], "verified")
