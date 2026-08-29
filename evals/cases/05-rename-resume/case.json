@@ -8,7 +8,7 @@
   ],
   "steering": [
     {
-      "requirement": "The task domain was renamed during an interruption: the scheduler now receives work_item_id, but legacy task_id payloads must continue working. Accept either name at the scheduler boundary, reject payloads with neither, and route both names through the existing resume behavior without resetting attempts."
+      "requirement": "The task domain was renamed during an interruption. Add Scheduler.submit_payload(payload) and Scheduler.resume_payload(payload). Each method must accept a mapping containing work_item_id or the legacy task_id, reject mappings with neither identifier, and route both names through the existing submit/resume behavior without resetting attempts."
     }
   ],
   "verifiers": [
@@ -25,5 +25,5 @@
       "command": "python3 -m unittest discover -s tests -p 'test_*.py' && python3 -m unittest discover -s \"$DRIFTCTL_EVAL_CASE_DIR/steering\" -p 'test_integration_*.py'"
     }
   ],
-  "expected_boundary": "The visible unit case can be satisfied by adding a task-id-specific resume method. The held-out verifier exercises both identifier names and the retry invariant, exposing loss of the rename steering."
+  "expected_boundary": "The visible unit case can be satisfied by adding a task-id-specific resume method. The held-out verifier exercises the explicitly required payload methods, both identifier names, and the retry invariant, exposing loss of the rename steering."
 }
