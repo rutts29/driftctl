@@ -1,0 +1,30 @@
+{
+  "case_id": "05-rename-resume",
+  "counted_in_final_score": false,
+  "decision": "discarded",
+  "reason": "The steering described task_id/work_item_id payload compatibility but did not name the submit_payload and resume_payload methods expected by the grader. The workflow recovered the requirement but implemented a different reasonable additive API.",
+  "results": {
+    "baseline": {
+      "elapsed_seconds": 243.286,
+      "passed_final_checks": false,
+      "token_usage": {
+        "cached_input_tokens": 560640,
+        "input_tokens": 631838,
+        "output_tokens": 10093,
+        "total_tokens": 641931
+      }
+    },
+    "workflow": {
+      "elapsed_seconds": 240.256,
+      "passed_final_checks": false,
+      "token_usage": {
+        "cached_input_tokens": 552192,
+        "input_tokens": 619760,
+        "output_tokens": 9270,
+        "total_tokens": 629030
+      }
+    }
+  },
+  "verifier_fingerprint_sha256": "b2e54ba0cef98efefce51564e33b50d52cfb1c5a3e97415efd47b1dbe84c4404",
+  "learning": "A held-out grader may hide cases, not an undocumented public interface. The method contract was made explicit and both modes were rerun on a new fingerprint."
+}
