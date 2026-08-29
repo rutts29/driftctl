@@ -16,12 +16,12 @@ Deliver the narrowest useful continuity workflow first, then add one real agent 
 ### Phase 1: Continuity
 
 - [x] Task 1: Prove steering survives reopen and blocks premature closure.
-- [ ] Task 2: Expose the continuity behavior through a stable CLI.
+- [x] Task 2: Expose the continuity behavior through a stable CLI.
 
 ### Checkpoint: Continuity
 
-- [ ] Focused and full tests pass.
-- [ ] The CLI demonstrates start → steer → resume → blocked close → evidenced close.
+- [x] Focused and full tests pass.
+- [x] The CLI demonstrates start → steer → resume → blocked close → evidenced close.
 
 ### Phase 2: Agent execution
 

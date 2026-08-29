@@ -27,14 +27,14 @@
 
 **Acceptance criteria:**
 
-- [ ] Commands operate only on the local namespaced state directory.
-- [ ] Status is machine-readable and human-readable.
-- [ ] Failed closure exits non-zero and identifies blockers.
+- [x] Commands operate only on the local namespaced state directory.
+- [x] Status is machine-readable and human-readable.
+- [x] Failed closure exits non-zero and identifies blockers.
 
 **Verification:**
 
-- [ ] `cargo test --locked --test cli`
-- [ ] `cargo test --locked`
+- [x] `cargo test --locked --test cli`
+- [x] `cargo test --locked`
 
 **Dependencies:** Task 1
 
@@ -44,8 +44,8 @@
 
 ## Checkpoint: Tasks 1–2
 
-- [ ] All tests and checks pass.
-- [ ] The core interruption flow works end to end.
+- [x] All tests and checks pass.
+- [x] The core interruption flow works end to end.
 
 ## Task 3: Codex execution path
 
