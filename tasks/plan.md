@@ -11,6 +11,8 @@
 - Cases: five long-session checkpoints; retain every existing pilot case/result.
 - Runtime: local CLI using the user's provider authentication and allowance.
 - Scope: continuity and source isolation; no general security harness.
+- Completion: focused tests plus one production-shaped run through the shipped CLI and real process/filesystem/permission boundaries.
+- Scope freeze: only a concrete failure from that run may add MVP work; an unavailable boundary blocks its gate.
 
 ## Tasks
 
