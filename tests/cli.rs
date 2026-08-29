@@ -77,7 +77,31 @@ fn cli_resumes_steering_and_leaves_agent_instructions_unchanged() {
     let resumed: Value = serde_json::from_slice(&resumed.stdout).expect("resume emits JSON");
     assert_eq!(resumed["goal"], "Add retry support");
     assert_eq!(resumed["unresolved"], serde_json::json!(["R2"]));
+    assert_eq!(
+        resumed["requirements"],
+        serde_json::json!([
+            {
+                "id": "R1",
+                "text": "Retry once",
+                "satisfied": true,
+                "evidence": "retry unit test passes"
+            },
+            {
+                "id": "R2",
+                "text": "Do not retry authentication failures",
+                "satisfied": false,
+                "evidence": null
+            }
+        ])
+    );
     assert_eq!(resumed["closed"], false);
+
+    let resumed_text = run(&root, &["resume"]);
+    assert_success(&resumed_text);
+    let resumed_text = String::from_utf8_lossy(&resumed_text.stdout);
+    assert!(resumed_text.contains("R1 [satisfied]: Retry once"));
+    assert!(resumed_text.contains("evidence: retry unit test passes"));
+    assert!(resumed_text.contains("R2 [unresolved]: Do not retry authentication failures"));
 
     let blocked = run(&root, &["close"]);
     assert_eq!(blocked.status.code(), Some(2));
