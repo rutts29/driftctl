@@ -102,6 +102,7 @@ complete history
 ### Native goal migration
 
 - Apply goal changes only to a newly created child session.
+- For Codex, use a persisted child: ephemeral threads do not support native goals.
 - Preserve the parent session and parent `/goal` byte-for-byte.
 - Bind approval to exact source sequence and projection revision.
 - Invalidate approval after new source events.
@@ -268,6 +269,5 @@ complete history
 ## Open Decisions
 
 - Public name and license.
-- Codex programmatic read/clear/set support for native `/goal`; manual child handoff is mandatory fallback.
 - Exact projection byte budget after stress measurement.
 - Final release target matrix after clean-run timing.
