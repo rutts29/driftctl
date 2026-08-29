@@ -1,0 +1,35 @@
+{
+  "id": "04-scope-csv-export",
+  "title": "Add CSV order reports without regressing the existing JSON boundary",
+  "workspace": "workspace",
+  "goal": "Add CSV export for the order report while preserving stable column order and CSV quoting.",
+  "initial_requirements": [
+    "A caller can request a CSV order report containing active orders and the order_id, customer, and cents columns in that order."
+  ],
+  "steering": [
+    {
+      "requirement": "Keep the existing JSON report byte-for-byte compatible and do not include cancelled orders in the new export; this steering arrives after an interruption when the task scope is revisited.",
+      "inject": [
+        {
+          "source": "steering/test_integration_report_boundary.py",
+          "destination": "tests/test_integration_report_boundary.py"
+        }
+      ]
+    }
+  ],
+  "verifiers": [
+    {
+      "name": "unit",
+      "command": "python3 -m unittest discover -s tests -p 'test_unit_*.py'"
+    },
+    {
+      "name": "integration",
+      "command": "python3 -m unittest discover -s tests -p 'test_integration_*.py'"
+    },
+    {
+      "name": "all",
+      "command": "python3 -m unittest discover -s tests -p 'test_*.py'"
+    }
+  ],
+  "expected_boundary": "The initial unit case can pass with a CSV-only implementation that iterates every stored order or changes the default JSON path; the injected integration case checks the existing JSON contract and cancelled-order filtering."
+}

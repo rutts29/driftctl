@@ -1,0 +1,35 @@
+{
+  "id": "02-steering-pagination",
+  "title": "Paginate catalog results without duplicate items or mutating filters",
+  "workspace": "workspace",
+  "goal": "Make the catalog service return every page of search results.",
+  "initial_requirements": [
+    "Fetch all catalog pages in order until the service reports no next page."
+  ],
+  "steering": [
+    {
+      "requirement": "Keep the caller's filters unchanged and suppress duplicate item IDs when pages overlap while preserving first-seen order.",
+      "inject": [
+        {
+          "source": "steering/test_integration_catalog.py",
+          "destination": "tests/test_integration_catalog.py"
+        }
+      ]
+    }
+  ],
+  "verifiers": [
+    {
+      "name": "unit",
+      "command": "python3 -m unittest discover -s tests -p 'test_unit_*.py'"
+    },
+    {
+      "name": "integration",
+      "command": "python3 -m unittest discover -s tests -p 'test_integration_*.py'"
+    },
+    {
+      "name": "all",
+      "command": "python3 -m unittest discover -s tests -p 'test_*.py'"
+    }
+  ],
+  "expected_boundary": "The unit pagination cases use disjoint pages, so a simple page loop can pass. The late integration check uses overlapping pages and verifies that the caller's filters are not mutated, exposing a solution that handled pagination but ignored the steering constraints."
+}
