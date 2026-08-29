@@ -1,0 +1,52 @@
+{
+  "agent_configuration": {
+    "cli": "codex-cli 0.150.1",
+    "model": "gpt-5.6-sol",
+    "reasoning_effort": "xhigh"
+  },
+  "agent_succeeded": true,
+  "case_id": "03-steering-atomic-import",
+  "changed_paths": [
+    "import_users.py",
+    "tests/test_unit_import.py"
+  ],
+  "elapsed_seconds": 316.483,
+  "evaluation_commit": "6a1068a",
+  "interruption": "fresh_agent_session",
+  "lost_steering_count": 1,
+  "mode": "baseline",
+  "premature_completion": {
+    "available": true,
+    "detected": false,
+    "phase": "recovery-1"
+  },
+  "recovery_context": "worktree_only",
+  "result_format": "sanitized_summary",
+  "status": "completed",
+  "token_usage": {
+    "available": true,
+    "cached_input_tokens": 520448,
+    "input_tokens": 600953,
+    "output_tokens": 12258,
+    "total_tokens": 613211
+  },
+  "verified_completion": true,
+  "verifier_fingerprint_sha256": "988736240b6a9019844919e627078aef3e2725719d830c6dc809a85763a4be87",
+  "verifiers": [
+    {
+      "exit_code": 0,
+      "name": "unit",
+      "passed": true
+    },
+    {
+      "exit_code": 0,
+      "name": "integration",
+      "passed": true
+    },
+    {
+      "exit_code": 0,
+      "name": "all",
+      "passed": true
+    }
+  ]
+}

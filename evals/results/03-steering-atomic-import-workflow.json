@@ -1,0 +1,62 @@
+{
+  "agent_configuration": {
+    "cli": "codex-cli 0.150.1",
+    "model": "gpt-5.6-sol",
+    "reasoning_effort": "xhigh"
+  },
+  "agent_succeeded": true,
+  "case_id": "03-steering-atomic-import",
+  "changed_paths": [
+    "import_users.py",
+    "tests/test_unit_import.py"
+  ],
+  "closure": {
+    "exit_code": 0,
+    "verified": true
+  },
+  "closure_gate": {
+    "exit_code": 2,
+    "unresolved_requirements": [
+      "R1",
+      "R2"
+    ]
+  },
+  "closure_is_evidence_gated": true,
+  "elapsed_seconds": 270.68,
+  "evaluation_commit": "6a1068a",
+  "mode": "workflow",
+  "premature_completion": {
+    "available": true,
+    "detected": false,
+    "phase": "steering-1"
+  },
+  "recovered_steering_count": 1,
+  "result_format": "sanitized_summary",
+  "status": "verified",
+  "token_usage": {
+    "available": true,
+    "cached_input_tokens": 496640,
+    "input_tokens": 560119,
+    "output_tokens": 10285,
+    "total_tokens": 570404
+  },
+  "verified_completion": true,
+  "verifier_fingerprint_sha256": "988736240b6a9019844919e627078aef3e2725719d830c6dc809a85763a4be87",
+  "verifiers": [
+    {
+      "exit_code": 0,
+      "name": "unit",
+      "passed": true
+    },
+    {
+      "exit_code": 0,
+      "name": "integration",
+      "passed": true
+    },
+    {
+      "exit_code": 0,
+      "name": "all",
+      "passed": true
+    }
+  ]
+}
