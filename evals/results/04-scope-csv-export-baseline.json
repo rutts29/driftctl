@@ -1,0 +1,52 @@
+{
+  "agent_configuration": {
+    "cli": "codex-cli 0.150.1",
+    "model": "gpt-5.6-sol",
+    "reasoning_effort": "xhigh"
+  },
+  "agent_succeeded": true,
+  "case_id": "04-scope-csv-export",
+  "changed_paths": [
+    "report.py",
+    "tests/test_unit_report.py"
+  ],
+  "elapsed_seconds": 159.577,
+  "evaluation_commit": "5e312df",
+  "interruption": "fresh_agent_session",
+  "lost_steering_count": 1,
+  "mode": "baseline",
+  "premature_completion": {
+    "available": true,
+    "detected": false,
+    "phase": "recovery-1"
+  },
+  "recovery_context": "worktree_only",
+  "result_format": "sanitized_summary",
+  "status": "completed",
+  "token_usage": {
+    "available": true,
+    "cached_input_tokens": 354816,
+    "input_tokens": 427023,
+    "output_tokens": 5863,
+    "total_tokens": 432886
+  },
+  "verified_completion": true,
+  "verifier_fingerprint_sha256": "b143c7d30709d1f0cf4495e2b695589ba2714fd841728de3cb740b9e8bf984a5",
+  "verifiers": [
+    {
+      "exit_code": 0,
+      "name": "unit",
+      "passed": true
+    },
+    {
+      "exit_code": 0,
+      "name": "integration",
+      "passed": true
+    },
+    {
+      "exit_code": 0,
+      "name": "all",
+      "passed": true
+    }
+  ]
+}
