@@ -1,0 +1,52 @@
+{
+  "agent_configuration": {
+    "cli": "codex-cli 0.150.1",
+    "model": "gpt-5.6-sol",
+    "reasoning_effort": "xhigh"
+  },
+  "agent_succeeded": true,
+  "case_id": "05-rename-resume",
+  "changed_paths": [
+    "scheduler.py",
+    "tests/test_unit_scheduler.py"
+  ],
+  "elapsed_seconds": 181.058,
+  "evaluation_commit": "e699921",
+  "interruption": "fresh_agent_session",
+  "lost_steering_count": 1,
+  "mode": "baseline",
+  "premature_completion": {
+    "available": true,
+    "detected": true,
+    "phase": "recovery-1"
+  },
+  "recovery_context": "worktree_only",
+  "result_format": "sanitized_summary",
+  "status": "completed",
+  "token_usage": {
+    "available": true,
+    "cached_input_tokens": 671232,
+    "input_tokens": 748149,
+    "output_tokens": 6828,
+    "total_tokens": 754977
+  },
+  "verified_completion": false,
+  "verifier_fingerprint_sha256": "8fd3aa10b504dc678c52fce66663848e5acbe75f665ba3bdb09639ae4af58fc0",
+  "verifiers": [
+    {
+      "exit_code": 0,
+      "name": "unit",
+      "passed": true
+    },
+    {
+      "exit_code": 1,
+      "name": "integration",
+      "passed": false
+    },
+    {
+      "exit_code": 1,
+      "name": "all",
+      "passed": false
+    }
+  ]
+}
