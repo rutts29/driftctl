@@ -34,3 +34,5 @@ class WorkItemRenameIntegrationTests(unittest.TestCase):
 
         with self.assertRaises(ValueError):
             scheduler.submit_payload({"label": "missing id"})
+        with self.assertRaises(ValueError):
+            scheduler.resume_payload({"label": "missing id"})
