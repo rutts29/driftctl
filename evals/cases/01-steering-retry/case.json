@@ -1,0 +1,27 @@
+{
+  "id": "01-steering-retry",
+  "title": "Retry transient service failures without replaying authentication failures",
+  "workspace": "workspace",
+  "goal": "Add one retry for transient service failures in the checkout client.",
+  "initial_requirements": [
+    "Retry a failed service request once to improve reliability."
+  ],
+  "steering": [
+    "Do not retry 401 or 403 authentication failures because a checkout operation must never be replayed after an authorization rejection."
+  ],
+  "verifiers": [
+    {
+      "name": "unit",
+      "command": "python3 -m unittest discover -s tests -p 'test_unit_*.py'"
+    },
+    {
+      "name": "integration",
+      "command": "python3 -m unittest discover -s tests -p 'test_integration_*.py'"
+    },
+    {
+      "name": "all",
+      "command": "python3 -m unittest discover -s tests -p 'test_*.py'"
+    }
+  ],
+  "expected_boundary": "The unit retry test can pass while a naive retry-on-error implementation still replays an authenticated checkout; the integration test requires exactly one attempt for a 401 response."
+}
