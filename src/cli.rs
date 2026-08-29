@@ -204,10 +204,23 @@ fn open_ledger(root: &Path) -> Result<Ledger, String> {
 }
 
 fn render_snapshot(snapshot: &Snapshot, as_json: bool) -> Result<String, String> {
+    let requirements: Vec<_> = snapshot
+        .requirements()
+        .iter()
+        .map(|requirement| {
+            json!({
+                "id": requirement.id(),
+                "text": requirement.text(),
+                "satisfied": requirement.evidence().is_some(),
+                "evidence": requirement.evidence(),
+            })
+        })
+        .collect();
     if as_json {
         return serde_json::to_string(&json!({
             "goal": snapshot.goal(),
             "unresolved": snapshot.unresolved_requirement_ids(),
+            "requirements": requirements,
             "closed": snapshot.is_closed(),
         }))
         .map_err(|error| error.to_string());
@@ -218,11 +231,27 @@ fn render_snapshot(snapshot: &Snapshot, as_json: bool) -> Result<String, String>
     } else {
         snapshot.unresolved_requirement_ids().join(", ")
     };
-    Ok(format!(
-        "goal: {}\nunresolved: {unresolved}\nclosed: {}",
-        snapshot.goal(),
-        snapshot.is_closed()
-    ))
+    let mut output = format!(
+        "goal: {}\nunresolved: {unresolved}\nrequirements:",
+        snapshot.goal()
+    );
+    for requirement in snapshot.requirements() {
+        let status = if requirement.evidence().is_some() {
+            "satisfied"
+        } else {
+            "unresolved"
+        };
+        output.push_str(&format!(
+            "\n- {} [{status}]: {}",
+            requirement.id(),
+            requirement.text()
+        ));
+        if let Some(evidence) = requirement.evidence() {
+            output.push_str(&format!("\n  evidence: {evidence}"));
+        }
+    }
+    output.push_str(&format!("\nclosed: {}", snapshot.is_closed()));
+    Ok(output)
 }
 
 fn state_directory(root: &Path) -> PathBuf {
