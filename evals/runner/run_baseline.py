@@ -162,10 +162,9 @@ def run_case(
         for index, steering_point in enumerate(definition.steering, start=1):
             injected_paths.extend(inject_steering(case_directory, workspace, steering_point))
             turns.append(
-                run_resumed_turn(
+                run_steering_turn(
                     codex_bin,
                     workspace,
-                    thread_id,
                     steering_point.requirement,
                     index,
                 )
@@ -186,6 +185,7 @@ def run_case(
         "changed_paths": changed_paths,
         "elapsed_seconds": elapsed_seconds,
         "injected_paths": sorted(set(injected_paths)),
+        "interruption": "fresh_agent_session",
         "mode": "baseline",
         "premature_completion": premature_completion(turns, verifiers),
         "status": run_status(turns),
@@ -371,6 +371,7 @@ def run_initial_turn(codex_bin: str, workspace: Path, definition: CaseDefinition
         codex_bin,
         "exec",
         "--json",
+        "--ephemeral",
         "--sandbox",
         "workspace-write",
         initial_prompt(definition),
@@ -378,21 +379,21 @@ def run_initial_turn(codex_bin: str, workspace: Path, definition: CaseDefinition
     return invoke_codex(command, workspace, "initial")
 
 
-def run_resumed_turn(
+def run_steering_turn(
     codex_bin: str,
     workspace: Path,
-    thread_id: str,
     requirement: str,
     steering_index: int,
 ) -> AgentTurn:
-    """Native-resume the exact initial thread with one later requirement."""
+    """Start a fresh baseline turn with only the newly supplied requirement."""
 
     command = [
         codex_bin,
         "exec",
-        "resume",
-        thread_id,
         "--json",
+        "--ephemeral",
+        "--sandbox",
+        "workspace-write",
         steering_prompt(requirement),
     ]
     return invoke_codex(command, workspace, f"steering-{steering_index}")
