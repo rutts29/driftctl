@@ -64,7 +64,7 @@
 | Driftctl state | write | write | write | Driftctl |
 | Baseline temp workspace | — | write | — | Driftctl child |
 | Projected temp workspace | — | write | write | Driftctl child |
-| Child provider session | — | ephemeral | persistent by explicit command | provider |
+| Child provider session | — | persisted, disposable | persisted | provider |
 | Merge/push/publish | — | — | — | user |
 
 ## Local State Layout
@@ -308,6 +308,10 @@ preconditions
 
 - Programmatic provider support absent: emit commands; stop before continuation.
 - Failed clear/set/read-back: child blocked; parent unchanged.
+- Codex implementation: App Server `thread/goal/get`, `clear`, `set`, then `get`.
+- Codex goal-bearing children are persisted; ephemeral threads reject native goals.
+- Codex forked children do not inherit the parent goal; observe and seed explicitly.
+- Comparison deletes its persisted disposable children only after evidence export.
 - Automatic rollback: excluded.
 - Restore-old-goal action: new explicit approval.
 
@@ -449,6 +453,7 @@ verified =
 | verifier failure | retain candidate; block closure | none |
 | source post-hash mismatch | critical failure; invalidate run | detected mutation |
 | sanitizer failure | retain private artifact only | none |
+| ephemeral Codex goal request | reject configuration; require persisted child | none |
 
 ## Architecture Decisions
 
