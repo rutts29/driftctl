@@ -1,0 +1,29 @@
+{
+  "case_id": "01-steering-retry",
+  "counted_in_final_score": false,
+  "decision": "discarded",
+  "reason": "The late grader test was copied into the agent-writable workspace before recovery. Both agents could inspect and edit it, so the passing result did not measure durable continuity.",
+  "results": {
+    "baseline": {
+      "elapsed_seconds": 218.357,
+      "passed_final_checks": true,
+      "token_usage": {
+        "cached_input_tokens": 463104,
+        "input_tokens": 551838,
+        "output_tokens": 8896,
+        "total_tokens": 560734
+      }
+    },
+    "workflow": {
+      "elapsed_seconds": 323.255,
+      "passed_final_checks": true,
+      "token_usage": {
+        "cached_input_tokens": 637696,
+        "input_tokens": 740521,
+        "output_tokens": 13556,
+        "total_tokens": 754077
+      }
+    }
+  },
+  "learning": "Evaluation code must remain outside the agent-writable workspace and be fingerprinted. A self-contained late prompt supplied to both modes does not test recovery of lost context."
+}

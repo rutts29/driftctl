@@ -1,0 +1,51 @@
+{
+  "baseline_definition": "A fresh Codex session receives the existing worktree after a hard transcript loss, but no durable task record or late steering.",
+  "by_mode": {
+    "baseline": {
+      "case_count": 5,
+      "mean_elapsed_seconds": 200.85,
+      "premature_completion_count": 2,
+      "total_cached_input_tokens": 2249728,
+      "total_input_tokens": 2551492,
+      "total_output_tokens": 37941,
+      "verified_completion_count": 3,
+      "verified_completion_rate": 0.6
+    },
+    "workflow": {
+      "case_count": 5,
+      "mean_elapsed_seconds": 221.897,
+      "premature_completion_count": 0,
+      "total_cached_input_tokens": 2512384,
+      "total_input_tokens": 2895630,
+      "total_output_tokens": 42315,
+      "verified_completion_count": 5,
+      "verified_completion_rate": 1.0
+    }
+  },
+  "caveats": [
+    "This evaluates hard transcript-loss recovery, not native Codex or Claude session resume and not ordinary context compaction.",
+    "Each case was run once, so time and token differences are descriptive rather than statistically causal.",
+    "The first pass was executed by an agent system evaluating a control mechanism intended for agent systems; independent human review and reruns are required.",
+    "Three of five cases were quality ties because the baseline independently inferred the lost constraint."
+  ],
+  "comparison": {
+    "mean_elapsed_seconds_change": 21.047,
+    "mean_elapsed_seconds_change_percent": 10.479,
+    "premature_completion_change": -2,
+    "total_tokens_change": 348512,
+    "total_tokens_change_percent": 13.459,
+    "verified_completion_rate_change": 0.4
+  },
+  "evaluation_design": {
+    "agent_configuration": {
+      "cli": "codex-cli 0.150.1",
+      "model": "gpt-5.6-sol",
+      "reasoning_effort": "xhigh"
+    },
+    "case_count": 5,
+    "grader": "Case-owned external tests fingerprinted before and after each run",
+    "trials_per_case_and_mode": 1
+  },
+  "primary_metric": "verified_completion_rate",
+  "result_status": "first_pass"
+}

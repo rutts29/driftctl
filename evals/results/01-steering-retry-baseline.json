@@ -1,0 +1,52 @@
+{
+  "agent_configuration": {
+    "cli": "codex-cli 0.150.1",
+    "model": "gpt-5.6-sol",
+    "reasoning_effort": "xhigh"
+  },
+  "agent_succeeded": true,
+  "case_id": "01-steering-retry",
+  "changed_paths": [
+    "service_client.py",
+    "tests/test_unit_client.py"
+  ],
+  "elapsed_seconds": 225.036,
+  "evaluation_commit": "8ae11b1",
+  "interruption": "fresh_agent_session",
+  "lost_steering_count": 1,
+  "mode": "baseline",
+  "premature_completion": {
+    "available": true,
+    "detected": false,
+    "phase": "recovery-1"
+  },
+  "recovery_context": "worktree_only",
+  "result_format": "sanitized_summary",
+  "status": "completed",
+  "token_usage": {
+    "available": true,
+    "cached_input_tokens": 447744,
+    "input_tokens": 488640,
+    "output_tokens": 8408,
+    "total_tokens": 497048
+  },
+  "verified_completion": true,
+  "verifier_fingerprint_sha256": "abd5b5de1dbd8f34c6326cc3a5497da049e5eb31f4f9a5357357cec8c893dfa1",
+  "verifiers": [
+    {
+      "exit_code": 0,
+      "name": "unit",
+      "passed": true
+    },
+    {
+      "exit_code": 0,
+      "name": "integration",
+      "passed": true
+    },
+    {
+      "exit_code": 0,
+      "name": "all",
+      "passed": true
+    }
+  ]
+}
