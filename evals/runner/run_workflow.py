@@ -170,6 +170,7 @@ def run_case(
         "closure_is_evidence_gated": closure_blocked,
         "elapsed_seconds": elapsed_seconds,
         "injected_paths": sorted(set(injected_paths)),
+        "mode": "workflow",
         "premature_completion": premature_completion(turns, verifiers),
         "status": "verified" if verified_completion else run_status(turns),
         "title": definition.title,

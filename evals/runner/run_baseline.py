@@ -186,6 +186,7 @@ def run_case(
         "changed_paths": changed_paths,
         "elapsed_seconds": elapsed_seconds,
         "injected_paths": sorted(set(injected_paths)),
+        "mode": "baseline",
         "premature_completion": premature_completion(turns, verifiers),
         "status": run_status(turns),
         "thread_id": thread_id,
