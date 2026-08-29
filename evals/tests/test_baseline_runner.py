@@ -19,9 +19,9 @@ CASE = REPOSITORY_ROOT / "evals" / "cases" / "01-steering-retry"
 
 
 class BaselineRunnerTests(unittest.TestCase):
-    """Exercise the runner against a local deterministic Codex substitute."""
+    """Exercise fresh interrupted turns against a deterministic Codex substitute."""
 
-    def test_runs_same_thread_then_verifies_final_workspace(self) -> None:
+    def test_runs_fresh_turn_after_interruption_then_verifies_workspace(self) -> None:
         with tempfile.TemporaryDirectory(prefix="driftctl-baseline-test-") as temporary:
             temporary_path = Path(temporary)
             fake_codex = temporary_path / "fake-codex"
@@ -56,6 +56,7 @@ class BaselineRunnerTests(unittest.TestCase):
             result = json.loads(completed.stdout)
             self.assertEqual(result["case_id"], "01-steering-retry")
             self.assertEqual(result["mode"], "baseline")
+            self.assertEqual(result["interruption"], "fresh_agent_session")
             self.assertEqual(result["thread_id"], "fixture-thread")
             self.assertEqual(result["changed_paths"], ["service_client.py"])
             self.assertEqual(
@@ -87,8 +88,12 @@ class BaselineRunnerTests(unittest.TestCase):
             )
 
             captured = arguments.read_text(encoding="utf-8")
-            self.assertIn("exec\n--json\n--sandbox\nworkspace-write\n", captured)
-            self.assertIn("exec\nresume\nfixture-thread\n--json\n", captured)
+            self.assertIn(
+                "exec\n--json\n--ephemeral\n--sandbox\nworkspace-write\n",
+                captured,
+            )
+            self.assertNotIn("exec\nresume\n", captured)
+            self.assertEqual(captured.splitlines().count("--ephemeral"), 2)
             self.assertIn(
                 "Do not retry 401 or 403 authentication failures", captured
             )
@@ -112,8 +117,9 @@ class BaselineRunnerTests(unittest.TestCase):
             done
             printf '%s\\n' '---' >> "$FAKE_CODEX_ARGUMENTS"
 
-            if [ "$1" = "exec" ] && [ "$2" = "resume" ]; then
+            if [ -f tests/test_integration_checkout.py ]; then
               test -f tests/test_integration_checkout.py
+              printf '%s\\n' '{"type":"thread.started","thread_id":"fixture-thread-2"}'
               printf '%s\\n' '{"type":"turn.started"}'
               printf '%s\\n' '{"type":"turn.completed","usage":{"input_tokens":7,"cached_input_tokens":3,"output_tokens":5}}'
               exit 0
