@@ -30,3 +30,9 @@ verified
 State is confined to `.driftctl/ledger.jsonl` in the current repository. The CLI does not edit `AGENTS.md`, `CLAUDE.md`, skills, hooks, permissions, or harness configuration.
 
 For development, use `cargo run -- <command>` in place of `driftctl`.
+
+## Codex adapter
+
+After starting a workflow, `driftctl run codex` launches the installed Codex CLI against the current unresolved frontier and records its JSONL trajectory under `.driftctl/trajectories/`. Each fresh run receives the complete unresolved goal, so continuity does not depend on a native agent session.
+
+The adapter uses `codex exec --json --ephemeral --sandbox workspace-write`, following the [official OpenAI documentation for non-interactive Codex runs](https://developers.openai.com/codex/noninteractive/). Existing repository instructions and user configuration remain active; `driftctl` does not rewrite them. It verifies that root `AGENTS.md`, root `CLAUDE.md`, and its ledger are unchanged after the run. This is a continuity adapter, not an additional security sandbox.

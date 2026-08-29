@@ -38,7 +38,7 @@ match event {
 }
 ```
 
-Use `rustfmt`; forbid unsafe code; avoid abstractions that do not serve the evaluated workflow.
+Use one house style across extracted and new code: `rustfmt` layout, explicit typed state, small named helpers, stable domain terms, and behavior-first integration tests. Forbid unsafe code and avoid abstractions that do not serve the evaluated workflow. Reuse proven private-harness behavior when adapting it is faster than rewriting it, but do not import unrelated infrastructure dependencies.
 
 ## Testing Strategy
 
