@@ -26,10 +26,14 @@ class BaselineRunnerTests(unittest.TestCase):
             temporary_path = Path(temporary)
             fake_codex = temporary_path / "fake-codex"
             arguments = temporary_path / "arguments.txt"
+            calls = temporary_path / "calls.txt"
             artifacts = temporary_path / "artifacts"
             self._write_fake_codex(fake_codex)
 
-            environment = os.environ | {"FAKE_CODEX_ARGUMENTS": str(arguments)}
+            environment = os.environ | {
+                "FAKE_CODEX_ARGUMENTS": str(arguments),
+                "FAKE_CODEX_CALLS": str(calls),
+            }
             completed = subprocess.run(
                 [
                     sys.executable,
@@ -57,16 +61,17 @@ class BaselineRunnerTests(unittest.TestCase):
             self.assertEqual(result["case_id"], "01-steering-retry")
             self.assertEqual(result["mode"], "baseline")
             self.assertEqual(result["interruption"], "fresh_agent_session")
+            self.assertEqual(result["recovery_context"], "worktree_only")
+            self.assertEqual(result["lost_steering_count"], 1)
             self.assertEqual(result["thread_id"], "fixture-thread")
             self.assertEqual(result["changed_paths"], ["service_client.py"])
             self.assertEqual(
                 result["trajectory_files"],
                 [
                     "01-steering-retry-baseline-initial.jsonl",
-                    "01-steering-retry-baseline-steering-1.jsonl",
+                    "01-steering-retry-baseline-recovery-1.jsonl",
                 ],
             )
-            self.assertEqual(result["injected_paths"], ["tests/test_integration_checkout.py"])
             self.assertTrue(all(verifier["passed"] for verifier in result["verifiers"]))
             self.assertEqual(
                 result["token_usage"],
@@ -83,7 +88,7 @@ class BaselineRunnerTests(unittest.TestCase):
                 {
                     "available": True,
                     "detected": False,
-                    "phase": "steering-1",
+                    "phase": "recovery-1",
                 },
             )
 
@@ -94,9 +99,9 @@ class BaselineRunnerTests(unittest.TestCase):
             )
             self.assertNotIn("exec\nresume\n", captured)
             self.assertEqual(captured.splitlines().count("--ephemeral"), 2)
-            self.assertIn(
-                "Do not retry 401 or 403 authentication failures", captured
-            )
+            self.assertIn("No durable task record is available", captured)
+            self.assertNotIn("Do not retry 401 or 403 authentication failures", captured)
+            self.assertEqual(calls.read_text(encoding="utf-8").splitlines(), ["1", "2"])
             initial_events = [
                 json.loads(line)
                 for line in (
@@ -112,13 +117,19 @@ class BaselineRunnerTests(unittest.TestCase):
             #!/bin/sh
             set -eu
 
+            count=0
+            if [ -f "$FAKE_CODEX_CALLS" ]; then
+              count=$(wc -l < "$FAKE_CODEX_CALLS")
+            fi
+            count=$((count + 1))
+            printf '%s\\n' "$count" >> "$FAKE_CODEX_CALLS"
             for argument in "$@"; do
               printf '%s\\n' "$argument" >> "$FAKE_CODEX_ARGUMENTS"
             done
             printf '%s\\n' '---' >> "$FAKE_CODEX_ARGUMENTS"
+            test ! -e tests/test_integration_checkout.py
 
-            if [ -f tests/test_integration_checkout.py ]; then
-              test -f tests/test_integration_checkout.py
+            if [ "$count" -eq 2 ]; then
               printf '%s\\n' '{"type":"thread.started","thread_id":"fixture-thread-2"}'
               printf '%s\\n' '{"type":"turn.started"}'
               printf '%s\\n' '{"type":"turn.completed","usage":{"input_tokens":7,"cached_input_tokens":3,"output_tokens":5}}'
@@ -126,7 +137,6 @@ class BaselineRunnerTests(unittest.TestCase):
             fi
 
             test "$1" = "exec"
-            test ! -e tests/test_integration_checkout.py
             cat > service_client.py <<'PYTHON'
             """Small client used by the checkout service."""
 

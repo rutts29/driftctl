@@ -5,7 +5,9 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import dataclass
+import hashlib
 import json
+import os
 from pathlib import Path, PurePosixPath
 import shutil
 import subprocess
@@ -20,19 +22,10 @@ class RunnerError(RuntimeError):
 
 
 @dataclass(frozen=True)
-class Injection:
-    """Copy one steering artifact into the temporary candidate workspace."""
-
-    source: PurePosixPath
-    destination: PurePosixPath
-
-
-@dataclass(frozen=True)
 class SteeringPoint:
-    """A requirement that arrives after the first agent turn."""
+    """A requirement lost when the direct agent session is interrupted."""
 
     requirement: str
-    injections: tuple[Injection, ...]
 
 
 @dataclass(frozen=True)
@@ -145,6 +138,7 @@ def run_case(
     started_at = time.monotonic()
     case_directory = case_directory.resolve()
     definition = load_case(case_directory)
+    verifier_fingerprint = evaluation_fingerprint(case_directory)
     source_workspace = contained_path(case_directory, definition.workspace, "workspace")
     if not source_workspace.is_dir():
         raise RunnerError(f"case workspace does not exist: {source_workspace}")
@@ -157,21 +151,14 @@ def run_case(
         initial_turn = run_initial_turn(codex_bin, workspace, definition)
         thread_id = thread_id_from(initial_turn.events)
         turns = [initial_turn]
-        injected_paths: list[str] = []
 
-        for index, steering_point in enumerate(definition.steering, start=1):
-            injected_paths.extend(inject_steering(case_directory, workspace, steering_point))
-            turns.append(
-                run_steering_turn(
-                    codex_bin,
-                    workspace,
-                    steering_point.requirement,
-                    index,
-                )
-            )
+        for index, _steering_point in enumerate(definition.steering, start=1):
+            turns.append(run_recovery_turn(codex_bin, workspace, index))
 
-        verifiers = run_verifiers(workspace, definition.verifiers)
-        changed_paths = changed_paths_since(workspace, initial_commit, injected_paths)
+        require_evaluation_fingerprint(case_directory, verifier_fingerprint)
+        verifiers = run_verifiers(workspace, definition.verifiers, case_directory)
+        require_evaluation_fingerprint(case_directory, verifier_fingerprint)
+        changed_paths = changed_paths_since(workspace, initial_commit)
 
     token_usage = TokenUsage()
     for turn in turns:
@@ -184,16 +171,18 @@ def run_case(
         "case_id": definition.case_id,
         "changed_paths": changed_paths,
         "elapsed_seconds": elapsed_seconds,
-        "injected_paths": sorted(set(injected_paths)),
         "interruption": "fresh_agent_session",
+        "lost_steering_count": len(definition.steering),
         "mode": "baseline",
         "premature_completion": premature_completion(turns, verifiers),
+        "recovery_context": "worktree_only",
         "status": run_status(turns),
         "thread_id": thread_id,
         "title": definition.title,
         "token_usage": token_usage.as_dict(),
         "trajectory_files": trajectory_files,
         "turns": [turn_summary(turn) for turn in turns],
+        "verifier_fingerprint_sha256": verifier_fingerprint,
         "verifiers": verifiers,
     }
 
@@ -278,29 +267,12 @@ def steering_points(raw: Mapping[str, Any]) -> tuple[SteeringPoint, ...]:
     for index, item in enumerate(value, start=1):
         if not isinstance(item, Mapping):
             raise RunnerError(f"steering item {index} must be an object")
-        injections = item.get("inject", [])
-        if not isinstance(injections, list):
-            raise RunnerError(f"steering item {index} inject field must be an array")
         points.append(
             SteeringPoint(
                 requirement=required_string(item, "requirement"),
-                injections=tuple(injection_from(raw_injection, index) for raw_injection in injections),
             )
         )
     return tuple(points)
-
-
-def injection_from(raw: Any, steering_index: int) -> Injection:
-    """Validate one fixture injection without permitting directory traversal."""
-
-    if not isinstance(raw, Mapping):
-        raise RunnerError(f"steering item {steering_index} injection must be an object")
-    return Injection(
-        source=relative_path(required_string(raw, "source"), "injection source"),
-        destination=relative_path(
-            required_string(raw, "destination"), "injection destination"
-        ),
-    )
 
 
 def verifier_list(raw: Mapping[str, Any]) -> tuple[Verifier, ...]:
@@ -341,6 +313,37 @@ def contained_path(root: Path, relative: PurePosixPath, label: str) -> Path:
     return candidate
 
 
+def evaluation_fingerprint(case_directory: Path) -> str:
+    """Fingerprint the case contract and external grader files."""
+
+    paths = [case_directory / "case.json"]
+    grader_directory = case_directory / "steering"
+    if grader_directory.is_dir():
+        paths.extend(sorted(path for path in grader_directory.rglob("*") if path.is_file()))
+
+    digest = hashlib.sha256()
+    for path in paths:
+        if path.is_symlink() or not path.is_file():
+            raise RunnerError(f"evaluation input must be a regular file: {path}")
+        try:
+            content = path.read_bytes()
+        except OSError as error:
+            raise RunnerError(f"could not fingerprint evaluation input {path}: {error}") from error
+        relative = path.relative_to(case_directory).as_posix().encode("utf-8")
+        digest.update(len(relative).to_bytes(8, "big"))
+        digest.update(relative)
+        digest.update(len(content).to_bytes(8, "big"))
+        digest.update(content)
+    return digest.hexdigest()
+
+
+def require_evaluation_fingerprint(case_directory: Path, expected: str) -> None:
+    """Reject any grader mutation during an agent run or verification."""
+
+    if evaluation_fingerprint(case_directory) != expected:
+        raise RunnerError("evaluation inputs changed during the run")
+
+
 def initialize_git_repository(workspace: Path) -> str:
     """Create a local-only repository so final changes have a fixed base."""
 
@@ -379,13 +382,10 @@ def run_initial_turn(codex_bin: str, workspace: Path, definition: CaseDefinition
     return invoke_codex(command, workspace, "initial")
 
 
-def run_steering_turn(
-    codex_bin: str,
-    workspace: Path,
-    requirement: str,
-    steering_index: int,
+def run_recovery_turn(
+    codex_bin: str, workspace: Path, steering_index: int
 ) -> AgentTurn:
-    """Start a fresh baseline turn with only the newly supplied requirement."""
+    """Start a fresh baseline turn after transcript and steering are lost."""
 
     command = [
         codex_bin,
@@ -394,9 +394,9 @@ def run_steering_turn(
         "--ephemeral",
         "--sandbox",
         "workspace-write",
-        steering_prompt(requirement),
+        recovery_prompt(),
     ]
-    return invoke_codex(command, workspace, f"steering-{steering_index}")
+    return invoke_codex(command, workspace, f"recovery-{steering_index}")
 
 
 def initial_prompt(definition: CaseDefinition) -> str:
@@ -412,13 +412,13 @@ def initial_prompt(definition: CaseDefinition) -> str:
     )
 
 
-def steering_prompt(requirement: str) -> str:
-    """Build the one new requirement delivered at a steering point."""
+def recovery_prompt() -> str:
+    """Model a normal worktree-only restart with no durable task record."""
 
     return (
-        "A new requirement has arrived. Continue work in this repository and satisfy it:\n\n"
-        f"- {requirement}\n\n"
-        "Run the relevant tests before finishing."
+        "The prior agent session was interrupted. Continue from the current repository state, "
+        "complete any unfinished work, and run the relevant tests. No durable task record is "
+        "available. Follow the repository's existing instructions."
     )
 
 
@@ -477,33 +477,26 @@ def thread_id_from(events: Sequence[Mapping[str, Any]]) -> str:
     raise RunnerError("initial Codex turn did not emit a thread.started thread_id")
 
 
-def inject_steering(
-    case_directory: Path,
-    workspace: Path,
-    steering_point: SteeringPoint,
-) -> list[str]:
-    """Inject newly revealed test material immediately before its resume turn."""
+def run_verifiers(
+    workspace: Path, verifiers: Sequence[Verifier], case_directory: Path
+) -> list[dict[str, Any]]:
+    """Run immutable case-owned verifiers against the final candidate."""
 
-    injected_paths: list[str] = []
-    for injection in steering_point.injections:
-        source = contained_path(case_directory, injection.source, "injection source")
-        destination = contained_path(workspace, injection.destination, "injection destination")
-        if not source.is_file():
-            raise RunnerError(f"steering injection source does not exist: {source}")
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(source, destination)
-        injected_paths.append(injection.destination.as_posix())
-    return injected_paths
-
-
-def run_verifiers(workspace: Path, verifiers: Sequence[Verifier]) -> list[dict[str, Any]]:
-    """Run the case's shared verifier commands against the final candidate."""
-
+    environment = dict(os.environ)
+    environment["DRIFTCTL_EVAL_CASE_DIR"] = str(case_directory.resolve())
+    environment["PYTHONDONTWRITEBYTECODE"] = "1"
+    existing_python_path = environment.get("PYTHONPATH")
+    environment["PYTHONPATH"] = (
+        f"{workspace}{os.pathsep}{existing_python_path}"
+        if existing_python_path
+        else str(workspace)
+    )
     outcomes: list[dict[str, Any]] = []
     for verifier in verifiers:
         completed = subprocess.run(
             verifier.command,
             cwd=workspace,
+            env=environment,
             shell=True,
             capture_output=True,
             text=True,
@@ -522,12 +515,8 @@ def run_verifiers(workspace: Path, verifiers: Sequence[Verifier]) -> list[dict[s
     return outcomes
 
 
-def changed_paths_since(
-    workspace: Path,
-    initial_commit: str,
-    injected_paths: Sequence[str],
-) -> list[str]:
-    """Return candidate changes while excluding evaluator-supplied steering files."""
+def changed_paths_since(workspace: Path, initial_commit: str) -> list[str]:
+    """Return every candidate-created path relative to the initial fixture."""
 
     committed_or_tracked = run_checked(
         ["git", "diff", "--name-only", "--no-renames", initial_commit],
@@ -539,8 +528,7 @@ def changed_paths_since(
         workspace,
         "inspect untracked candidate changes",
     ).stdout.splitlines()
-    excluded = set(injected_paths)
-    return sorted({path for path in committed_or_tracked + untracked if path not in excluded})
+    return sorted(set(committed_or_tracked + untracked))
 
 
 def run_checked(command: Sequence[str], workspace: Path, action: str) -> subprocess.CompletedProcess[str]:

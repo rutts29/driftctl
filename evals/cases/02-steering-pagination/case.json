@@ -8,13 +8,7 @@
   ],
   "steering": [
     {
-      "requirement": "Keep the caller's filters unchanged and suppress duplicate item IDs when pages overlap while preserving first-seen order.",
-      "inject": [
-        {
-          "source": "steering/test_integration_catalog.py",
-          "destination": "tests/test_integration_catalog.py"
-        }
-      ]
+      "requirement": "Keep the caller's filters unchanged and suppress duplicate item IDs when pages overlap while preserving first-seen order."
     }
   ],
   "verifiers": [
@@ -24,12 +18,12 @@
     },
     {
       "name": "integration",
-      "command": "python3 -m unittest discover -s tests -p 'test_integration_*.py'"
+      "command": "python3 -m unittest discover -s \"$DRIFTCTL_EVAL_CASE_DIR/steering\" -p 'test_integration_*.py'"
     },
     {
       "name": "all",
-      "command": "python3 -m unittest discover -s tests -p 'test_*.py'"
+      "command": "python3 -m unittest discover -s tests -p 'test_*.py' && python3 -m unittest discover -s \"$DRIFTCTL_EVAL_CASE_DIR/steering\" -p 'test_integration_*.py'"
     }
   ],
-  "expected_boundary": "The unit pagination cases use disjoint pages, so a simple page loop can pass. The late integration check uses overlapping pages and verifies that the caller's filters are not mutated, exposing a solution that handled pagination but ignored the steering constraints."
+  "expected_boundary": "The visible pagination cases use disjoint pages, so a simple page loop can pass. The held-out integration verifier uses overlapping pages and checks caller immutability, exposing loss of the late steering constraints."
 }

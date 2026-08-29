@@ -21,11 +21,13 @@ try:
         RunnerError,
         TokenUsage,
         changed_paths_since,
-        inject_steering,
+        contained_path,
+        evaluation_fingerprint,
         initialize_git_repository,
         load_case,
         parse_events,
         premature_completion,
+        require_evaluation_fingerprint,
         run_status,
         run_verifiers,
         turn_summary,
@@ -37,11 +39,13 @@ except ImportError:  # Direct script execution has no package context.
         RunnerError,
         TokenUsage,
         changed_paths_since,
-        inject_steering,
+        contained_path,
+        evaluation_fingerprint,
         initialize_git_repository,
         load_case,
         parse_events,
         premature_completion,
+        require_evaluation_fingerprint,
         run_status,
         run_verifiers,
         turn_summary,
@@ -97,7 +101,8 @@ def run_case(
     started_at = time.monotonic()
     case_directory = case_directory.resolve()
     definition = load_case(case_directory)
-    source_workspace = case_directory.joinpath(*definition.workspace.parts).resolve()
+    verifier_fingerprint = evaluation_fingerprint(case_directory)
+    source_workspace = contained_path(case_directory, definition.workspace, "workspace")
     if not source_workspace.is_dir():
         raise RunnerError(f"case workspace does not exist: {source_workspace}")
 
@@ -108,22 +113,10 @@ def run_case(
         start_workflow(driftctl_bin, workspace, definition)
 
         turns = [run_workflow_turn(driftctl_bin, codex_bin, workspace, "initial")]
-        initial_verifiers = run_initial_verifiers(workspace, definition)
-        initial_evidence = evidence_for(initial_verifiers)
-        initial_requirements_satisfied = initial_evidence is not None
-        if initial_evidence is not None:
-            satisfy_requirements(
-                driftctl_bin,
-                workspace,
-                range(1, len(definition.initial_requirements) + 1),
-                initial_evidence,
-            )
 
-        injected_paths: list[str] = []
         steering_ids: list[str] = []
         closure_gate: dict[str, Any] | None = None
         for index, steering_point in enumerate(definition.steering, start=1):
-            injected_paths.extend(inject_steering(case_directory, workspace, steering_point))
             steering_id = steer_workflow(driftctl_bin, workspace, steering_point.requirement)
             steering_ids.append(steering_id)
             if closure_gate is None:
@@ -137,19 +130,20 @@ def run_case(
                 )
             )
 
-        verifiers = run_verifiers(workspace, definition.verifiers)
+        require_evaluation_fingerprint(case_directory, verifier_fingerprint)
+        verifiers = run_verifiers(workspace, definition.verifiers, case_directory)
+        require_evaluation_fingerprint(case_directory, verifier_fingerprint)
         final_evidence = evidence_for(verifiers)
         if final_evidence is not None:
-            if not initial_requirements_satisfied:
-                satisfy_requirements(
-                    driftctl_bin,
-                    workspace,
-                    range(1, len(definition.initial_requirements) + 1),
-                    final_evidence,
-                )
+            satisfy_requirements(
+                driftctl_bin,
+                workspace,
+                range(1, len(definition.initial_requirements) + 1),
+                final_evidence,
+            )
             satisfy_requirement_ids(driftctl_bin, workspace, steering_ids, final_evidence)
         closure = attempted_closure(driftctl_bin, workspace)
-        changed_paths = workflow_changed_paths(workspace, initial_commit, injected_paths)
+        changed_paths = workflow_changed_paths(workspace, initial_commit)
 
     token_usage = TokenUsage()
     for turn in turns:
@@ -169,7 +163,6 @@ def run_case(
         "closure_gate": closure_gate,
         "closure_is_evidence_gated": closure_blocked,
         "elapsed_seconds": elapsed_seconds,
-        "injected_paths": sorted(set(injected_paths)),
         "mode": "workflow",
         "premature_completion": premature_completion(turns, verifiers),
         "status": "verified" if verified_completion else run_status(turns),
@@ -177,6 +170,8 @@ def run_case(
         "token_usage": token_usage.as_dict(),
         "trajectory_files": trajectory_files,
         "turns": [turn_summary(turn) for turn in turns],
+        "recovered_steering_count": len(definition.steering),
+        "verifier_fingerprint_sha256": verifier_fingerprint,
         "verified_completion": verified_completion,
         "verifiers": verifiers,
     }
@@ -189,19 +184,6 @@ def start_workflow(driftctl_bin: str, workspace: Path, definition: CaseDefinitio
     for requirement in definition.initial_requirements:
         arguments.extend(["--requirement", requirement])
     require_success(invoke_driftctl(driftctl_bin, workspace, arguments), "start workflow")
-
-
-def run_initial_verifiers(
-    workspace: Path, definition: CaseDefinition
-) -> list[dict[str, Any]]:
-    """Run the known unit boundary before attaching initial evidence to the ledger."""
-
-    unit_verifiers = tuple(
-        verifier for verifier in definition.verifiers if verifier.name == "unit"
-    )
-    if not unit_verifiers:
-        raise RunnerError("case must include a verifier named 'unit'")
-    return run_verifiers(workspace, unit_verifiers)
 
 
 def steer_workflow(driftctl_bin: str, workspace: Path, requirement: str) -> str:
@@ -342,14 +324,10 @@ def require_success(completed: subprocess.CompletedProcess[str], action: str) ->
     raise RunnerError(f"could not {action}: {detail or 'command failed'}")
 
 
-def workflow_changed_paths(
-    workspace: Path,
-    initial_commit: str,
-    injected_paths: Sequence[str],
-) -> list[str]:
-    """Exclude evaluator injection and workflow state from candidate change evidence."""
+def workflow_changed_paths(workspace: Path, initial_commit: str) -> list[str]:
+    """Exclude driftctl's private state from candidate change evidence."""
 
-    changed = changed_paths_since(workspace, initial_commit, injected_paths)
+    changed = changed_paths_since(workspace, initial_commit)
     return [
         path
         for path in changed
