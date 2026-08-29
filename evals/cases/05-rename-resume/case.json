@@ -1,0 +1,35 @@
+{
+  "id": "05-rename-resume",
+  "title": "Resume failed work across a task-to-work-item domain rename",
+  "workspace": "workspace",
+  "goal": "Add resumable retry scheduling so a failed task returns to the pending queue without losing its attempt count.",
+  "initial_requirements": [
+    "A failed task can be resumed once, moves back to pending, and keeps the incremented attempt count."
+  ],
+  "steering": [
+    {
+      "requirement": "The task domain was renamed during an interruption: the scheduler now receives work_item_id, but legacy task_id payloads must continue working. Accept either name at the scheduler boundary, reject payloads with neither, and route both names through the existing resume behavior without resetting attempts.",
+      "inject": [
+        {
+          "source": "steering/test_integration_work_item_rename.py",
+          "destination": "tests/test_integration_work_item_rename.py"
+        }
+      ]
+    }
+  ],
+  "verifiers": [
+    {
+      "name": "unit",
+      "command": "python3 -m unittest discover -s tests -p 'test_unit_*.py'"
+    },
+    {
+      "name": "integration",
+      "command": "python3 -m unittest discover -s tests -p 'test_integration_*.py'"
+    },
+    {
+      "name": "all",
+      "command": "python3 -m unittest discover -s tests -p 'test_*.py'"
+    }
+  ],
+  "expected_boundary": "The initial unit case can be satisfied by adding a task-id-specific resume method while an interrupted implementation may miss the later work_item_id payload or reset attempts; the injected integration case exercises both names and the retry invariant."
+}

@@ -1,0 +1,35 @@
+{
+  "id": "03-steering-atomic-import",
+  "title": "Import users atomically when validation fails",
+  "workspace": "workspace",
+  "goal": "Add CSV user import to the admin service.",
+  "initial_requirements": [
+    "Import valid email and name CSV rows into UserStore and return the number of users imported."
+  ],
+  "steering": [
+    {
+      "requirement": "Validate the complete import before mutating the store, raise ValueError for malformed rows or duplicate emails, and leave existing users exactly unchanged when any row is invalid.",
+      "inject": [
+        {
+          "source": "steering/test_integration_import.py",
+          "destination": "tests/test_integration_import.py"
+        }
+      ]
+    }
+  ],
+  "verifiers": [
+    {
+      "name": "unit",
+      "command": "python3 -m unittest discover -s tests -p 'test_unit_*.py'"
+    },
+    {
+      "name": "integration",
+      "command": "python3 -m unittest discover -s tests -p 'test_integration_*.py'"
+    },
+    {
+      "name": "all",
+      "command": "python3 -m unittest discover -s tests -p 'test_*.py'"
+    }
+  ],
+  "expected_boundary": "The unit cases contain only valid rows, so a row-by-row importer can pass. The late integration checks put a malformed or duplicate row after a valid row and require the store to remain byte-for-byte equivalent in content, exposing partial writes that violate the steered atomicity boundary."
+}
