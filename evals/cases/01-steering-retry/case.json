@@ -7,7 +7,15 @@
     "Retry a failed service request once to improve reliability."
   ],
   "steering": [
-    "Do not retry 401 or 403 authentication failures because a checkout operation must never be replayed after an authorization rejection."
+    {
+      "requirement": "Do not retry 401 or 403 authentication failures because a checkout operation must never be replayed after an authorization rejection.",
+      "inject": [
+        {
+          "source": "steering/test_integration_checkout.py",
+          "destination": "tests/test_integration_checkout.py"
+        }
+      ]
+    }
   ],
   "verifiers": [
     {
