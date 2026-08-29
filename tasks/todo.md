@@ -49,9 +49,9 @@
 
 ## Task 3: Codex execution path
 
-**Acceptance:** One real run captures normalized events while existing repository instructions and permissions remain unchanged.
+**Acceptance:** One real run captures normalized events while existing repository instructions and permissions remain unchanged. **Complete.**
 
-**Verify:** Focused adapter tests plus one sanitized live trajectory.
+**Verify:** `cargo test --locked --test codex_adapter` plus `evals/trajectories/codex-smoke.sanitized.jsonl` and `evals/results/codex-smoke.json`.
 
 **Dependencies:** Task 2
 

@@ -1,0 +1,20 @@
+{
+  "kind": "adapter_smoke_test",
+  "date": "2026-08-29",
+  "case_id": "01-steering-retry",
+  "adapter": "codex-cli 0.150.1",
+  "raw_trajectory_events": 39,
+  "sanitized_trajectory": "../trajectories/codex-smoke.sanitized.jsonl",
+  "checks": {
+    "tests_passed": 4,
+    "tests_failed": 0,
+    "git_diff_check": "passed",
+    "protected_files_unchanged_during_agent_run": true
+  },
+  "closure": {
+    "agent_run_auto_closed": false,
+    "external_evidence_added": true,
+    "verified_close_succeeded": true
+  },
+  "scope": "This is an installed-adapter smoke test, not part of the baseline-versus-workflow result."
+}

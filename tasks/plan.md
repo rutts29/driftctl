@@ -25,7 +25,7 @@ Deliver the narrowest useful continuity workflow first, then add one real agent 
 
 ### Phase 2: Agent execution
 
-- [ ] Task 3 (in progress): Run one Codex task and capture its trajectory without changing repository instructions.
+- [x] Task 3: Run one Codex task and capture its trajectory without changing repository instructions.
 - [ ] Task 4: Run the same task through the direct-agent baseline.
 
 ### Checkpoint: Execution
