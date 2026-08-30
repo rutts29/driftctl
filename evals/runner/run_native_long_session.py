@@ -130,6 +130,30 @@ class AppServer:
             raise RunnerError(f"App Server {phase} turn ended with {status!r}")
         return turn_id
 
+    def require_user_message_count(self, thread_id: str, expected: int) -> None:
+        for _ in range(20):
+            result = self.request(
+                "thread/read", {"threadId": thread_id, "includeTurns": True}
+            )
+            thread = result.get("thread")
+            turns = thread.get("turns") if isinstance(thread, Mapping) else None
+            if isinstance(turns, list):
+                count = sum(
+                    1
+                    for turn in turns
+                    if isinstance(turn, Mapping)
+                    for item in turn.get("items", [])
+                    if isinstance(item, Mapping) and item.get("type") == "userMessage"
+                )
+                if count == expected:
+                    return
+                if count > expected:
+                    break
+            time.sleep(0.05)
+        raise RunnerError(
+            f"native source did not durably retain exactly {expected} user messages"
+        )
+
     def _write(self, value: Mapping[str, Any]) -> None:
         self.input.write(json.dumps(value, separators=(",", ":")) + "\n")
         self.input.flush()
@@ -312,10 +336,12 @@ def seed_native_session(
         initial = server.record_user_turn(
             thread_id, source_prompt(definition, False), "initial"
         )
+        server.require_user_message_count(thread_id, 1)
         injection = inject_non_authoritative_context(server, thread_id, context_bytes)
         steering = server.record_user_turn(
             thread_id, source_prompt(definition, True), "steering"
         )
+        server.require_user_message_count(thread_id, 2)
         return thread_id, [initial, steering], injection
     finally:
         server.close()
