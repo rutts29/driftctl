@@ -26,14 +26,17 @@ const RUNS_DIRECTORY: &str = "runs";
 const HISTORY_DIRECTORY: &str = "history";
 const PROJECTION_FILE: &str = "projection.json";
 const SOURCE_FILE: &str = "source.json";
+const CANDIDATE_FILE: &str = "candidate.json";
 const PENDING_FILE: &str = "pending.jsonl";
 const LOCK_FILE: &str = ".writer.lock";
 const TEMP_PROJECTION_PREFIX: &str = ".projection.json.tmp-";
 const TEMP_SOURCE_PREFIX: &str = ".source.json.tmp-";
+const TEMP_CANDIDATE_PREFIX: &str = ".candidate.json.tmp-";
 const MAX_SOURCE_CURSOR_IDENTIFIER_BYTES: usize = 16 * 1024;
 
 /// Exact schema accepted for the private source cursor state.
 pub const SOURCE_CURSOR_SCHEMA_VERSION: u32 = 1;
+pub const CANDIDATE_BINDING_SCHEMA_VERSION: u32 = 1;
 
 static TEMPORARY_FILE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
@@ -451,6 +454,38 @@ pub struct RecoveredRun {
     pub source_cursor: Option<SourceCursor>,
 }
 
+/// Private identity of the one continued child accepted for run-bound checks.
+#[derive(Clone, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CandidateBinding {
+    schema_version: u32,
+    child_thread_id: String,
+    candidate_path: PathBuf,
+}
+
+impl fmt::Debug for CandidateBinding {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("CandidateBinding")
+            .field("schema_version", &self.schema_version)
+            .field("child_thread_id", &self.child_thread_id)
+            .finish_non_exhaustive()
+    }
+}
+
+impl CandidateBinding {
+    #[must_use]
+    pub fn child_thread_id(&self) -> &str {
+        &self.child_thread_id
+    }
+
+    /// The candidate path is private local state and must not enter a public bundle.
+    #[must_use]
+    pub fn candidate_path_private(&self) -> &Path {
+        &self.candidate_path
+    }
+}
+
 /// A locked local state directory for one repository/run pair.
 #[derive(Debug)]
 pub struct RunStore {
@@ -579,6 +614,94 @@ impl RunStore {
     #[must_use]
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    /// Atomically bind this run to the exact isolated child used by `continue`.
+    pub fn bind_candidate(
+        &self,
+        child_thread_id: impl Into<String>,
+        candidate: impl AsRef<Path>,
+    ) -> Result<CandidateBinding, RunStoreError> {
+        let child_thread_id = child_thread_id.into();
+        if child_thread_id.trim().is_empty()
+            || child_thread_id.len() > MAX_SOURCE_CURSOR_IDENTIFIER_BYTES
+            || child_thread_id.chars().any(char::is_control)
+        {
+            return Err(RunStoreError::InvalidStateComponent {
+                path: PathBuf::from("candidate child thread id"),
+            });
+        }
+        let workspace_root = fs::canonicalize(self.path.join("workspaces")).map_err(|error| {
+            io_error(
+                "canonicalize run workspace root",
+                &self.path.join("workspaces"),
+                error,
+            )
+        })?;
+        let candidate = fs::canonicalize(candidate.as_ref())
+            .map_err(|error| io_error("canonicalize bound candidate", candidate.as_ref(), error))?;
+        if candidate == workspace_root || !candidate.starts_with(&workspace_root) {
+            return Err(RunStoreError::InvalidStateComponent { path: candidate });
+        }
+        let binding = CandidateBinding {
+            schema_version: CANDIDATE_BINDING_SCHEMA_VERSION,
+            child_thread_id,
+            candidate_path: candidate,
+        };
+        self.write_candidate_binding(&binding)?;
+        Ok(binding)
+    }
+
+    /// Load and revalidate the exact isolated candidate bound by `continue`.
+    pub fn candidate_binding(&self) -> Result<Option<CandidateBinding>, RunStoreError> {
+        let candidate_path = self.candidate_path();
+        match fs::symlink_metadata(&candidate_path) {
+            Ok(_) => ensure_private_regular(&candidate_path)?,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => {
+                return Err(io_error(
+                    "inspect candidate binding",
+                    &candidate_path,
+                    error,
+                ));
+            }
+        }
+        let input = fs::read_to_string(&candidate_path)
+            .map_err(|error| io_error("read candidate binding", &candidate_path, error))?;
+        let binding: CandidateBinding = serde_json::from_str(&input)
+            .map_err(|error| RunStoreError::Serialization(error.to_string()))?;
+        if binding.schema_version != CANDIDATE_BINDING_SCHEMA_VERSION
+            || binding.child_thread_id.trim().is_empty()
+            || binding.child_thread_id.len() > MAX_SOURCE_CURSOR_IDENTIFIER_BYTES
+            || binding.child_thread_id.chars().any(char::is_control)
+        {
+            return Err(RunStoreError::InvalidStateComponent {
+                path: candidate_path,
+            });
+        }
+        let workspace_root = fs::canonicalize(self.path.join("workspaces")).map_err(|error| {
+            io_error(
+                "canonicalize run workspace root",
+                &self.path.join("workspaces"),
+                error,
+            )
+        })?;
+        let canonical = fs::canonicalize(&binding.candidate_path).map_err(|error| {
+            io_error(
+                "canonicalize bound candidate",
+                &binding.candidate_path,
+                error,
+            )
+        })?;
+        if canonical != binding.candidate_path
+            || canonical == workspace_root
+            || !canonical.starts_with(&workspace_root)
+        {
+            return Err(RunStoreError::InvalidStateComponent {
+                path: binding.candidate_path,
+            });
+        }
+        Ok(Some(binding))
     }
 
     /// Append one validated event to the current unrotated JSONL delta.
@@ -712,6 +835,18 @@ impl RunStore {
         sync_directory(&self.path)
     }
 
+    fn write_candidate_binding(&self, binding: &CandidateBinding) -> Result<(), RunStoreError> {
+        let candidate_path = self.candidate_path();
+        ensure_private_regular_or_missing(&candidate_path)?;
+        let bytes = serde_json::to_vec(binding)
+            .map_err(|error| RunStoreError::Serialization(error.to_string()))?;
+        let temporary = self.temporary_candidate_path();
+        write_new_private_file_bytes(&temporary, &bytes, "write temporary candidate binding")?;
+        fs::rename(&temporary, &candidate_path)
+            .map_err(|error| io_error("replace candidate binding", &candidate_path, error))?;
+        sync_directory(&self.path)
+    }
+
     fn read_history_segments(&self) -> Result<Vec<EventRecord>, RunStoreError> {
         let history = self.history_path();
         ensure_private_directory(&history)?;
@@ -788,6 +923,10 @@ impl RunStore {
         self.path.join(SOURCE_FILE)
     }
 
+    fn candidate_path(&self) -> PathBuf {
+        self.path.join(CANDIDATE_FILE)
+    }
+
     fn pending_path(&self) -> PathBuf {
         self.path.join(PENDING_FILE)
     }
@@ -804,6 +943,14 @@ impl RunStore {
         let sequence = TEMPORARY_FILE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
         self.path.join(format!(
             "{TEMP_SOURCE_PREFIX}{}-{sequence}",
+            std::process::id()
+        ))
+    }
+
+    fn temporary_candidate_path(&self) -> PathBuf {
+        let sequence = TEMPORARY_FILE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        self.path.join(format!(
+            "{TEMP_CANDIDATE_PREFIX}{}-{sequence}",
             std::process::id()
         ))
     }

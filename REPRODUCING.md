@@ -17,6 +17,15 @@ driftctl continue codex --last \
 
 An invalid conflict or alternative ID exits `1` without forking. A valid choice is source-linked in private state and continuation proceeds with the selected alternative.
 
+After `continue --json`, use its run ID to bind a check to the exact continued child:
+
+```bash
+driftctl verify --run <run-id> \
+  --requirement <requirement-id> --json -- <program> [args...]
+```
+
+A passing check appends candidate-bound evidence to the requirement. A later bound check detects candidate drift, invalidates stale evidence, and reopens the requirement. This command reports requirement-evidence completeness; it does not by itself claim the remaining aggregate closure gates passed.
+
 ## Deterministic checks
 
 ```bash
