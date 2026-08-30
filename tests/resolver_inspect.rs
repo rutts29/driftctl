@@ -79,12 +79,13 @@ if sys.argv[1:3] == ["app-server", "--stdio"]:
 
 args = sys.argv[1:]
 prompt = sys.stdin.read()
+prompt_document = json.loads(prompt)
 schema_path = args[args.index("--output-schema") + 1]
 capture_path = os.environ["DRIFTCTL_FAKE_EXEC_CAPTURE"]
 with open(capture_path, "a", encoding="utf-8") as capture:
     capture.write(json.dumps({
         "args": args,
-        "prompt": json.loads(prompt),
+        "prompt": prompt_document,
         "schema": json.load(open(schema_path, encoding="utf-8")),
         "api_key_environment_present": "OPENAI_API_KEY" in os.environ or "CODEX_API_KEY" in os.environ,
     }, sort_keys=True) + "\n")
@@ -96,8 +97,39 @@ except FileNotFoundError:
     call_index = 0
 with open(count_path, "w", encoding="utf-8") as count:
     count.write(str(call_index + 1))
-responses = json.loads(os.environ["DRIFTCTL_FAKE_PROPOSALS"])
-response = responses[min(call_index, len(responses) - 1)]
+if os.environ.get("DRIFTCTL_FAKE_DYNAMIC_CHUNKS") == "1":
+    if prompt_document["protocol"] == "driftctl.semantic-proposal.v1":
+        records = prompt_document["records"]
+        response = {
+            "schema_version": 1,
+            "goal": {"text": "Preserve every bounded chunk", "source_record_ids": [records[0]["id"]]},
+            "accounted_source_record_ids": [record["id"] for record in records],
+            "operations": [{
+                "operation": "add", "key": "chunk-" + record["id"], "kind": "invariant",
+                "text": "Preserve chunk " + record["id"], "target_key": "", "intent_keys": [],
+                "source_record_ids": [record["id"]], "alternatives": []
+            } for record in records]
+        }
+    else:
+        records = prompt_document["delta_records"]
+        active = prompt_document["active_projection"]
+        active_ids = [item["id"] for section in ["preserve", "frontier", "validation"] for item in active[section]]
+        response = {
+            "schema_version": 1,
+            "base_projection_revision": prompt_document["base_projection_revision"],
+            "base_event_sequence": prompt_document["base_event_sequence"],
+            "classification": "additive",
+            "accounted_active_intent_ids": active_ids,
+            "accounted_source_record_ids": [record["id"] for record in records],
+            "operations": [{
+                "operation": "add", "key": "chunk-" + record["id"], "kind": "invariant",
+                "text": "Preserve chunk " + record["id"], "target_intent_id": "", "intent_ids": [],
+                "evidence_id": "", "reason": "", "source_record_ids": [record["id"]], "alternatives": []
+            } for record in records]
+        }
+else:
+    responses = json.loads(os.environ["DRIFTCTL_FAKE_PROPOSALS"])
+    response = responses[min(call_index, len(responses) - 1)]
 text = response if isinstance(response, str) else json.dumps(response)
 last_path = args[args.index("--output-last-message") + 1]
 with open(last_path, "w", encoding="utf-8") as last:
@@ -407,6 +439,65 @@ fn inspect_compacts_only_the_new_source_delta_and_reuses_the_updated_projection(
     let third_document: Value = serde_json::from_slice(&third.stdout).expect("third inspect JSON");
     assert_eq!(third_document["projection"], second_document["projection"]);
     assert_eq!(fixture.calls().len(), 2);
+    fixture.assert_unchanged();
+}
+
+#[test]
+fn initial_inspect_chunks_a_large_session_before_any_provider_call() {
+    let mut fixture = Fixture::new(vec![base_proposal()]);
+    let canonical = fixture.root.canonicalize().expect("canonical source");
+    let first = format!("FIRST_CHUNK_ONLY {}", "a".repeat(35_000));
+    let second = format!("SECOND_CHUNK_ONLY {}", "b".repeat(35_000));
+    let third = format!("THIRD_CHUNK_ONLY {}", "c".repeat(35_000));
+    fixture.environment.insert(
+        "DRIFTCTL_FAKE_READ",
+        session(
+            &fixture.session_id,
+            &canonical,
+            &[
+                ("large-1", &first),
+                ("large-2", &second),
+                ("large-3", &third),
+            ],
+        )
+        .to_string(),
+    );
+    fixture
+        .environment
+        .insert("DRIFTCTL_FAKE_DYNAMIC_CHUNKS", "1".to_owned());
+
+    let output = fixture.run(&["--json"]);
+
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let disclosure = String::from_utf8_lossy(&output.stderr);
+    assert!(disclosure.contains("expected calls: 3; maximum 6 with repair"));
+    let document: Value = serde_json::from_slice(&output.stdout).expect("inspect JSON");
+    assert_eq!(document["resolver"]["calls"], 3);
+    assert_eq!(
+        document["projection"]["frontier"].as_array().map(Vec::len),
+        Some(3)
+    );
+
+    let calls = fixture.calls();
+    assert_eq!(calls.len(), 3);
+    assert_eq!(
+        calls[0]["prompt"]["protocol"],
+        "driftctl.semantic-proposal.v1"
+    );
+    assert_eq!(
+        calls[1]["prompt"]["protocol"],
+        "driftctl.semantic-incremental-proposal.v1"
+    );
+    assert_eq!(
+        calls[2]["prompt"]["protocol"],
+        "driftctl.semantic-incremental-proposal.v1"
+    );
+    assert!(calls[0]["prompt"].to_string().contains("FIRST_CHUNK_ONLY"));
+    assert!(!calls[0]["prompt"].to_string().contains("SECOND_CHUNK_ONLY"));
+    assert!(calls[1]["prompt"].to_string().contains("SECOND_CHUNK_ONLY"));
+    assert!(!calls[1]["prompt"].to_string().contains("FIRST_CHUNK_ONLY"));
+    assert!(calls[2]["prompt"].to_string().contains("THIRD_CHUNK_ONLY"));
+    assert!(!calls[2]["prompt"].to_string().contains("SECOND_CHUNK_ONLY"));
     fixture.assert_unchanged();
 }
 

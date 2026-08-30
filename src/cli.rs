@@ -154,7 +154,7 @@ fn inspect(root: &Path, arguments: &[String]) -> CliOutput {
                     Ok(delta) => delta,
                     Err(error) => return CliOutput::error(error.to_string()),
                 };
-                if let Err(error) = write_disclosure(options.compactor) {
+                if let Err(error) = write_disclosure(options.compactor, 1) {
                     return CliOutput::error(error);
                 }
                 let resolution = match semantic_resolver::resolve_incremental(
@@ -203,10 +203,14 @@ fn inspect(root: &Path, arguments: &[String]) -> CliOutput {
             Err(error) => return CliOutput::error(error.to_string()),
         }
     }
-    if let Err(error) = write_disclosure(options.compactor) {
+    let initial_chunks = match semantic_resolver::initial_chunk_count(&bundle) {
+        Ok(chunks) => chunks,
+        Err(error) => return CliOutput::error(error),
+    };
+    if let Err(error) = write_disclosure(options.compactor, initial_chunks) {
         return CliOutput::error(error);
     }
-    match semantic_resolver::resolve(root, &bundle, options.compactor, projection_config) {
+    match semantic_resolver::resolve_initial(root, &bundle, options.compactor, projection_config) {
         Ok(resolution) => {
             if let Err(error) = codex_source::verify_unchanged(root, &imported) {
                 return CliOutput::error(error.to_string());
@@ -226,11 +230,15 @@ fn inspect(root: &Path, arguments: &[String]) -> CliOutput {
     }
 }
 
-fn write_disclosure(compactor: CompactorConfig) -> Result<(), String> {
+fn write_disclosure(compactor: CompactorConfig, chunks: usize) -> Result<(), String> {
     // This write intentionally occurs before spawning the paid provider call.
     // JSON mode reserves stdout for its single machine document.
-    writeln!(std::io::stderr().lock(), "{}", compactor.disclosure())
-        .map_err(|_| "could not write compactor disclosure before provider call".to_owned())
+    writeln!(
+        std::io::stderr().lock(),
+        "{}",
+        compactor.disclosure_for_chunks(chunks)
+    )
+    .map_err(|_| "could not write compactor disclosure before provider call".to_owned())
 }
 
 fn resolver_failure_output(
