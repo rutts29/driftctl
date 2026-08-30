@@ -18,6 +18,7 @@ P0 contract/tests
   → P4 restart/resume/compaction recovery
   → P5 native-goal approval
   → P6 real E2E/package
+  → P7 explicit in-session plugin controls
 ```
 
 ## Slices
@@ -31,6 +32,7 @@ P0 contract/tests
 | P4 | `Stop`, `PreCompact`, `SessionStart`; recovery/idempotence | P3 | restart, missed records, worker kill, native compaction E2E |
 | P5 | Operator conflict and native-goal resolution | P4 | operator-executed same-session goal handoff; Driftctl read-only verification; wrong/stale approval cannot mutate |
 | P6 | Installed real-session acceptance and private package | P5 | full attached lifecycle passes; one Daybreak release-blocker review |
+| P7 | `$driftctl on|off|status`; exact-session opt-in UX | P6 | isolated plugin/process tests prove explicit activation, no automatic activation, exact detach, resume/compact continuity, and package contents |
 
 ## Checkpoints
 

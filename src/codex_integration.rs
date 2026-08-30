@@ -14,6 +14,9 @@ const PLUGIN_ID: &str = "driftctl-codex@driftctl-local";
 const MARKETPLACE: &str = include_str!("../.agents/plugins/marketplace.json");
 const PLUGIN_MANIFEST: &str = include_str!("../plugins/driftctl-codex/.codex-plugin/plugin.json");
 const HOOKS: &str = include_str!("../plugins/driftctl-codex/hooks/hooks.json");
+const CONTROL_SKILL: &str = include_str!("../plugins/driftctl-codex/skills/driftctl/SKILL.md");
+const CONTROL_SKILL_POLICY: &str =
+    include_str!("../plugins/driftctl-codex/skills/driftctl/agents/openai.yaml");
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum IntegrationAction {
@@ -333,6 +336,14 @@ fn materialize_bundle(root: &Path) -> Result<(), IntegrationError> {
     write_owned_file(
         &root.join("plugins/driftctl-codex/hooks/hooks.json"),
         HOOKS.as_bytes(),
+    )?;
+    write_owned_file(
+        &root.join("plugins/driftctl-codex/skills/driftctl/SKILL.md"),
+        CONTROL_SKILL.as_bytes(),
+    )?;
+    write_owned_file(
+        &root.join("plugins/driftctl-codex/skills/driftctl/agents/openai.yaml"),
+        CONTROL_SKILL_POLICY.as_bytes(),
     )
 }
 

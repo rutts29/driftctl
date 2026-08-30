@@ -73,6 +73,18 @@ fn projection_from_hook(output: &Output) -> Value {
         .expect("injected projection JSON")
 }
 
+fn additional_context(output: &Output) -> String {
+    let hook: Value = serde_json::from_slice(&output.stdout).expect("hook output JSON");
+    hook["hookSpecificOutput"]["additionalContext"]
+        .as_str()
+        .expect("hook additional context")
+        .to_owned()
+}
+
+fn fake_keeper_transcript(environment: &BTreeMap<&str, String>) -> Vec<u8> {
+    fs::read(&environment["DRIFTCTL_FAKE_PROMPTS"]).unwrap_or_default()
+}
+
 fn private_state_document(environment: &BTreeMap<&str, String>, name: &str) -> Value {
     let mut pending = vec![PathBuf::from(&environment["XDG_STATE_HOME"]).join("driftctl")];
     while let Some(directory) = pending.pop() {
@@ -255,12 +267,19 @@ fn k01_plugin_declares_the_required_codex_lifecycle_hooks() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let manifest_path = root.join("plugins/driftctl-codex/.codex-plugin/plugin.json");
     let hooks_path = root.join("plugins/driftctl-codex/hooks/hooks.json");
+    let skill_path = root.join("plugins/driftctl-codex/skills/driftctl/SKILL.md");
 
     let manifest: Value = serde_json::from_slice(
         &fs::read(&manifest_path).expect("packaged Driftctl plugin manifest"),
     )
     .expect("plugin manifest JSON");
     assert_eq!(manifest["name"], "driftctl-codex");
+    assert_eq!(manifest["skills"], "./skills/");
+    let skill = fs::read_to_string(skill_path).expect("packaged Driftctl control skill");
+    assert!(skill.contains("$driftctl on"));
+    assert!(skill.contains("$driftctl off"));
+    assert!(skill.contains("$driftctl status"));
+    assert!(skill.contains("Never activate Driftctl implicitly"));
 
     let hooks: Value =
         serde_json::from_slice(&fs::read(hooks_path).expect("packaged Driftctl hooks"))
@@ -274,6 +293,350 @@ fn k01_plugin_declares_the_required_codex_lifecycle_hooks() {
             .expect("hook command");
         assert_eq!(command, "driftctl hook codex");
     }
+}
+
+#[test]
+fn u01_explicit_on_activates_only_the_invoking_session_and_injects_intent() {
+    let root = temporary_directory("in-session-on");
+    let session_id = "thread-explicit-on";
+    let control_id = "thread-not-activated";
+    let environment = attached_environment(&root, session_id);
+
+    let activated = run_hook_with_environment(
+        &root,
+        &environment,
+        &json!({
+            "session_id": session_id,
+            "transcript_path": null,
+            "cwd": root,
+            "hook_event_name": "UserPromptSubmit",
+            "model": "gpt-5.6-luna",
+            "permission_mode": "default",
+            "turn_id": "turn-activate",
+            "prompt": "$driftctl on"
+        }),
+    );
+    assert_eq!(
+        activated.status.code(),
+        Some(0),
+        "activation failed\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&activated.stdout),
+        String::from_utf8_lossy(&activated.stderr)
+    );
+    let projection = projection_from_hook(&activated);
+    assert_eq!(
+        projection["goal"]["text"],
+        "Preserve the existing CLI behavior."
+    );
+    assert!(!String::from_utf8_lossy(&activated.stdout).contains(session_id));
+
+    let control = run_hook_with_environment(
+        &root,
+        &environment,
+        &json!({
+            "session_id": control_id,
+            "transcript_path": null,
+            "cwd": root,
+            "hook_event_name": "UserPromptSubmit",
+            "model": "gpt-5.6-luna",
+            "permission_mode": "default",
+            "turn_id": "turn-control",
+            "prompt": "Continue ordinary work."
+        }),
+    );
+    assert_eq!(control.status.code(), Some(0));
+    assert!(control.stdout.is_empty());
+    assert!(control.stderr.is_empty());
+
+    fs::remove_dir_all(root).expect("remove isolated test directory");
+}
+
+#[test]
+fn u02_u03_lifecycle_and_near_match_prompts_never_activate_a_session() {
+    let root = temporary_directory("no-implicit-activation");
+    let state_home = root.join("state");
+    let events = [
+        json!({
+            "session_id": "thread-inert",
+            "transcript_path": null,
+            "cwd": root,
+            "hook_event_name": "SessionStart",
+            "model": "gpt-5.6-luna",
+            "source": "startup"
+        }),
+        json!({
+            "session_id": "thread-inert",
+            "transcript_path": null,
+            "cwd": root,
+            "hook_event_name": "SessionStart",
+            "model": "gpt-5.6-luna",
+            "source": "compact"
+        }),
+        json!({
+            "session_id": "thread-inert",
+            "transcript_path": null,
+            "cwd": root,
+            "hook_event_name": "PreCompact",
+            "model": "gpt-5.6-luna",
+            "turn_id": "turn-compact",
+            "trigger": "auto"
+        }),
+    ];
+    for event in events {
+        let output = run_hook(&root, &state_home, &event);
+        assert_eq!(output.status.code(), Some(0));
+        assert!(output.stdout.is_empty());
+        assert!(output.stderr.is_empty());
+    }
+    for (index, prompt) in [
+        "$driftctl",
+        "$driftctl ON",
+        "$driftctl on now",
+        "please use $driftctl on",
+        "`$driftctl on`",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let output = run_hook(
+            &root,
+            &state_home,
+            &json!({
+                "session_id": "thread-inert",
+                "transcript_path": null,
+                "cwd": root,
+                "hook_event_name": "UserPromptSubmit",
+                "model": "gpt-5.6-luna",
+                "permission_mode": "default",
+                "turn_id": format!("turn-near-{index}"),
+                "prompt": prompt
+            }),
+        );
+        assert_eq!(output.status.code(), Some(0));
+        assert!(output.stdout.is_empty(), "near match activated: {prompt}");
+        assert!(output.stderr.is_empty());
+    }
+    assert!(!state_home.exists(), "inert hooks created private state");
+
+    fs::remove_dir_all(root).expect("remove isolated test directory");
+}
+
+#[test]
+fn u04_status_reports_exact_session_state_without_creating_or_reconciling() {
+    let root = temporary_directory("in-session-status");
+    let state_home = root.join("state");
+    let off = run_hook(
+        &root,
+        &state_home,
+        &json!({
+            "session_id": "thread-status-off",
+            "transcript_path": null,
+            "cwd": root,
+            "hook_event_name": "UserPromptSubmit",
+            "model": "gpt-5.6-luna",
+            "permission_mode": "default",
+            "turn_id": "turn-status-off",
+            "prompt": "$driftctl status"
+        }),
+    );
+    assert_eq!(off.status.code(), Some(0));
+    assert!(additional_context(&off).contains("off"));
+    assert!(!state_home.exists(), "status created an enrollment");
+
+    let session_id = "thread-status-on";
+    let environment = attached_environment(&root, session_id);
+    let activated = run_hook_with_environment(
+        &root,
+        &environment,
+        &json!({
+            "session_id": session_id,
+            "transcript_path": null,
+            "cwd": root,
+            "hook_event_name": "UserPromptSubmit",
+            "model": "gpt-5.6-luna",
+            "permission_mode": "default",
+            "turn_id": "turn-activate",
+            "prompt": "$driftctl on"
+        }),
+    );
+    assert_eq!(activated.status.code(), Some(0));
+    let keeper_before = fake_keeper_transcript(&environment);
+    let on = run_hook_with_environment(
+        &root,
+        &environment,
+        &json!({
+            "session_id": session_id,
+            "transcript_path": null,
+            "cwd": root,
+            "hook_event_name": "UserPromptSubmit",
+            "model": "gpt-5.6-luna",
+            "permission_mode": "default",
+            "turn_id": "turn-status-on",
+            "prompt": "$driftctl status"
+        }),
+    );
+    assert_eq!(on.status.code(), Some(0));
+    assert!(additional_context(&on).contains("on"));
+    assert_eq!(fake_keeper_transcript(&environment), keeper_before);
+
+    fs::remove_dir_all(root).expect("remove isolated test directory");
+}
+
+#[test]
+fn u05_off_detaches_only_the_invoking_session() {
+    let root = temporary_directory("in-session-off");
+    let session_a = "thread-off-target";
+    let session_b = "thread-off-control";
+    let environment_a = attached_environment(&root, session_a);
+    let mut environment_b = attached_environment(&root, session_b);
+    environment_b.insert("XDG_STATE_HOME", environment_a["XDG_STATE_HOME"].clone());
+    for (session, environment) in [(session_a, &environment_a), (session_b, &environment_b)] {
+        let attached = run_cli(
+            &root,
+            &["attach", "codex", "--session", session, "--json"],
+            environment,
+        );
+        assert_eq!(
+            attached.status.code(),
+            Some(0),
+            "attach failed: {}",
+            String::from_utf8_lossy(&attached.stderr)
+        );
+    }
+
+    let disabled = run_hook_with_environment(
+        &root,
+        &environment_a,
+        &json!({
+            "session_id": session_a,
+            "transcript_path": null,
+            "cwd": root,
+            "hook_event_name": "UserPromptSubmit",
+            "model": "gpt-5.6-luna",
+            "permission_mode": "default",
+            "turn_id": "turn-off",
+            "prompt": "$driftctl off"
+        }),
+    );
+    assert_eq!(disabled.status.code(), Some(0));
+    assert!(additional_context(&disabled).contains("off"));
+
+    let target_after = run_hook_with_environment(
+        &root,
+        &environment_a,
+        &json!({
+            "session_id": session_a,
+            "transcript_path": null,
+            "cwd": root,
+            "hook_event_name": "SessionStart",
+            "model": "gpt-5.6-luna",
+            "source": "resume"
+        }),
+    );
+    assert!(target_after.stdout.is_empty());
+    assert!(target_after.stderr.is_empty());
+
+    let control_after = run_hook_with_environment(
+        &root,
+        &environment_b,
+        &json!({
+            "session_id": session_b,
+            "transcript_path": null,
+            "cwd": root,
+            "hook_event_name": "SessionStart",
+            "model": "gpt-5.6-luna",
+            "source": "resume"
+        }),
+    );
+    assert_eq!(control_after.status.code(), Some(0));
+    assert_eq!(
+        projection_from_hook(&control_after)["goal"]["text"],
+        "Preserve the existing CLI behavior."
+    );
+
+    fs::remove_dir_all(root).expect("remove isolated test directory");
+}
+
+#[test]
+fn u06_control_prompts_are_not_semantic_intent_after_reactivation() {
+    let root = temporary_directory("control-source-accounting");
+    let session_id = "thread-control-source";
+    let mut environment = attached_environment(&root, session_id);
+    let on_event = json!({
+        "session_id": session_id,
+        "transcript_path": null,
+        "cwd": root,
+        "hook_event_name": "UserPromptSubmit",
+        "model": "gpt-5.6-luna",
+        "permission_mode": "default",
+        "turn_id": "turn-on",
+        "prompt": "$driftctl on"
+    });
+    assert_eq!(
+        run_hook_with_environment(&root, &environment, &on_event)
+            .status
+            .code(),
+        Some(0)
+    );
+    let off_event = json!({
+        "session_id": session_id,
+        "transcript_path": null,
+        "cwd": root,
+        "hook_event_name": "UserPromptSubmit",
+        "model": "gpt-5.6-luna",
+        "permission_mode": "default",
+        "turn_id": "turn-off",
+        "prompt": "$driftctl off"
+    });
+    assert_eq!(
+        run_hook_with_environment(&root, &environment, &off_event)
+            .status
+            .code(),
+        Some(0)
+    );
+    let keeper_before = fake_keeper_transcript(&environment);
+    environment.insert(
+        "DRIFTCTL_FAKE_READ",
+        json!({
+            "thread": {
+                "id": session_id,
+                "cwd": root.canonicalize().expect("canonical test root"),
+                "turns": [{"items": [
+                    {
+                        "type": "userMessage",
+                        "id": "user-1",
+                        "content": [{"type":"text","text":"Preserve the existing CLI behavior."}]
+                    },
+                    {
+                        "type": "userMessage",
+                        "id": "control-on",
+                        "content": [{"type":"text","text":"$driftctl on"}]
+                    },
+                    {
+                        "type": "userMessage",
+                        "id": "control-off",
+                        "content": [{"type":"text","text":"$driftctl off"}]
+                    }
+                ]}]
+            }
+        })
+        .to_string(),
+    );
+    let reactivated = run_hook_with_environment(&root, &environment, &on_event);
+    assert_eq!(
+        reactivated.status.code(),
+        Some(0),
+        "reactivation failed\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&reactivated.stdout),
+        String::from_utf8_lossy(&reactivated.stderr)
+    );
+    assert_eq!(
+        projection_from_hook(&reactivated)["goal"]["text"],
+        "Preserve the existing CLI behavior."
+    );
+    assert_eq!(fake_keeper_transcript(&environment), keeper_before);
+
+    fs::remove_dir_all(root).expect("remove isolated test directory");
 }
 
 #[test]
@@ -326,6 +689,14 @@ fn k01_integrate_install_and_remove_preserve_existing_codex_configuration() {
     let installed_json: Value =
         serde_json::from_slice(&installed.stdout).expect("integration install JSON");
     assert_eq!(installed_json["status"], "installed");
+    let installed_plugin = isolated.join("data/driftctl/codex-marketplace/plugins/driftctl-codex");
+    let installed_skill = fs::read_to_string(installed_plugin.join("skills/driftctl/SKILL.md"))
+        .expect("installed Driftctl skill");
+    assert!(installed_skill.contains("$driftctl on"));
+    let invocation_policy =
+        fs::read_to_string(installed_plugin.join("skills/driftctl/agents/openai.yaml"))
+            .expect("installed explicit invocation policy");
+    assert!(invocation_policy.contains("allow_implicit_invocation: false"));
     let config = fs::read_to_string(codex_home.join("config.toml")).expect("preserved config");
     assert!(config.contains("sentinel-model"));
     assert_eq!(

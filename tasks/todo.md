@@ -34,3 +34,13 @@
 
 - [ ] K19 checksum-installed CLI completes one real lifecycle: attach existing session, inject prompt, isolate a control session, restart/resume, compact, block conflict, resolve, detach; source worktree and pre-existing guidance/config values remain intact.
 - [x] K20 one targeted Daybreak pass completed; its sole release blocker was removed and covered by the final regression and full gate.
+
+## In-Session Plugin UX
+
+- [x] U01 exact `$driftctl on` activates and injects only the invoking session.
+- [x] U02 installation, startup, resume, compaction, and ordinary prompts never activate a session.
+- [x] U03 near-match or embedded control text never changes enrollment.
+- [x] U04 exact `$driftctl status` reports exact-session state without creating enrollment or invoking the keeper.
+- [x] U05 exact `$driftctl off` detaches only the invoking session; later hooks stay no-op.
+- [x] U06 control prompts remain source-accounted but never become semantic intent, including detach and reactivation.
+- [ ] U07 installed bundle contains the skill and hooks; packaged binary passes the isolated entrypoint flow without changing the active Codex profile.
