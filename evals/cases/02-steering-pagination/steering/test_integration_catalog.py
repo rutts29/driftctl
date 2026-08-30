@@ -33,11 +33,17 @@ class CatalogIntegrationTests(unittest.TestCase):
                     2,
                 ),
                 2: CatalogPage(
-                    (CatalogItem("B", "Lamp"), CatalogItem("C", "Chair")),
+                    (
+                        CatalogItem("B", "Lamp - later duplicate"),
+                        CatalogItem("C", "Chair"),
+                    ),
                     3,
                 ),
                 3: CatalogPage(
-                    (CatalogItem("C", "Chair"), CatalogItem("D", "Shelf")),
+                    (
+                        CatalogItem("C", "Chair - later duplicate"),
+                        CatalogItem("D", "Shelf"),
+                    ),
                     None,
                 ),
             }
