@@ -53,6 +53,25 @@ for raw in sys.stdin:
         result = {"thread": {"id": child if scenario != "wrong-child" else parent, "cwd": target_cwd if scenario != "wrong-cwd" else "/wrong", "ephemeral": scenario == "ephemeral"}}
     elif method == "thread/resume":
         result = {"thread": {"id": child, "cwd": target_cwd, "ephemeral": False}}
+    elif method == "thread/settings/update":
+        result = {}
+        if scenario != "policy-missing":
+            observed_model = "gpt-5.6-sol" if scenario == "policy-mismatch" else request["params"]["model"]
+            print(json.dumps({"method":"thread/settings/updated","params":{
+                "threadId":child,
+                "threadSettings":{
+                    "approvalPolicy":request["params"]["approvalPolicy"],
+                    "approvalsReviewer":"user",
+                    "collaborationMode":{"mode":"default","settings":{"model":observed_model}},
+                    "cwd":target_cwd,
+                    "effort":request["params"]["effort"],
+                    "model":observed_model,
+                    "modelProvider":"openai",
+                    "sandboxPolicy":request["params"]["sandboxPolicy"]
+                }
+            }}), flush=True)
+    elif method == "thread/read":
+        result = {"thread":{"id":child,"cwd":target_cwd,"ephemeral":False,"turns":[]}}
     elif method == "thread/goal/get":
         thread_id = request["params"]["threadId"]
         if thread_id == parent:
@@ -100,6 +119,10 @@ for raw in sys.stdin:
 "#,
     )
     .expect("write fake Codex App Server");
+    fs::File::open(&program)
+        .expect("open fake Codex App Server")
+        .sync_all()
+        .expect("sync fake Codex App Server");
     let mut permissions = fs::metadata(&program)
         .expect("read fake metadata")
         .permissions();
@@ -166,6 +189,8 @@ fn creates_a_persisted_isolated_child_and_migrates_only_its_goal_transactionally
             Some("initialized"),
             Some("thread/goal/get"),
             Some("thread/fork"),
+            Some("thread/settings/update"),
+            Some("thread/read"),
             Some("thread/goal/get"),
             Some("thread/goal/clear"),
             Some("thread/goal/set"),
@@ -177,10 +202,25 @@ fn creates_a_persisted_isolated_child_and_migrates_only_its_goal_transactionally
     assert_eq!(
         requests[3]["params"],
         json!({
-            "threadId":"parent-thread", "cwd": child_cwd.canonicalize().expect("canonical cwd"), "ephemeral":false
+            "threadId":"parent-thread",
+            "cwd": child_cwd.canonicalize().expect("canonical cwd"),
+            "ephemeral":false,
+            "model":"gpt-5.6-luna",
+            "sandbox":"workspace-write",
+            "approvalPolicy":"never"
         })
     );
-    for request in &requests[4..8] {
+    assert_eq!(
+        requests[4]["params"],
+        json!({
+            "threadId":"child-thread",
+            "model":"gpt-5.6-luna",
+            "effort":"max",
+            "approvalPolicy":"never",
+            "sandboxPolicy":{"type":"workspaceWrite"}
+        })
+    );
+    for request in &requests[6..10] {
         if request["method"]
             .as_str()
             .is_some_and(|method| method.starts_with("thread/goal/"))
@@ -188,7 +228,7 @@ fn creates_a_persisted_isolated_child_and_migrates_only_its_goal_transactionally
             assert_eq!(request["params"]["threadId"], "child-thread");
         }
     }
-    assert_eq!(requests[6]["params"]["objective"], objective);
+    assert_eq!(requests[8]["params"]["objective"], objective);
 
     fs::remove_dir_all(root).expect("remove test directory");
 }
@@ -231,6 +271,8 @@ fn rejects_unverifiable_or_partial_child_goal_migrations_without_mutating_the_pa
         "missing-readback",
         "mismatched-readback",
         "parent-changed-after",
+        "policy-mismatch",
+        "policy-missing",
     ] {
         let root = temporary_directory(&format!("child-goal-{scenario}"));
         let child_cwd = root.join("isolated-child");
@@ -259,7 +301,7 @@ fn rejects_unverifiable_or_partial_child_goal_migrations_without_mutating_the_pa
 }
 
 #[test]
-fn starts_a_child_turn_with_a_neutral_projection_without_model_or_configuration_overrides() {
+fn starts_a_child_turn_with_one_explicit_verified_worker_policy() {
     let root = temporary_directory("child-turn");
     let child_cwd = root.join("isolated-child");
     fs::create_dir(&child_cwd).expect("create child fixture");
@@ -281,13 +323,27 @@ fn starts_a_child_turn_with_a_neutral_projection_without_model_or_configuration_
 
     let requests = captured_requests(&root);
     assert_eq!(requests[2]["method"], "thread/resume");
-    assert_eq!(requests[2]["params"], json!({"threadId":"child-thread"}));
-    assert_eq!(requests[3]["method"], "turn/start");
     assert_eq!(
-        requests[3]["params"],
+        requests[2]["params"],
         json!({
             "threadId":"child-thread",
-            "input":[{"type":"text", "text":"Continue from the supplied neutral projection.\n\nRequirement R1 remains unresolved."}]
+            "model":"gpt-5.6-luna",
+            "sandbox":"workspace-write",
+            "approvalPolicy":"never"
+        })
+    );
+    assert_eq!(requests[3]["method"], "thread/settings/update");
+    assert_eq!(requests[4]["method"], "thread/read");
+    assert_eq!(requests[5]["method"], "turn/start");
+    assert_eq!(
+        requests[5]["params"],
+        json!({
+            "threadId":"child-thread",
+            "input":[{"type":"text", "text":"Continue from the supplied neutral projection.\n\nRequirement R1 remains unresolved."}],
+            "model":"gpt-5.6-luna",
+            "effort":"max",
+            "approvalPolicy":"never",
+            "sandboxPolicy":{"type":"workspaceWrite"}
         })
     );
     fs::remove_dir_all(root).expect("remove test directory");

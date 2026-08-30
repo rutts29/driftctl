@@ -690,7 +690,13 @@ fn compare_codex(root: &Path, arguments: &[String]) -> CliOutput {
         "fairness":{
             "starting_manifest_equal":pair.baseline().manifest() == pair.workflow().manifest(),
             "neutral_prompt_equal":true,
-            "worker_policy":"inherited_from_parent",
+            "worker_policy":{
+                "model":"gpt-5.6-luna",
+                "effort":"max",
+                "sandbox":"workspace-write",
+                "approval_policy":"never",
+                "verified_readback":true,
+            },
             "only_intended_input_difference":"workflow receives the bounded active-intent projection",
         },
         "baseline":{
@@ -933,6 +939,13 @@ fn continue_codex(root: &Path, arguments: &[String]) -> CliOutput {
         "source_unchanged":true,
         "adoption":if continuation_completed { "manual" } else { "none" },
         "containment":CONTAINMENT_NOTICE,
+        "worker_policy":{
+            "model":"gpt-5.6-luna",
+            "effort":"max",
+            "sandbox":"workspace-write",
+            "approval_policy":"never",
+            "verified_readback":true,
+        },
     });
     if options.json {
         match serde_json::to_string(&output) {

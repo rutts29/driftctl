@@ -73,7 +73,13 @@ if sys.argv[1:3] == ["app-server", "--stdio"]:
         elif method == "thread/list":
             result = {"data":[],"nextCursor":None,"backwardsCursor":None}
         elif method == "thread/read":
-            result = json.loads(os.environ["DRIFTCTL_FAKE_READ"])
+            thread_id = request["params"]["threadId"]
+            if thread_id.startswith("continued-child"):
+                with open(rpc_capture + ".children", encoding="utf-8") as child_file:
+                    children = json.load(child_file)
+                result = {"thread": children[thread_id] | {"turns": []}}
+            else:
+                result = json.loads(os.environ["DRIFTCTL_FAKE_READ"])
         elif method == "thread/goal/get":
             thread_id = request["params"]["threadId"]
             if thread_id.startswith("continued-child"):
@@ -96,6 +102,24 @@ if sys.argv[1:3] == ["app-server", "--stdio"]:
             with open(rpc_capture + ".children", encoding="utf-8") as child_file:
                 children = json.load(child_file)
             result = {"thread":children[request["params"]["threadId"]]}
+        elif method == "thread/settings/update":
+            with open(rpc_capture + ".children", encoding="utf-8") as child_file:
+                children = json.load(child_file)
+            thread_id = request["params"]["threadId"]
+            result = {}
+            print(json.dumps({"method":"thread/settings/updated","params":{
+                "threadId":thread_id,
+                "threadSettings":{
+                    "approvalPolicy":request["params"]["approvalPolicy"],
+                    "approvalsReviewer":"user",
+                    "collaborationMode":{"mode":"default","settings":{"model":request["params"]["model"]}},
+                    "cwd":children[thread_id]["cwd"],
+                    "effort":request["params"]["effort"],
+                    "model":request["params"]["model"],
+                    "modelProvider":"openai",
+                    "sandboxPolicy":request["params"]["sandboxPolicy"]
+                }
+            }}), flush=True)
         elif method == "thread/goal/clear":
             child_goal = None
             result = {"cleared":True}
@@ -496,7 +520,13 @@ fn compare_runs_equal_isolated_children_with_only_the_projection_added() {
     assert_eq!(document["fairness"]["neutral_prompt_equal"], true);
     assert_eq!(
         document["fairness"]["worker_policy"],
-        "inherited_from_parent"
+        json!({
+            "model":"gpt-5.6-luna",
+            "effort":"max",
+            "sandbox":"workspace-write",
+            "approval_policy":"never",
+            "verified_readback":true
+        })
     );
     assert_eq!(document["baseline"]["turn_status"], "completed");
     assert_eq!(document["workflow"]["turn_status"], "completed");
@@ -535,13 +565,30 @@ fn compare_runs_equal_isolated_children_with_only_the_projection_added() {
     for request in rpc.iter().filter(|request| {
         matches!(
             request["method"].as_str(),
-            Some("thread/fork" | "thread/resume" | "turn/start")
+            Some("thread/fork" | "thread/resume")
         )
     }) {
-        assert!(request["params"].get("model").is_none());
-        assert!(request["params"].get("effort").is_none());
-        assert!(request["params"].get("sandbox").is_none());
+        assert_eq!(request["params"]["model"], "gpt-5.6-luna");
+        assert_eq!(request["params"]["sandbox"], "workspace-write");
+        assert_eq!(request["params"]["approvalPolicy"], "never");
     }
+    for request in &turns {
+        assert_eq!(request["params"]["model"], "gpt-5.6-luna");
+        assert_eq!(request["params"]["effort"], "max");
+        assert_eq!(request["params"]["sandboxPolicy"]["type"], "workspaceWrite");
+        assert_eq!(request["params"]["approvalPolicy"], "never");
+    }
+    let settings = rpc
+        .iter()
+        .filter(|request| request["method"] == "thread/settings/update")
+        .collect::<Vec<_>>();
+    assert_eq!(settings.len(), 4);
+    assert!(settings.iter().all(|request| {
+        request["params"]["model"] == "gpt-5.6-luna"
+            && request["params"]["effort"] == "max"
+            && request["params"]["sandboxPolicy"]["type"] == "workspaceWrite"
+            && request["params"]["approvalPolicy"] == "never"
+    }));
     assert_eq!(fixture.calls().len(), 1);
     fixture.assert_unchanged();
 }
