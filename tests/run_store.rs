@@ -9,7 +9,10 @@ use driftctl::intent_history::{
     SourceRole,
 };
 use driftctl::projection::{ActiveProjection, project};
-use driftctl::run_store::{RunId, RunStore, RunStoreError, repository_id};
+use driftctl::run_store::{
+    RunId, RunStore, RunStoreError, SourceCursor, SourceCursorComparison, SourceRecordDigest,
+    repository_id,
+};
 
 fn temporary_directory(case: &str) -> PathBuf {
     let nonce = SystemTime::now()
@@ -54,6 +57,23 @@ fn item(id: &str, record: &str) -> IntentItem {
 
 fn projection(history: &History) -> ActiveProjection {
     project(history, 16 * 1024).expect("project history")
+}
+
+fn digest(hex: char) -> String {
+    format!("sha256:{}", hex.to_string().repeat(64))
+}
+
+fn source_cursor(records: &[(&str, char)]) -> SourceCursor {
+    SourceCursor::new(
+        SourceProvider::Bundle,
+        "private-session-locator",
+        digest('f'),
+        records
+            .iter()
+            .map(|(id, hex)| SourceRecordDigest::new(*id, digest(*hex)))
+            .collect(),
+    )
+    .expect("build source cursor")
 }
 
 fn create_store(case: &str) -> (PathBuf, PathBuf, RunStore, History) {
@@ -116,6 +136,141 @@ fn derives_a_stable_repository_digest_and_rejects_path_like_run_ids() {
     assert!(RunId::parse("../other").is_err());
     assert!(RunId::parse(".hidden").is_err());
     assert!(RunId::parse("run_01").is_ok());
+
+    fs::remove_dir_all(root).expect("remove isolated test directory");
+}
+
+#[test]
+fn creates_and_recovers_a_private_source_cursor_without_transcript_content() {
+    let root = temporary_directory("source-cursor");
+    let repository = root.join("repository");
+    fs::create_dir(&repository).expect("create repository");
+    let history = history();
+    let cursor = source_cursor(&[("record-1", 'a'), ("record-2", 'b')]);
+    let store = RunStore::create_with_source_cursor(
+        &root,
+        &repository,
+        "run_01",
+        &history,
+        &projection(&history),
+        &cursor,
+    )
+    .expect("create projection then source cursor");
+    let source_path = store.path().join("source.json");
+    let source = fs::read_to_string(&source_path).expect("read private source cursor");
+    let source_json: serde_json::Value =
+        serde_json::from_str(&source).expect("parse source cursor");
+    assert_eq!(source_json["schema_version"], 1);
+    assert_eq!(source_json["provider"], "bundle");
+    assert_eq!(source_json["head"], "record-2");
+    assert_eq!(
+        source_json["accepted_records"].as_array().map(Vec::len),
+        Some(2)
+    );
+    assert!(source.contains("private-session-locator"));
+    assert!(source.contains("record-1"));
+    assert!(source.contains(&digest('a')));
+    assert!(!source.contains("raw transcript content must not persist"));
+    assert!(!source.contains("\"content\""));
+    #[cfg(unix)]
+    assert_eq!(
+        std::os::unix::fs::PermissionsExt::mode(
+            &fs::metadata(&source_path)
+                .expect("source metadata")
+                .permissions()
+        ) & 0o077,
+        0,
+        "source state must not be group/world-readable"
+    );
+
+    let recovered = store.recover().expect("recover source cursor");
+    assert_eq!(recovered.source_cursor, Some(cursor));
+
+    fs::remove_dir_all(root).expect("remove isolated test directory");
+}
+
+#[test]
+fn source_cursor_compares_the_exact_accepted_prefix() {
+    let accepted = source_cursor(&[("record-1", 'a'), ("record-2", 'b')]);
+    assert_eq!(
+        accepted
+            .compare(&source_cursor(&[("record-1", 'a'), ("record-2", 'b')]))
+            .expect("compare exact cursor"),
+        SourceCursorComparison::Current
+    );
+    assert_eq!(
+        accepted
+            .compare(&source_cursor(&[
+                ("record-1", 'a'),
+                ("record-2", 'b'),
+                ("record-3", 'c'),
+            ]))
+            .expect("compare appended cursor"),
+        SourceCursorComparison::NewRecords(vec![SourceRecordDigest::new("record-3", digest('c'))])
+    );
+    assert!(matches!(
+        accepted
+            .compare(&source_cursor(&[("record-1", 'a')]))
+            .expect("compare stale cursor"),
+        SourceCursorComparison::Stale { .. }
+    ));
+    assert!(matches!(
+        accepted
+            .compare(&source_cursor(&[("record-1", 'a'), ("record-2", 'c')]))
+            .expect("compare rewritten cursor"),
+        SourceCursorComparison::Rewrite { .. }
+    ));
+    let different_session = SourceCursor::new(
+        SourceProvider::Bundle,
+        "other-private-session",
+        digest('f'),
+        vec![
+            SourceRecordDigest::new("record-1", digest('a')),
+            SourceRecordDigest::new("record-2", digest('b')),
+        ],
+    )
+    .expect("build different-session cursor");
+    assert_eq!(
+        accepted
+            .compare(&different_session)
+            .expect("compare different session"),
+        SourceCursorComparison::SessionMismatch
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn refuses_a_symlinked_private_source_cursor_and_only_updates_it_after_projection() {
+    use std::os::unix::fs::symlink;
+
+    let (root, _repository, store, mut history) = create_store("source-symlink");
+    let pending = pending_record(&history, "i-1");
+    history
+        .append(pending.event.clone())
+        .expect("extend history for projection commit");
+    store
+        .append_pending(pending)
+        .expect("append pending record");
+    let source_path = store.path().join("source.json");
+    let outside = root.join("outside-source.json");
+    fs::write(&outside, "outside").expect("write outside source fixture");
+    symlink(&outside, &source_path).expect("link source cursor outside state");
+
+    assert!(matches!(
+        store.commit_projection_with_source_cursor(
+            &projection(&history),
+            &source_cursor(&[("record-1", 'a')])
+        ),
+        Err(RunStoreError::SymlinkRefused { .. })
+    ));
+    fs::remove_file(&source_path).expect("remove refused source symlink");
+    assert_eq!(
+        store
+            .recover()
+            .expect("projection committed before source write")
+            .projection,
+        projection(&history)
+    );
 
     fs::remove_dir_all(root).expect("remove isolated test directory");
 }
