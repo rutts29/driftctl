@@ -1372,7 +1372,11 @@ fn invalid_reference_is_repaired_once_and_two_invalid_results_stop() {
 #[test]
 fn structural_failures_are_precise_without_exposing_retained_content() {
     let mut irrelevant = base_proposal();
-    irrelevant["operations"][0]["target_key"] = json!("not-valid-for-add");
+    irrelevant["operations"][0]["alternatives"] = json!([{
+        "key":"not-valid-for-add",
+        "text":"not valid for add",
+        "source_record_ids":["u2:0"]
+    }]);
     let fixture = Fixture::new(vec![irrelevant.clone(), irrelevant]);
 
     let output = fixture.run(&["--json"]);
