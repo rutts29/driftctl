@@ -6,6 +6,7 @@ mod codex_source;
 pub mod intent_history;
 mod ledger;
 pub mod projection;
+pub mod run_store;
 mod semantic_resolver;
 pub mod session_bundle;
 
