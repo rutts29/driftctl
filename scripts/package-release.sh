@@ -34,6 +34,10 @@ fi
 case "$target" in
   *[!A-Za-z0-9_.-]*|'') echo "invalid release target" >&2; exit 2 ;;
 esac
+[ "$target" = "x86_64-unknown-linux-gnu" ] || {
+  echo "unsupported release target: $target" >&2
+  exit 1
+}
 
 version=$(awk '
   /^\[package\]$/ { package = 1; next }

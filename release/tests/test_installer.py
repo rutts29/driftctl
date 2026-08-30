@@ -98,6 +98,56 @@ class InstallerTests(unittest.TestCase):
         self.assertIn("checksum", completed.stderr.lower())
         self.assertFalse((binary_directory / "driftctl").exists())
 
+    def test_rejects_an_unshipped_target_before_network_access(self) -> None:
+        binary_directory = self.root / "unsupported" / "bin"
+        completed = subprocess.run(
+            [
+                "sh",
+                str(INSTALLER),
+                "--version",
+                self.version,
+                "--target",
+                "aarch64-apple-darwin",
+                "--bin-dir",
+                str(binary_directory),
+            ],
+            cwd=ROOT,
+            env=os.environ
+            | {
+                "DRIFTCTL_BASE_URL": "file:///path-that-must-not-be-read",
+                "TMPDIR": str(self.root),
+            },
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        self.assertEqual(completed.returncode, 1)
+        self.assertIn("unsupported release target", completed.stderr)
+        self.assertNotIn("curl", completed.stderr.lower())
+        self.assertFalse((binary_directory / "driftctl").exists())
+
+    def test_packager_rejects_an_unshipped_target_before_build(self) -> None:
+        completed = subprocess.run(
+            [
+                "sh",
+                str(PACKAGE),
+                "--out",
+                str(self.root / "unsupported-package"),
+                "--target",
+                "aarch64-apple-darwin",
+            ],
+            cwd=ROOT,
+            env=os.environ | {"TMPDIR": str(self.root)},
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        self.assertEqual(completed.returncode, 1)
+        self.assertIn("unsupported release target", completed.stderr)
+        self.assertNotIn("Compiling", completed.stderr)
+
     def install(
         self, binary_directory: Path, base_url: str | None = None
     ) -> subprocess.CompletedProcess[str]:
