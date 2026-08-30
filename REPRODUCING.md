@@ -8,6 +8,16 @@ Recorded versions are Git 2.53.0, Rust/Cargo 1.97.1, Python 3.14.4 (Python 3.11+
 
 The current local product flow is Codex-native: `inspect`, `bundle`, `compare`, then `continue`. State for that flow is private XDG state at `${XDG_STATE_HOME:-$HOME/.local/state}/driftctl`, not a repository ledger. `bundle` emits a versioned sanitized projection/blocker handoff; no non-Codex native adapter is claimed. Source session, source workspace, parent native goal, and existing harness instructions/configuration remain unchanged. Candidate workspaces are isolated, but inherited host-wide/YOLO permission is outside the containment guarantee.
 
+Unsupported harnesses can provide the schema-v1 neutral session document specified in [`SPEC.md`](SPEC.md):
+
+```bash
+driftctl inspect bundle --file /path/to/session.json --json
+# equivalent streaming boundary:
+harness-export-command | driftctl inspect bundle --stdin --json
+```
+
+The source `repository_digest` is SHA-256 of the canonical repository path, every record carries its constructor-defined digest, and `provider: "bundle"` distinguishes this intake. Invalid schema, digest, repository identity, role, or content is rejected before model use. The same immutable bundle is cached; an updated snapshot must use a new `session_ref` in this release.
+
 If `inspect --json` reports a semantic conflict, unattended `continue` exits `2` before creating a child. Resolve it with the exact IDs returned by inspection:
 
 ```bash
