@@ -770,9 +770,9 @@ def invoke_inspect(
     if (
         not isinstance(resolver, Mapping)
         or not isinstance(usage, Mapping)
-        or document.get("status") != "ready"
+        or document.get("status") != "usable"
     ):
-        raise RunnerError("native inspect did not return ready resolver evidence")
+        raise RunnerError("native inspect did not return usable resolver evidence")
     fields = {
         "calls": resolver.get("calls"),
         "elapsed_ms": resolver.get("elapsed_ms"),

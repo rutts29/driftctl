@@ -515,7 +515,7 @@ with open(os.environ["FAKE_DRIFTCTL_REQUESTS"], "a", encoding="utf-8") as output
     output.write(json.dumps({"arguments": arguments, "tmpdir": os.environ.get("TMPDIR")}) + "\\n")
 if arguments[0] == "inspect":
     print(json.dumps({
-        "status": "ready",
+        "status": "usable",
         "resolver": {
             "calls": 1,
             "elapsed_ms": 7,
