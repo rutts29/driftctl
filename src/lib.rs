@@ -3,6 +3,7 @@
 mod agent;
 pub mod cli;
 mod codex_source;
+mod inspect_state;
 pub mod intent_history;
 mod ledger;
 pub mod projection;

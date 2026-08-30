@@ -91,6 +91,8 @@ for raw in sys.stdin:
             sys.stdout.flush()
             break
         response = {"id": request["id"], "result": json.loads(os.environ["DRIFTCTL_FAKE_READ"])}
+    elif method == "thread/goal/get":
+        response = {"id": request["id"], "result": json.loads(os.environ.get("DRIFTCTL_FAKE_GOAL", '{"goal":null}'))}
     else:
         response = {"id": request["id"], "error": {"code": -32601, "message": "unexpected method"}}
     sys.stdout.write(json.dumps(response) + "\n")
@@ -152,6 +154,10 @@ fn fake_environment(
     environment.insert(
         "DRIFTCTL_ARTIFACT_DIR",
         fake_root.join("private-artifacts").display().to_string(),
+    );
+    environment.insert(
+        "XDG_STATE_HOME",
+        fake_root.join("state").display().to_string(),
     );
     environment.insert("DRIFTCTL_FAKE_CAPTURE", capture.display().to_string());
     environment.insert(
@@ -267,6 +273,8 @@ fn inspect_last_uses_the_canonical_cwd_imports_only_user_text_and_leaves_source_
         requests[3]["params"],
         json!({"threadId": selected_id, "includeTurns": true})
     );
+    assert_eq!(requests[4]["method"], "thread/goal/get");
+    assert_eq!(requests[4]["params"], json!({"threadId": selected_id}));
     assert_repository_unchanged(&root);
 }
 
@@ -295,9 +303,15 @@ fn inspect_explicit_session_reads_only_that_session_and_keeps_text_out_of_human_
     assert!(!text.contains(selected_id));
     assert!(!text.contains("private user intent"));
     let requests = captured_requests(&capture);
-    assert_eq!(requests.len(), 3);
+    assert_eq!(requests.len(), 8);
     assert_eq!(requests[2]["method"], "thread/read");
     assert_eq!(requests[2]["params"]["threadId"], selected_id);
+    assert_eq!(requests[3]["method"], "thread/goal/get");
+    assert_eq!(requests[4]["method"], "initialize");
+    assert_eq!(requests[5]["method"], "initialized");
+    assert_eq!(requests[6]["method"], "thread/read");
+    assert_eq!(requests[6]["params"]["threadId"], selected_id);
+    assert_eq!(requests[7]["method"], "thread/goal/get");
     assert_repository_unchanged(&root);
 }
 
@@ -454,5 +468,6 @@ fn inspect_last_reads_every_page_before_selecting_the_latest_exact_cwd_match() {
     assert_eq!(requests[3]["method"], "thread/list");
     assert_eq!(requests[3]["params"]["cursor"], "cursor-page-two");
     assert_eq!(requests[4]["method"], "thread/read");
+    assert_eq!(requests[5]["method"], "thread/goal/get");
     assert_repository_unchanged(&root);
 }

@@ -69,6 +69,8 @@ if sys.argv[1:3] == ["app-server", "--stdio"]:
             result = {"data":[],"nextCursor":None,"backwardsCursor":None}
         elif method == "thread/read":
             result = json.loads(os.environ["DRIFTCTL_FAKE_READ"])
+        elif method == "thread/goal/get":
+            result = json.loads(os.environ.get("DRIFTCTL_FAKE_GOAL", '{"goal":null}'))
         else:
             print(json.dumps({"id":request["id"],"error":{"code":-32601,"message":"unexpected"}}), flush=True)
             continue
@@ -143,6 +145,7 @@ struct Fixture {
     environment: BTreeMap<&'static str, String>,
     capture: PathBuf,
     artifacts: PathBuf,
+    state_home: PathBuf,
     session_id: String,
 }
 
@@ -155,6 +158,7 @@ impl Fixture {
         let program = fake_codex(&fake_root);
         let capture = fake_root.join("exec.jsonl");
         let artifacts = fake_root.join("private-artifacts");
+        let state_home = fake_root.join("state");
         let session_id = "private-source-session".to_owned();
         let source = session(
             &session_id,
@@ -169,6 +173,7 @@ impl Fixture {
         environment.insert("DRIFTCTL_CODEX_BIN", program.display().to_string());
         environment.insert("DRIFTCTL_FAKE_EXEC_CAPTURE", capture.display().to_string());
         environment.insert("DRIFTCTL_ARTIFACT_DIR", artifacts.display().to_string());
+        environment.insert("XDG_STATE_HOME", state_home.display().to_string());
         environment.insert("DRIFTCTL_FAKE_READ", source.to_string());
         environment.insert(
             "DRIFTCTL_FAKE_PROPOSALS",
@@ -179,6 +184,7 @@ impl Fixture {
             environment,
             capture,
             artifacts,
+            state_home,
             session_id,
         }
     }
@@ -197,6 +203,17 @@ impl Fixture {
             command.env(name, value);
         }
         command.output().expect("run driftctl")
+    }
+
+    fn run_bundle(&self, run_id: &str) -> Output {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_driftctl"));
+        command
+            .current_dir(&self.root)
+            .args(["bundle", "--run", run_id, "--json"]);
+        for (name, value) in &self.environment {
+            command.env(name, value);
+        }
+        command.output().expect("run driftctl bundle")
     }
 
     fn calls(&self) -> Vec<Value> {
@@ -225,6 +242,172 @@ impl Fixture {
         paths.sort();
         paths
     }
+}
+
+#[test]
+fn inspect_persists_and_reuses_a_private_run_that_bundle_can_export() {
+    let fixture = Fixture::new(vec![base_proposal()]);
+
+    let first = fixture.run(&["--json"]);
+    assert_eq!(first.status.code(), Some(0), "{first:?}");
+    let first_document: Value = serde_json::from_slice(&first.stdout).expect("first inspect JSON");
+    let run_id = first_document["run_id"]
+        .as_str()
+        .expect("inspect returns an opaque run ID");
+    assert!(
+        !run_id.is_empty()
+            && run_id.chars().all(
+                |character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_')
+            )
+    );
+
+    let second = fixture.run(&["--json"]);
+    assert_eq!(second.status.code(), Some(0), "{second:?}");
+    let second_document: Value =
+        serde_json::from_slice(&second.stdout).expect("second inspect JSON");
+    assert_eq!(second_document["run_id"], run_id);
+    assert_eq!(second_document["projection"], first_document["projection"]);
+    assert_eq!(
+        fixture.calls().len(),
+        1,
+        "an unchanged source must not consume another compactor call"
+    );
+
+    let bundle = fixture.run_bundle(run_id);
+    assert_eq!(bundle.status.code(), Some(0), "{bundle:?}");
+    let bundle_document: Value = serde_json::from_slice(&bundle.stdout).expect("bundle JSON");
+    assert_eq!(bundle_document["schema_version"], 1);
+    assert_eq!(bundle_document["run_id"], run_id);
+    assert_eq!(bundle_document["projection"], first_document["projection"]);
+    let public = bundle_document.to_string();
+    assert!(!public.contains(&fixture.session_id));
+    assert!(!public.contains(&fixture.root.display().to_string()));
+    assert!(!public.contains("private raw goal"));
+
+    let driftctl_state = fixture.state_home.join("driftctl");
+    assert!(driftctl_state.is_dir(), "inspect creates XDG-local state");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(
+            fs::metadata(&driftctl_state)
+                .expect("state metadata")
+                .permissions()
+                .mode()
+                & 0o077,
+            0,
+            "Driftctl state must not be group/world accessible"
+        );
+    }
+    fixture.assert_unchanged();
+}
+
+#[test]
+fn inspect_compacts_only_the_new_source_delta_and_reuses_the_updated_projection() {
+    let mut fixture = Fixture::new(vec![base_proposal()]);
+    let first = fixture.run(&["--json"]);
+    assert_eq!(first.status.code(), Some(0), "{first:?}");
+    let first_document: Value = serde_json::from_slice(&first.stdout).expect("first inspect JSON");
+    let active_ids = first_document["projection"]["preserve"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .chain(
+            first_document["projection"]["frontier"]
+                .as_array()
+                .into_iter()
+                .flatten(),
+        )
+        .chain(
+            first_document["projection"]["validation"]
+                .as_array()
+                .into_iter()
+                .flatten(),
+        )
+        .map(|item| item["id"].clone())
+        .collect::<Vec<_>>();
+    let revision = first_document["projection"]["revision"]
+        .as_u64()
+        .expect("projection revision");
+    let incremental = json!({
+        "schema_version": 1,
+        "base_projection_revision": revision,
+        "base_event_sequence": revision,
+        "classification": "additive",
+        "accounted_active_intent_ids": active_ids,
+        "accounted_source_record_ids": ["u4:0"],
+        "operations": [{
+            "operation": "add",
+            "key": "preserve-install-boundary",
+            "kind": "invariant",
+            "text": "Preserve the installation boundary",
+            "target_intent_id": "",
+            "intent_ids": [],
+            "evidence_id": "",
+            "reason": "",
+            "source_record_ids": ["u4:0"],
+            "alternatives": []
+        }]
+    });
+    let canonical = fixture.root.canonicalize().expect("canonical source");
+    fixture.environment.insert(
+        "DRIFTCTL_FAKE_READ",
+        session(
+            &fixture.session_id,
+            &canonical,
+            &[
+                ("u1", "private raw goal that public output must not echo"),
+                ("u2", "private additive steering"),
+                ("u3", "private explicit supersession"),
+                ("u4", "RAW_ONLY_NEW_DELTA preserve the install boundary"),
+            ],
+        )
+        .to_string(),
+    );
+    fixture.environment.insert(
+        "DRIFTCTL_FAKE_PROPOSALS",
+        json!([base_proposal(), incremental]).to_string(),
+    );
+
+    let second = fixture.run(&["--json"]);
+    assert_eq!(second.status.code(), Some(0), "{second:?}");
+    let second_document: Value =
+        serde_json::from_slice(&second.stdout).expect("second inspect JSON");
+    assert!(
+        second_document["projection"]["frontier"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["text"] == "Preserve the installation boundary")
+    );
+    assert!(second_document["projection"]["revision"].as_u64().unwrap() > revision);
+
+    let calls = fixture.calls();
+    assert_eq!(calls.len(), 2);
+    let incremental_prompt = &calls[1]["prompt"];
+    assert_eq!(
+        incremental_prompt["protocol"],
+        "driftctl.semantic-incremental-proposal.v1"
+    );
+    assert_eq!(
+        incremental_prompt["delta_records"].as_array().map(Vec::len),
+        Some(1)
+    );
+    assert_eq!(incremental_prompt["delta_records"][0]["id"], "u4:0");
+    assert!(
+        incremental_prompt
+            .to_string()
+            .contains("RAW_ONLY_NEW_DELTA")
+    );
+    assert!(!incremental_prompt.to_string().contains("private raw goal"));
+    assert!(incremental_prompt.get("history").is_none());
+
+    let third = fixture.run(&["--json"]);
+    assert_eq!(third.status.code(), Some(0), "{third:?}");
+    let third_document: Value = serde_json::from_slice(&third.stdout).expect("third inspect JSON");
+    assert_eq!(third_document["projection"], second_document["projection"]);
+    assert_eq!(fixture.calls().len(), 2);
+    fixture.assert_unchanged();
 }
 
 #[test]

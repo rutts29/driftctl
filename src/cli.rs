@@ -6,10 +6,14 @@ use serde_json::json;
 
 use crate::agent::{display_path, run_codex};
 use crate::codex_source::{self, SessionSelection};
+use crate::inspect_state::InspectSource;
 use crate::projection::ProjectionConfig;
+use crate::run_store::{RunStore, SourceCursorComparison};
 use crate::semantic_resolver::{
-    self, CompactorConfig, ResolverFailureKind, sanitized_human, sanitized_json,
+    self, CompactorConfig, InspectResolution, NativeGoalObservation, ResolverFailureKind,
+    ResolverMetadata, ResolverUsage, sanitized_human, sanitized_json,
 };
+use crate::session_bundle::NativeGoal;
 use crate::{ClosureError, Ledger, Snapshot};
 
 const USAGE: &str = "driftctl — durable continuity for coding-agent tasks\n\n\
@@ -20,6 +24,7 @@ Usage:\n\
   driftctl status [--json]\n\
   driftctl resume [--json]\n\
   driftctl inspect codex (--last | --session <id>) [--json] [--compactor luna|terra|sol] [--reasoning high|medium]\n\
+  driftctl bundle --run <run-id> --json\n\
   driftctl run codex\n\
   driftctl close";
 
@@ -76,6 +81,7 @@ pub fn execute(root: &Path, arguments: impl IntoIterator<Item = String>) -> CliO
         "satisfy" => satisfy(root, &arguments),
         "status" | "resume" => status(root, &arguments),
         "inspect" => return inspect(root, &arguments),
+        "bundle" => return bundle(root, &arguments),
         "run" => run(root, &arguments),
         "close" => return close(root, &arguments),
         _ => Err(format!("unknown command: {command}\n\n{USAGE}")),
@@ -100,67 +106,273 @@ fn inspect(root: &Path, arguments: &[String]) -> CliOutput {
         Ok(bundle) => bundle,
         Err(error) => return CliOutput::error(error.to_string()),
     };
+    let source = match InspectSource::from_bundle(&bundle) {
+        Ok(source) => source,
+        Err(error) => return CliOutput::error(error.to_string()),
+    };
     let projection_config = match inspect_projection_config() {
         Ok(config) => config,
         Err(error) => return CliOutput::error(error),
     };
-    let disclosure = options.compactor.disclosure();
-    // This write intentionally occurs before spawning the paid provider call.
-    // JSON mode reserves stdout for its single machine document.
-    if writeln!(std::io::stderr().lock(), "{disclosure}").is_err() {
-        return CliOutput::error("could not write compactor disclosure before provider call");
+    let existing = match source.open(root) {
+        Ok(existing) => existing,
+        Err(error) => return CliOutput::error(error.to_string()),
+    };
+    if let Some(mut existing) = existing {
+        let comparison = match existing.recovered.source_cursor.as_ref() {
+            Some(accepted) => accepted.compare(source.cursor()),
+            None => {
+                if !source.can_bind_unbound_initial_history(&existing.recovered.history) {
+                    return CliOutput::error(
+                        "stored inspect run is missing a source cursor and cannot be repaired safely",
+                    );
+                }
+                if let Err(error) = existing.store.commit_projection_with_source_cursor(
+                    &existing.recovered.projection,
+                    source.cursor(),
+                ) {
+                    return CliOutput::error(error.to_string());
+                }
+                existing.recovered.source_cursor = Some(source.cursor().clone());
+                Ok(SourceCursorComparison::Current)
+            }
+        };
+        match comparison {
+            Ok(SourceCursorComparison::Current) => {
+                let resolution = cached_resolution(existing.recovered, Some(bundle.native_goal()));
+                return inspect_output(
+                    &resolution,
+                    source.run_id().as_str(),
+                    source.cursor().accepted_record_count(),
+                    source.cursor().digest(),
+                    options.json,
+                );
+            }
+            Ok(SourceCursorComparison::NewRecords(records)) => {
+                let accepted_count = source.cursor().accepted_record_count() - records.len();
+                let delta = match source.delta_bundle(&bundle, accepted_count) {
+                    Ok(delta) => delta,
+                    Err(error) => return CliOutput::error(error.to_string()),
+                };
+                if let Err(error) = write_disclosure(options.compactor) {
+                    return CliOutput::error(error);
+                }
+                let resolution = match semantic_resolver::resolve_incremental(
+                    root,
+                    &existing.recovered.history,
+                    &existing.recovered.projection,
+                    &delta,
+                    options.compactor,
+                    projection_config,
+                ) {
+                    Ok(resolution) => resolution,
+                    Err(failure) => return resolver_failure_output(failure, options.json),
+                };
+                if let Err(error) = codex_source::verify_unchanged(root, &imported) {
+                    return CliOutput::error(error.to_string());
+                }
+                let accepted_events = existing.recovered.history.records().len();
+                for record in &resolution.history.records()[accepted_events..] {
+                    if let Err(error) = existing.store.append_pending(record.clone()) {
+                        return CliOutput::error(error.to_string());
+                    }
+                }
+                if let Err(error) = existing
+                    .store
+                    .commit_projection_with_source_cursor(&resolution.projection, source.cursor())
+                {
+                    return CliOutput::error(error.to_string());
+                }
+                return inspect_output(
+                    &resolution,
+                    source.run_id().as_str(),
+                    source.cursor().accepted_record_count(),
+                    source.cursor().digest(),
+                    options.json,
+                );
+            }
+            Ok(SourceCursorComparison::Stale { .. }) => {
+                return CliOutput::error("source session is older than the accepted inspect run");
+            }
+            Ok(SourceCursorComparison::Rewrite { .. }) => {
+                return CliOutput::error("accepted source history was rewritten");
+            }
+            Ok(SourceCursorComparison::SessionMismatch) => {
+                return CliOutput::error("stored inspect run belongs to a different source");
+            }
+            Err(error) => return CliOutput::error(error.to_string()),
+        }
+    }
+    if let Err(error) = write_disclosure(options.compactor) {
+        return CliOutput::error(error);
     }
     match semantic_resolver::resolve(root, &bundle, options.compactor, projection_config) {
         Ok(resolution) => {
-            let output = if options.json {
-                sanitized_json(
-                    &resolution,
-                    imported.imported_user_record_count(),
-                    &imported.source_digest(),
-                )
-                .unwrap_or_else(|_| {
-                    "{\"schema_version\":1,\"status\":\"error\",\"error\":\"serialization_failed\"}"
-                        .to_owned()
-                })
-            } else {
-                sanitized_human(
-                    &resolution,
-                    imported.imported_user_record_count(),
-                    &imported.source_digest(),
-                )
-            };
-            CliOutput {
-                exit_code: if resolution.projection.continuation_blocked() {
-                    2
-                } else {
-                    0
-                },
-                stdout: output,
-                stderr: String::new(),
+            if let Err(error) = codex_source::verify_unchanged(root, &imported) {
+                return CliOutput::error(error.to_string());
             }
-        }
-        Err(failure) => {
-            let error = match failure.kind {
-                ResolverFailureKind::Execution => "compactor_execution_failed",
-                ResolverFailureKind::InvalidProposal => "invalid_compactor_proposal",
-            };
-            let output = if options.json {
-                serde_json::to_string(&json!({
-                    "schema_version":1,
-                    "status":"error",
-                    "error":error,
-                    "resolver":failure.metadata,
-                }))
-                .unwrap_or_else(|_| "{\"schema_version\":1,\"status\":\"error\"}".to_owned())
-            } else {
-                String::new()
-            };
-            CliOutput {
-                exit_code: 1,
-                stdout: output,
-                stderr: error.to_owned(),
+            if let Err(error) = source.create(root, &resolution.history, &resolution.projection) {
+                return CliOutput::error(error.to_string());
             }
+            inspect_output(
+                &resolution,
+                source.run_id().as_str(),
+                imported.imported_user_record_count(),
+                &imported.source_digest(),
+                options.json,
+            )
         }
+        Err(failure) => resolver_failure_output(failure, options.json),
+    }
+}
+
+fn write_disclosure(compactor: CompactorConfig) -> Result<(), String> {
+    // This write intentionally occurs before spawning the paid provider call.
+    // JSON mode reserves stdout for its single machine document.
+    writeln!(std::io::stderr().lock(), "{}", compactor.disclosure())
+        .map_err(|_| "could not write compactor disclosure before provider call".to_owned())
+}
+
+fn resolver_failure_output(
+    failure: semantic_resolver::ResolverFailure,
+    json_output: bool,
+) -> CliOutput {
+    let error = match failure.kind {
+        ResolverFailureKind::Execution => "compactor_execution_failed",
+        ResolverFailureKind::InvalidProposal => "invalid_compactor_proposal",
+    };
+    let output = if json_output {
+        serde_json::to_string(&json!({
+            "schema_version":1,
+            "status":"error",
+            "error":error,
+            "resolver":failure.metadata,
+        }))
+        .unwrap_or_else(|_| "{\"schema_version\":1,\"status\":\"error\"}".to_owned())
+    } else {
+        String::new()
+    };
+    CliOutput {
+        exit_code: 1,
+        stdout: output,
+        stderr: error.to_owned(),
+    }
+}
+
+fn cached_resolution(
+    recovered: crate::run_store::RecoveredRun,
+    native_goal: Option<&NativeGoal>,
+) -> InspectResolution {
+    let generated = &recovered.projection.generated_by;
+    let metadata = ResolverMetadata {
+        model: generated
+            .model
+            .clone()
+            .unwrap_or_else(|| "stored-projection".to_owned()),
+        reasoning: generated
+            .reasoning
+            .clone()
+            .unwrap_or_else(|| "unknown".to_owned()),
+        calls: 0,
+        elapsed_ms: 0,
+        usage: ResolverUsage::default(),
+        prompt_schema_version: generated.prompt_schema_version,
+        proposal_schema_version: 1,
+        last_validation_failure: None,
+        artifact_ids: Vec::new(),
+    };
+    let text_private = native_goal.and_then(NativeGoal::text).map(str::to_owned);
+    let native_goal = NativeGoalObservation {
+        state: native_goal.map_or_else(|| "unknown".to_owned(), |goal| goal.state().to_owned()),
+        conflicts_with_projection: text_private
+            .as_deref()
+            .is_some_and(|text| text != recovered.projection.goal.text),
+        text_private,
+    };
+    InspectResolution {
+        history: recovered.history,
+        projection: recovered.projection,
+        metadata,
+        native_goal,
+    }
+}
+
+fn inspect_output(
+    resolution: &InspectResolution,
+    run_id: &str,
+    imported_user_records: usize,
+    source_digest: &str,
+    json_output: bool,
+) -> CliOutput {
+    let output = if json_output {
+        sanitized_json(resolution, imported_user_records, source_digest)
+            .and_then(|document| insert_run_id(&document, run_id))
+            .unwrap_or_else(|_| {
+                "{\"schema_version\":1,\"status\":\"error\",\"error\":\"serialization_failed\"}"
+                    .to_owned()
+            })
+    } else {
+        format!(
+            "run id: {run_id}\n{}",
+            sanitized_human(resolution, imported_user_records, source_digest)
+        )
+    };
+    CliOutput {
+        exit_code: if resolution.projection.continuation_blocked() {
+            2
+        } else {
+            0
+        },
+        stdout: output,
+        stderr: String::new(),
+    }
+}
+
+fn insert_run_id(document: &str, run_id: &str) -> Result<String, serde_json::Error> {
+    let mut value: serde_json::Value = serde_json::from_str(document)?;
+    let Some(object) = value.as_object_mut() else {
+        return serde_json::to_string(&value);
+    };
+    object.insert("run_id".to_owned(), json!(run_id));
+    serde_json::to_string(&value)
+}
+
+fn bundle(root: &Path, arguments: &[String]) -> CliOutput {
+    let [run_flag, run_id, json_flag] = arguments else {
+        return CliOutput::error("bundle requires exactly: --run <run-id> --json");
+    };
+    if run_flag != "--run" || json_flag != "--json" {
+        return CliOutput::error("bundle requires exactly: --run <run-id> --json");
+    }
+    let store = match RunStore::open_default(root, run_id) {
+        Ok(store) => store,
+        Err(error) => return CliOutput::error(error.to_string()),
+    };
+    let recovered = match store.recover() {
+        Ok(recovered) => recovered,
+        Err(error) => return CliOutput::error(error.to_string()),
+    };
+    let Some(cursor) = recovered.source_cursor.as_ref() else {
+        return CliOutput::error("stored inspect run has no accepted source cursor");
+    };
+    let resolution = cached_resolution(recovered.clone(), None);
+    let document =
+        match sanitized_json(&resolution, cursor.accepted_record_count(), cursor.digest())
+            .and_then(|document| serde_json::from_str::<serde_json::Value>(&document))
+        {
+            Ok(document) => document,
+            Err(_) => return CliOutput::error("could not serialize sanitized run bundle"),
+        };
+    let output = json!({
+        "schema_version": 1,
+        "run_id": run_id,
+        "status": document["status"],
+        "projection": document["projection"],
+        "blockers": document["blockers"],
+    });
+    match serde_json::to_string(&output) {
+        Ok(output) => CliOutput::success(output),
+        Err(_) => CliOutput::error("could not serialize sanitized run bundle"),
     }
 }
 
