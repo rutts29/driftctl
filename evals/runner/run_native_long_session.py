@@ -71,7 +71,7 @@ class AppServer:
             "initialize",
             {
                 "clientInfo": {"name": "driftctl-native-eval", "version": "1"},
-                "capabilities": {"experimentalApi": False, "requestAttestation": False},
+                "capabilities": {"experimentalApi": True, "requestAttestation": False},
             },
         )
         self.notify("initialized", {})
