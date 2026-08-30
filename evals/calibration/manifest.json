@@ -1,0 +1,797 @@
+{
+  "cases": [
+    {
+      "allowed_paths": [
+        "service_client.py",
+        "tests/test_unit_client.py"
+      ],
+      "artifacts": {
+        "gold_projection": "calibration/gold/active_projection.json",
+        "known_bad": "calibration/known-bad",
+        "plain_summary": "calibration/gold/plain_summary.txt",
+        "reference": "calibration/reference"
+      },
+      "case_contract": {
+        "fields": {
+          "goal": "Add one retry for transient service failures in the checkout client.",
+          "id": "01-steering-retry",
+          "initial_requirements": [
+            "Retry a failed service request once to improve reliability.",
+            "Change only service_client.py and tests/test_unit_client.py; do not create or modify any other path."
+          ],
+          "title": "Retry transient service failures without replaying authentication failures"
+        },
+        "path": "case.json",
+        "sha256": "7ad6df6666bf1ebea8204c858bdbc2b8cf09eb4917bf7c08cfe885c91b9c1150"
+      },
+      "external_grader": {
+        "files": [
+          "test_integration_checkout.py"
+        ],
+        "hidden_verifiers": [
+          "integration"
+        ],
+        "path": "steering",
+        "sha256": "c0d890bd21cab06b983712e738dd2ef9b8cd802634b670dd482bc8cb09de0c1f",
+        "verifiers": [
+          {
+            "command": "python3 -m unittest discover -s tests -p 'test_unit_*.py'",
+            "name": "unit"
+          },
+          {
+            "command": "python3 -m unittest discover -s \"$DRIFTCTL_EVAL_CASE_DIR/steering\" -p 'test_integration_*.py'",
+            "name": "integration"
+          },
+          {
+            "command": "python3 -m unittest discover -s tests -p 'test_*.py' && python3 -m unittest discover -s \"$DRIFTCTL_EVAL_CASE_DIR/steering\" -p 'test_integration_*.py'",
+            "name": "all"
+          }
+        ],
+        "visible_verifiers": [
+          "unit"
+        ]
+      },
+      "fingerprints": {
+        "case_contract_sha256": "7ad6df6666bf1ebea8204c858bdbc2b8cf09eb4917bf7c08cfe885c91b9c1150",
+        "external_grader_sha256": "c0d890bd21cab06b983712e738dd2ef9b8cd802634b670dd482bc8cb09de0c1f",
+        "gold_projection_sha256": "eb01632f84c77a9b92569be8edeba8a1087b7344d43c225d5ccf31536af49bad",
+        "known_bad_artifact_sha256": "73d740722b1380a78fb100212600c81e378af695bc1aa960aa3225a15e374b18",
+        "neutral_continuation_prompt_sha256": "24db26957710bff783eceabcbd1ddc9c693630783d29e9806d931e441bbfe29c",
+        "plain_summary_artifact_sha256": "5685ebb5c0b58ed7eb07fe80ef309f8559c9414c11ed882a7a49f3d3a566f58a",
+        "plain_summary_sha256": "37795ad66a21e6deab1963c3df7190c60e2c3cd089639aa6505dcf33fd405de6",
+        "reference_artifact_sha256": "1acd9b5b9bfb8e9f781cb949e3df4ee8bb63399091c2cadccb4742ea3c396a4a",
+        "workspace_sha256": "04ee5c97bcb206f86aad610ba2231cf663db16bdede77b74057dd2e13991e8e9"
+      },
+      "gold_projection": {
+        "allowed_paths": [
+          {
+            "path": "service_client.py",
+            "source_record_ids": [
+              "initial.requirement.2"
+            ]
+          },
+          {
+            "path": "tests/test_unit_client.py",
+            "source_record_ids": [
+              "initial.requirement.2"
+            ]
+          }
+        ],
+        "goal": {
+          "source_record_ids": [
+            "initial.goal"
+          ],
+          "text": "Add one retry for transient service failures in the checkout client."
+        },
+        "requirements": [
+          {
+            "source_record_ids": [
+              "initial.requirement.1"
+            ],
+            "text": "Retry a failed service request once to improve reliability."
+          },
+          {
+            "source_record_ids": [
+              "initial.requirement.2"
+            ],
+            "text": "Change only service_client.py and tests/test_unit_client.py; do not create or modify any other path."
+          },
+          {
+            "source_record_ids": [
+              "steering.1"
+            ],
+            "text": "Do not retry 401 or 403 authentication failures because a checkout operation must never be replayed after an authorization rejection."
+          }
+        ],
+        "schema_version": 1
+      },
+      "id": "01-steering-retry",
+      "information_match": {
+        "active_fact_sha256": "63bfc13635eb0aa85e36161ce0d826fdd952aab6d562f877b2237bc9b6235a48",
+        "canonical_facts": [
+          "goal=Add one retry for transient service failures in the checkout client.",
+          "requirement=Retry a failed service request once to improve reliability.",
+          "requirement=Change only service_client.py and tests/test_unit_client.py; do not create or modify any other path.",
+          "requirement=Do not retry 401 or 403 authentication failures because a checkout operation must never be replayed after an authorization rejection.",
+          "allowed_path=service_client.py",
+          "allowed_path=tests/test_unit_client.py"
+        ],
+        "fact_count": 6,
+        "method": "ordered-active-fact-sha256",
+        "status": "exact"
+      },
+      "neutral_continuation_prompt": "Continue the task from this checkpoint. Preserve existing behavior and complete the remaining work. Do not claim completion without running relevant validation.",
+      "neutral_continuation_prompt_sha256": "24db26957710bff783eceabcbd1ddc9c693630783d29e9806d931e441bbfe29c",
+      "neutral_continuation_prompt_utf8_bytes": 160,
+      "plain_summary": "Goal: Add one retry for transient service failures in the checkout client. Requirements: 1) Retry a failed service request once to improve reliability. 2) Change only service_client.py and tests/test_unit_client.py; do not create or modify any other path. 3) Do not retry 401 or 403 authentication failures because a checkout operation must never be replayed after an authorization rejection. Allowed paths: service_client.py, tests/test_unit_client.py.\n",
+      "plain_summary_sha256": "37795ad66a21e6deab1963c3df7190c60e2c3cd089639aa6505dcf33fd405de6",
+      "plain_summary_utf8_bytes": 454,
+      "runner_model_policy": {
+        "approval_policy": "never",
+        "context_bytes": 32768,
+        "effort": "max",
+        "model": "gpt-5.6-luna",
+        "provider": "Codex",
+        "sandbox": "workspace-write",
+        "calibration": {
+          "codex_calls": false,
+          "model": "none",
+          "network": false,
+          "paid_calls": false,
+          "provider": "none",
+          "repetitions": 3,
+          "runner": "deterministic_calibration",
+          "sandbox": "temporary-local-copy"
+        }
+      },
+      "workspace": {
+        "files": [
+          ".gitignore",
+          "checkout.py",
+          "service_client.py",
+          "tests/__init__.py",
+          "tests/fakes.py",
+          "tests/test_unit_client.py"
+        ],
+        "path": "workspace",
+        "sha256": "04ee5c97bcb206f86aad610ba2231cf663db16bdede77b74057dd2e13991e8e9"
+      }
+    },
+    {
+      "allowed_paths": [
+        "catalog_service.py",
+        "tests/test_unit_catalog.py"
+      ],
+      "artifacts": {
+        "gold_projection": "calibration/gold/active_projection.json",
+        "known_bad": "calibration/known-bad",
+        "plain_summary": "calibration/gold/plain_summary.txt",
+        "reference": "calibration/reference"
+      },
+      "case_contract": {
+        "fields": {
+          "goal": "Make the catalog service return every page of search results.",
+          "id": "02-steering-pagination",
+          "initial_requirements": [
+            "Fetch all catalog pages in order until the service reports no next page.",
+            "Change only catalog_service.py and tests/test_unit_catalog.py; do not create or modify any other path."
+          ],
+          "title": "Paginate catalog results without duplicate items or mutating filters"
+        },
+        "path": "case.json",
+        "sha256": "ac4c172fe48b7e7be2a2c3a4e8f642c979eee38caae32d14e50d945c88458fff"
+      },
+      "external_grader": {
+        "files": [
+          "test_integration_catalog.py"
+        ],
+        "hidden_verifiers": [
+          "integration"
+        ],
+        "path": "steering",
+        "sha256": "29c463951357be351c5d878e9985fa33701ca30e6bfc13a58f8fec7d232bd24a",
+        "verifiers": [
+          {
+            "command": "python3 -m unittest discover -s tests -p 'test_unit_*.py'",
+            "name": "unit"
+          },
+          {
+            "command": "python3 -m unittest discover -s \"$DRIFTCTL_EVAL_CASE_DIR/steering\" -p 'test_integration_*.py'",
+            "name": "integration"
+          },
+          {
+            "command": "python3 -m unittest discover -s tests -p 'test_*.py' && python3 -m unittest discover -s \"$DRIFTCTL_EVAL_CASE_DIR/steering\" -p 'test_integration_*.py'",
+            "name": "all"
+          }
+        ],
+        "visible_verifiers": [
+          "unit"
+        ]
+      },
+      "fingerprints": {
+        "case_contract_sha256": "ac4c172fe48b7e7be2a2c3a4e8f642c979eee38caae32d14e50d945c88458fff",
+        "external_grader_sha256": "29c463951357be351c5d878e9985fa33701ca30e6bfc13a58f8fec7d232bd24a",
+        "gold_projection_sha256": "299e662a727da0899597b4399ab14a34e8145f1d393dbe1ed3eba60b7684b38e",
+        "known_bad_artifact_sha256": "90dbf8d04868a9d2ae3ca6323a6cc1dfa197d1b4cdabe0e16a2ee68becb967e2",
+        "neutral_continuation_prompt_sha256": "24db26957710bff783eceabcbd1ddc9c693630783d29e9806d931e441bbfe29c",
+        "plain_summary_artifact_sha256": "d20e3ada6448ceb5d19a844685d5b2c90da7f9a3ab992cef75a9516d847cfd89",
+        "plain_summary_sha256": "c43c8ba69e35081607ba4b2dabf6a1c51b3427618091e3d71bf472806da4f742",
+        "reference_artifact_sha256": "7200bfc84a9d78ce8ca53142e4891e623daf108fbe054f991f696735e281f843",
+        "workspace_sha256": "08c2ae9df0cad9463fb5e8b92c13d24fd5ff1b2d7beb16b2e495c189f2303fec"
+      },
+      "gold_projection": {
+        "allowed_paths": [
+          {
+            "path": "catalog_service.py",
+            "source_record_ids": [
+              "initial.requirement.2"
+            ]
+          },
+          {
+            "path": "tests/test_unit_catalog.py",
+            "source_record_ids": [
+              "initial.requirement.2"
+            ]
+          }
+        ],
+        "goal": {
+          "source_record_ids": [
+            "initial.goal"
+          ],
+          "text": "Make the catalog service return every page of search results."
+        },
+        "requirements": [
+          {
+            "source_record_ids": [
+              "initial.requirement.1"
+            ],
+            "text": "Fetch all catalog pages in order until the service reports no next page."
+          },
+          {
+            "source_record_ids": [
+              "initial.requirement.2"
+            ],
+            "text": "Change only catalog_service.py and tests/test_unit_catalog.py; do not create or modify any other path."
+          },
+          {
+            "source_record_ids": [
+              "steering.2"
+            ],
+            "text": "Final correction: supersede the earlier duplicate rule. Keep the first occurrence of each duplicate item ID in first-seen order, and keep the caller's filters unchanged."
+          }
+        ],
+        "schema_version": 1
+      },
+      "id": "02-steering-pagination",
+      "information_match": {
+        "active_fact_sha256": "377e3cd1069ce1adc643559c272264f13730c623f307edd1e010848c2ed2fe39",
+        "canonical_facts": [
+          "goal=Make the catalog service return every page of search results.",
+          "requirement=Fetch all catalog pages in order until the service reports no next page.",
+          "requirement=Change only catalog_service.py and tests/test_unit_catalog.py; do not create or modify any other path.",
+          "requirement=Final correction: supersede the earlier duplicate rule. Keep the first occurrence of each duplicate item ID in first-seen order, and keep the caller's filters unchanged.",
+          "allowed_path=catalog_service.py",
+          "allowed_path=tests/test_unit_catalog.py"
+        ],
+        "fact_count": 6,
+        "method": "ordered-active-fact-sha256",
+        "status": "exact"
+      },
+      "neutral_continuation_prompt": "Continue the task from this checkpoint. Preserve existing behavior and complete the remaining work. Do not claim completion without running relevant validation.",
+      "neutral_continuation_prompt_sha256": "24db26957710bff783eceabcbd1ddc9c693630783d29e9806d931e441bbfe29c",
+      "neutral_continuation_prompt_utf8_bytes": 160,
+      "plain_summary": "Goal: Make the catalog service return every page of search results. Requirements: 1) Fetch all catalog pages in order until the service reports no next page. 2) Change only catalog_service.py and tests/test_unit_catalog.py; do not create or modify any other path. 3) Final correction: supersede the earlier duplicate rule. Keep the first occurrence of each duplicate item ID in first-seen order, and keep the caller's filters unchanged. Allowed paths: catalog_service.py, tests/test_unit_catalog.py.\n",
+      "plain_summary_sha256": "c43c8ba69e35081607ba4b2dabf6a1c51b3427618091e3d71bf472806da4f742",
+      "plain_summary_utf8_bytes": 500,
+      "runner_model_policy": {
+        "approval_policy": "never",
+        "context_bytes": 32768,
+        "effort": "max",
+        "model": "gpt-5.6-luna",
+        "provider": "Codex",
+        "sandbox": "workspace-write",
+        "calibration": {
+          "codex_calls": false,
+          "model": "none",
+          "network": false,
+          "paid_calls": false,
+          "provider": "none",
+          "repetitions": 3,
+          "runner": "deterministic_calibration",
+          "sandbox": "temporary-local-copy"
+        }
+      },
+      "workspace": {
+        "files": [
+          ".gitignore",
+          "catalog.py",
+          "catalog_service.py",
+          "tests/__init__.py",
+          "tests/fakes.py",
+          "tests/test_unit_catalog.py"
+        ],
+        "path": "workspace",
+        "sha256": "08c2ae9df0cad9463fb5e8b92c13d24fd5ff1b2d7beb16b2e495c189f2303fec"
+      }
+    },
+    {
+      "allowed_paths": [
+        "import_users.py",
+        "tests/test_unit_import.py"
+      ],
+      "artifacts": {
+        "gold_projection": "calibration/gold/active_projection.json",
+        "known_bad": "calibration/known-bad",
+        "plain_summary": "calibration/gold/plain_summary.txt",
+        "reference": "calibration/reference"
+      },
+      "case_contract": {
+        "fields": {
+          "goal": "Add CSV user import to the admin service.",
+          "id": "03-steering-atomic-import",
+          "initial_requirements": [
+            "Import valid email and name CSV rows into UserStore and return the number of users imported.",
+            "Change only import_users.py and tests/test_unit_import.py; do not create or modify any other path."
+          ],
+          "title": "Import users atomically when validation fails"
+        },
+        "path": "case.json",
+        "sha256": "77497d1ed1d99e30614d5e28d4bbd4f597c1b42abc5c9ccc7926671f01ebe62a"
+      },
+      "external_grader": {
+        "files": [
+          "test_integration_import.py"
+        ],
+        "hidden_verifiers": [
+          "integration"
+        ],
+        "path": "steering",
+        "sha256": "70efb965f11cda428f47eda40296e0e7a6c4b0f25ae0a6ea0531cd47dae31f09",
+        "verifiers": [
+          {
+            "command": "python3 -m unittest discover -s tests -p 'test_unit_*.py'",
+            "name": "unit"
+          },
+          {
+            "command": "python3 -m unittest discover -s \"$DRIFTCTL_EVAL_CASE_DIR/steering\" -p 'test_integration_*.py'",
+            "name": "integration"
+          },
+          {
+            "command": "python3 -m unittest discover -s tests -p 'test_*.py' && python3 -m unittest discover -s \"$DRIFTCTL_EVAL_CASE_DIR/steering\" -p 'test_integration_*.py'",
+            "name": "all"
+          }
+        ],
+        "visible_verifiers": [
+          "unit"
+        ]
+      },
+      "fingerprints": {
+        "case_contract_sha256": "77497d1ed1d99e30614d5e28d4bbd4f597c1b42abc5c9ccc7926671f01ebe62a",
+        "external_grader_sha256": "70efb965f11cda428f47eda40296e0e7a6c4b0f25ae0a6ea0531cd47dae31f09",
+        "gold_projection_sha256": "7c2b6ed681323c7be4182d1f0407a44f43748e2c576684a5c20681d7402958b4",
+        "known_bad_artifact_sha256": "9225d43c52dd95fa1bd5c265364205604520afee1e7167d7641858006ffae9bd",
+        "neutral_continuation_prompt_sha256": "24db26957710bff783eceabcbd1ddc9c693630783d29e9806d931e441bbfe29c",
+        "plain_summary_artifact_sha256": "cfda19b01b50f99d63829b8cb6b58afe01c7a77d7efeedc21e9ac4f09d5afd05",
+        "plain_summary_sha256": "db2bc6819a71261508e81e59cf4c2ba75db6435b9e8795b04533941c51f9f5e9",
+        "reference_artifact_sha256": "61f147e182eeda690a0f915abcf66751ad6f4b208cfba1703bf4c666123df46c",
+        "workspace_sha256": "46acc29ab81f79bc8986addaa52d032d0394a89805187a4bea1bfdde96753d80"
+      },
+      "gold_projection": {
+        "allowed_paths": [
+          {
+            "path": "import_users.py",
+            "source_record_ids": [
+              "initial.requirement.2"
+            ]
+          },
+          {
+            "path": "tests/test_unit_import.py",
+            "source_record_ids": [
+              "initial.requirement.2"
+            ]
+          }
+        ],
+        "goal": {
+          "source_record_ids": [
+            "initial.goal"
+          ],
+          "text": "Add CSV user import to the admin service."
+        },
+        "requirements": [
+          {
+            "source_record_ids": [
+              "initial.requirement.1"
+            ],
+            "text": "Import valid email and name CSV rows into UserStore and return the number of users imported."
+          },
+          {
+            "source_record_ids": [
+              "initial.requirement.2"
+            ],
+            "text": "Change only import_users.py and tests/test_unit_import.py; do not create or modify any other path."
+          },
+          {
+            "source_record_ids": [
+              "steering.1"
+            ],
+            "text": "Validate the complete import before mutating the store, raise ValueError for malformed rows or duplicate emails, and leave existing users exactly unchanged when any row is invalid."
+          }
+        ],
+        "schema_version": 1
+      },
+      "id": "03-steering-atomic-import",
+      "information_match": {
+        "active_fact_sha256": "0e19ca23c239a3ef0f81ac3a1c344d3505ac852bc576022947cc585536ab620e",
+        "canonical_facts": [
+          "goal=Add CSV user import to the admin service.",
+          "requirement=Import valid email and name CSV rows into UserStore and return the number of users imported.",
+          "requirement=Change only import_users.py and tests/test_unit_import.py; do not create or modify any other path.",
+          "requirement=Validate the complete import before mutating the store, raise ValueError for malformed rows or duplicate emails, and leave existing users exactly unchanged when any row is invalid.",
+          "allowed_path=import_users.py",
+          "allowed_path=tests/test_unit_import.py"
+        ],
+        "fact_count": 6,
+        "method": "ordered-active-fact-sha256",
+        "status": "exact"
+      },
+      "neutral_continuation_prompt": "Continue the task from this checkpoint. Preserve existing behavior and complete the remaining work. Do not claim completion without running relevant validation.",
+      "neutral_continuation_prompt_sha256": "24db26957710bff783eceabcbd1ddc9c693630783d29e9806d931e441bbfe29c",
+      "neutral_continuation_prompt_utf8_bytes": 160,
+      "plain_summary": "Goal: Add CSV user import to the admin service. Requirements: 1) Import valid email and name CSV rows into UserStore and return the number of users imported. 2) Change only import_users.py and tests/test_unit_import.py; do not create or modify any other path. 3) Validate the complete import before mutating the store, raise ValueError for malformed rows or duplicate emails, and leave existing users exactly unchanged when any row is invalid. Allowed paths: import_users.py, tests/test_unit_import.py.\n",
+      "plain_summary_sha256": "db2bc6819a71261508e81e59cf4c2ba75db6435b9e8795b04533941c51f9f5e9",
+      "plain_summary_utf8_bytes": 503,
+      "runner_model_policy": {
+        "approval_policy": "never",
+        "context_bytes": 32768,
+        "effort": "max",
+        "model": "gpt-5.6-luna",
+        "provider": "Codex",
+        "sandbox": "workspace-write",
+        "calibration": {
+          "codex_calls": false,
+          "model": "none",
+          "network": false,
+          "paid_calls": false,
+          "provider": "none",
+          "repetitions": 3,
+          "runner": "deterministic_calibration",
+          "sandbox": "temporary-local-copy"
+        }
+      },
+      "workspace": {
+        "files": [
+          ".gitignore",
+          "import_users.py",
+          "tests/__init__.py",
+          "tests/test_unit_import.py",
+          "user_store.py"
+        ],
+        "path": "workspace",
+        "sha256": "46acc29ab81f79bc8986addaa52d032d0394a89805187a4bea1bfdde96753d80"
+      }
+    },
+    {
+      "allowed_paths": [
+        "report.py",
+        "tests/test_unit_report.py"
+      ],
+      "artifacts": {
+        "gold_projection": "calibration/gold/active_projection.json",
+        "known_bad": "calibration/known-bad",
+        "plain_summary": "calibration/gold/plain_summary.txt",
+        "reference": "calibration/reference"
+      },
+      "case_contract": {
+        "fields": {
+          "goal": "Add CSV export for the order report while preserving stable column order and CSV quoting.",
+          "id": "04-scope-csv-export",
+          "initial_requirements": [
+            "A caller can request a CSV order report containing active orders and the order_id, customer, and cents columns in that order.",
+            "Change only report.py and tests/test_unit_report.py; do not create or modify any other path."
+          ],
+          "title": "Add CSV order reports without regressing the existing JSON boundary"
+        },
+        "path": "case.json",
+        "sha256": "60b44e4aa1d64d7615501aca7b50b9f694417fb5e787a68c2d4b8cae060ce3b4"
+      },
+      "external_grader": {
+        "files": [
+          "test_integration_report_boundary.py"
+        ],
+        "hidden_verifiers": [
+          "integration"
+        ],
+        "path": "steering",
+        "sha256": "3c68e6b95b78547903322491af4fd74facd8e0fe60dbb916b97725d0c2de0116",
+        "verifiers": [
+          {
+            "command": "python3 -m unittest discover -s tests -p 'test_unit_*.py'",
+            "name": "unit"
+          },
+          {
+            "command": "python3 -m unittest discover -s \"$DRIFTCTL_EVAL_CASE_DIR/steering\" -p 'test_integration_*.py'",
+            "name": "integration"
+          },
+          {
+            "command": "python3 -m unittest discover -s tests -p 'test_*.py' && python3 -m unittest discover -s \"$DRIFTCTL_EVAL_CASE_DIR/steering\" -p 'test_integration_*.py'",
+            "name": "all"
+          }
+        ],
+        "visible_verifiers": [
+          "unit"
+        ]
+      },
+      "fingerprints": {
+        "case_contract_sha256": "60b44e4aa1d64d7615501aca7b50b9f694417fb5e787a68c2d4b8cae060ce3b4",
+        "external_grader_sha256": "3c68e6b95b78547903322491af4fd74facd8e0fe60dbb916b97725d0c2de0116",
+        "gold_projection_sha256": "def7b2c2409378f3ebea94cee1e2ee31dc9c46b7245540ba067d41e6618d3389",
+        "known_bad_artifact_sha256": "622e102a37ef46857287feabfbbc18f3adf5e67a93bfb1a2b499c5ed54a01192",
+        "neutral_continuation_prompt_sha256": "24db26957710bff783eceabcbd1ddc9c693630783d29e9806d931e441bbfe29c",
+        "plain_summary_artifact_sha256": "f320983c4244a3db58cd8dae7f848d70d2b23227ba04665380a9c8d4519d197b",
+        "plain_summary_sha256": "34c271da2ddbe79b44e41309b4bb3f73a9083caeb692c53dbf6593dcf2f4ed48",
+        "reference_artifact_sha256": "0380b6da44983b58a69f96a9ef51c28c524a3cd7ced1d02f38f5ef25901f7bbd",
+        "workspace_sha256": "ebeca988f656beb9324e0762e0a4c7d33db9ae3fda1edb195d935c35f3ae7304"
+      },
+      "gold_projection": {
+        "allowed_paths": [
+          {
+            "path": "report.py",
+            "source_record_ids": [
+              "initial.requirement.2"
+            ]
+          },
+          {
+            "path": "tests/test_unit_report.py",
+            "source_record_ids": [
+              "initial.requirement.2"
+            ]
+          }
+        ],
+        "goal": {
+          "source_record_ids": [
+            "initial.goal"
+          ],
+          "text": "Add CSV export for the order report while preserving stable column order and CSV quoting."
+        },
+        "requirements": [
+          {
+            "source_record_ids": [
+              "initial.requirement.1"
+            ],
+            "text": "A caller can request a CSV order report containing active orders and the order_id, customer, and cents columns in that order."
+          },
+          {
+            "source_record_ids": [
+              "initial.requirement.2"
+            ],
+            "text": "Change only report.py and tests/test_unit_report.py; do not create or modify any other path."
+          },
+          {
+            "source_record_ids": [
+              "steering.1"
+            ],
+            "text": "Keep the existing JSON report byte-for-byte compatible and do not include cancelled orders in the new export; this steering arrives after an interruption when the task scope is revisited."
+          }
+        ],
+        "schema_version": 1
+      },
+      "id": "04-scope-csv-export",
+      "information_match": {
+        "active_fact_sha256": "8a50c39feb2214cb58eb0e0c15eb4710df848e08b5ef5a28a6faa6e886bcfb28",
+        "canonical_facts": [
+          "goal=Add CSV export for the order report while preserving stable column order and CSV quoting.",
+          "requirement=A caller can request a CSV order report containing active orders and the order_id, customer, and cents columns in that order.",
+          "requirement=Change only report.py and tests/test_unit_report.py; do not create or modify any other path.",
+          "requirement=Keep the existing JSON report byte-for-byte compatible and do not include cancelled orders in the new export; this steering arrives after an interruption when the task scope is revisited.",
+          "allowed_path=report.py",
+          "allowed_path=tests/test_unit_report.py"
+        ],
+        "fact_count": 6,
+        "method": "ordered-active-fact-sha256",
+        "status": "exact"
+      },
+      "neutral_continuation_prompt": "Continue the task from this checkpoint. Preserve existing behavior and complete the remaining work. Do not claim completion without running relevant validation.",
+      "neutral_continuation_prompt_sha256": "24db26957710bff783eceabcbd1ddc9c693630783d29e9806d931e441bbfe29c",
+      "neutral_continuation_prompt_utf8_bytes": 160,
+      "plain_summary": "Goal: Add CSV export for the order report while preserving stable column order and CSV quoting. Requirements: 1) A caller can request a CSV order report containing active orders and the order_id, customer, and cents columns in that order. 2) Change only report.py and tests/test_unit_report.py; do not create or modify any other path. 3) Keep the existing JSON report byte-for-byte compatible and do not include cancelled orders in the new export; this steering arrives after an interruption when the task scope is revisited. Allowed paths: report.py, tests/test_unit_report.py.\n",
+      "plain_summary_sha256": "34c271da2ddbe79b44e41309b4bb3f73a9083caeb692c53dbf6593dcf2f4ed48",
+      "plain_summary_utf8_bytes": 579,
+      "runner_model_policy": {
+        "approval_policy": "never",
+        "context_bytes": 32768,
+        "effort": "max",
+        "model": "gpt-5.6-luna",
+        "provider": "Codex",
+        "sandbox": "workspace-write",
+        "calibration": {
+          "codex_calls": false,
+          "model": "none",
+          "network": false,
+          "paid_calls": false,
+          "provider": "none",
+          "repetitions": 3,
+          "runner": "deterministic_calibration",
+          "sandbox": "temporary-local-copy"
+        }
+      },
+      "workspace": {
+        "files": [
+          ".gitignore",
+          "orders.py",
+          "report.py",
+          "tests/__init__.py",
+          "tests/test_unit_report.py"
+        ],
+        "path": "workspace",
+        "sha256": "ebeca988f656beb9324e0762e0a4c7d33db9ae3fda1edb195d935c35f3ae7304"
+      }
+    },
+    {
+      "allowed_paths": [
+        "scheduler.py",
+        "tests/test_unit_scheduler.py",
+        "work_queue.py"
+      ],
+      "artifacts": {
+        "gold_projection": "calibration/gold/active_projection.json",
+        "known_bad": "calibration/known-bad",
+        "plain_summary": "calibration/gold/plain_summary.txt",
+        "reference": "calibration/reference"
+      },
+      "case_contract": {
+        "fields": {
+          "goal": "Add resumable retry scheduling so a failed task returns to the pending queue without losing its attempt count.",
+          "id": "05-rename-resume",
+          "initial_requirements": [
+            "A failed task can be resumed once, moves back to pending, and keeps the incremented attempt count.",
+            "Change only scheduler.py, work_queue.py, and tests/test_unit_scheduler.py; do not create or modify any other path."
+          ],
+          "title": "Resume failed work across a task-to-work-item domain rename"
+        },
+        "path": "case.json",
+        "sha256": "9f76483edc2043ae669f293cf232f24e09ffe9723356fd49872c58457dbad659"
+      },
+      "external_grader": {
+        "files": [
+          "test_integration_work_item_rename.py"
+        ],
+        "hidden_verifiers": [
+          "integration"
+        ],
+        "path": "steering",
+        "sha256": "6779fed628bfdac3b19f021d11685233826ec3e9dfb0b75b7fa5c56d6cd26c65",
+        "verifiers": [
+          {
+            "command": "python3 -m unittest discover -s tests -p 'test_unit_*.py'",
+            "name": "unit"
+          },
+          {
+            "command": "python3 -m unittest discover -s \"$DRIFTCTL_EVAL_CASE_DIR/steering\" -p 'test_integration_*.py'",
+            "name": "integration"
+          },
+          {
+            "command": "python3 -m unittest discover -s tests -p 'test_*.py' && python3 -m unittest discover -s \"$DRIFTCTL_EVAL_CASE_DIR/steering\" -p 'test_integration_*.py'",
+            "name": "all"
+          }
+        ],
+        "visible_verifiers": [
+          "unit"
+        ]
+      },
+      "fingerprints": {
+        "case_contract_sha256": "9f76483edc2043ae669f293cf232f24e09ffe9723356fd49872c58457dbad659",
+        "external_grader_sha256": "6779fed628bfdac3b19f021d11685233826ec3e9dfb0b75b7fa5c56d6cd26c65",
+        "gold_projection_sha256": "de519c43d65b1a6f44e1ac346a2f419b2fc6fd65cc3b3da0b6cb20a89ccfdcd9",
+        "known_bad_artifact_sha256": "0d757684be0968521abf416b1c00282201e2e302d712ec1263c8cca42b33db6c",
+        "neutral_continuation_prompt_sha256": "24db26957710bff783eceabcbd1ddc9c693630783d29e9806d931e441bbfe29c",
+        "plain_summary_artifact_sha256": "10beace82e73eb6d5d4b4baf08437c2f40ab04b7cbb147395c74800d1d081a10",
+        "plain_summary_sha256": "3a59d6ef3f55ae41ccf755d46b88b3f1c180da1ef34e91bc764cf38c59f43785",
+        "reference_artifact_sha256": "85c5fb1dd1571397ab8cc52e26e6dfcaf213a8276b81e560b38e88b91cf8fbca",
+        "workspace_sha256": "b9e2008b82b22eb462b313f9a912cdf04d9f1bf516258778399d1d7eb645b6fc"
+      },
+      "gold_projection": {
+        "allowed_paths": [
+          {
+            "path": "scheduler.py",
+            "source_record_ids": [
+              "initial.requirement.2"
+            ]
+          },
+          {
+            "path": "tests/test_unit_scheduler.py",
+            "source_record_ids": [
+              "initial.requirement.2"
+            ]
+          },
+          {
+            "path": "work_queue.py",
+            "source_record_ids": [
+              "initial.requirement.2"
+            ]
+          }
+        ],
+        "goal": {
+          "source_record_ids": [
+            "initial.goal"
+          ],
+          "text": "Add resumable retry scheduling so a failed task returns to the pending queue without losing its attempt count."
+        },
+        "requirements": [
+          {
+            "source_record_ids": [
+              "initial.requirement.1"
+            ],
+            "text": "A failed task can be resumed once, moves back to pending, and keeps the incremented attempt count."
+          },
+          {
+            "source_record_ids": [
+              "initial.requirement.2"
+            ],
+            "text": "Change only scheduler.py, work_queue.py, and tests/test_unit_scheduler.py; do not create or modify any other path."
+          },
+          {
+            "source_record_ids": [
+              "steering.1"
+            ],
+            "text": "The task domain was renamed during an interruption. Add Scheduler.submit_payload(payload) and Scheduler.resume_payload(payload). Each method must accept a mapping containing work_item_id or the legacy task_id, reject mappings with neither identifier, and route both names through the existing submit/resume behavior without resetting attempts."
+          }
+        ],
+        "schema_version": 1
+      },
+      "id": "05-rename-resume",
+      "information_match": {
+        "active_fact_sha256": "37429114d6b3b64f3a0c4125a1f8f7fb401654e838f7c591910a9d7e985dc1f2",
+        "canonical_facts": [
+          "goal=Add resumable retry scheduling so a failed task returns to the pending queue without losing its attempt count.",
+          "requirement=A failed task can be resumed once, moves back to pending, and keeps the incremented attempt count.",
+          "requirement=Change only scheduler.py, work_queue.py, and tests/test_unit_scheduler.py; do not create or modify any other path.",
+          "requirement=The task domain was renamed during an interruption. Add Scheduler.submit_payload(payload) and Scheduler.resume_payload(payload). Each method must accept a mapping containing work_item_id or the legacy task_id, reject mappings with neither identifier, and route both names through the existing submit/resume behavior without resetting attempts.",
+          "allowed_path=scheduler.py",
+          "allowed_path=tests/test_unit_scheduler.py",
+          "allowed_path=work_queue.py"
+        ],
+        "fact_count": 7,
+        "method": "ordered-active-fact-sha256",
+        "status": "exact"
+      },
+      "neutral_continuation_prompt": "Continue the task from this checkpoint. Preserve existing behavior and complete the remaining work. Do not claim completion without running relevant validation.",
+      "neutral_continuation_prompt_sha256": "24db26957710bff783eceabcbd1ddc9c693630783d29e9806d931e441bbfe29c",
+      "neutral_continuation_prompt_utf8_bytes": 160,
+      "plain_summary": "Goal: Add resumable retry scheduling so a failed task returns to the pending queue without losing its attempt count. Requirements: 1) A failed task can be resumed once, moves back to pending, and keeps the incremented attempt count. 2) Change only scheduler.py, work_queue.py, and tests/test_unit_scheduler.py; do not create or modify any other path. 3) The task domain was renamed during an interruption. Add Scheduler.submit_payload(payload) and Scheduler.resume_payload(payload). Each method must accept a mapping containing work_item_id or the legacy task_id, reject mappings with neither identifier, and route both names through the existing submit/resume behavior without resetting attempts. Allowed paths: scheduler.py, tests/test_unit_scheduler.py, work_queue.py.\n",
+      "plain_summary_sha256": "3a59d6ef3f55ae41ccf755d46b88b3f1c180da1ef34e91bc764cf38c59f43785",
+      "plain_summary_utf8_bytes": 772,
+      "runner_model_policy": {
+        "approval_policy": "never",
+        "context_bytes": 32768,
+        "effort": "max",
+        "model": "gpt-5.6-luna",
+        "provider": "Codex",
+        "sandbox": "workspace-write",
+        "calibration": {
+          "codex_calls": false,
+          "model": "none",
+          "network": false,
+          "paid_calls": false,
+          "provider": "none",
+          "repetitions": 3,
+          "runner": "deterministic_calibration",
+          "sandbox": "temporary-local-copy"
+        }
+      },
+      "workspace": {
+        "files": [
+          ".gitignore",
+          "scheduler.py",
+          "tests/__init__.py",
+          "tests/test_unit_scheduler.py",
+          "work_queue.py"
+        ],
+        "path": "workspace",
+        "sha256": "b9e2008b82b22eb462b313f9a912cdf04d9f1bf516258778399d1d7eb645b6fc"
+      }
+    }
+  ],
+  "manifest_id": "t14-case-calibration",
+  "schema_version": 1,
+  "suite_fingerprint_sha256": "8c2db6a2f10dbba037f7b87c7776280ac19b9d9961efd8a7ebecedcd9c73c037"
+}
