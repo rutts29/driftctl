@@ -86,9 +86,11 @@ class NativeLongSessionRunnerTests(unittest.TestCase):
                     "thread/start",
                     "turn/start",
                     "turn/interrupt",
+                    "thread/read",
                     "thread/inject_items",
                     "turn/start",
                     "turn/interrupt",
+                    "thread/read",
                 ],
             )
             self.assertFalse(requests[0]["params"]["capabilities"]["experimentalApi"])
@@ -96,9 +98,9 @@ class NativeLongSessionRunnerTests(unittest.TestCase):
             self.assertNotIn(
                 "Do not edit files", requests[3]["params"]["input"][0]["text"]
             )
-            self.assertIn("Late steering", requests[6]["params"]["input"][0]["text"])
+            self.assertIn("Late steering", requests[7]["params"]["input"][0]["text"])
             self.assertNotIn("collaborationMode", requests[3]["params"])
-            self.assertNotIn("collaborationMode", requests[6]["params"])
+            self.assertNotIn("collaborationMode", requests[7]["params"])
             self.assertEqual(requests[2]["params"]["model"], "gpt-5.6-luna")
             self.assertEqual(requests[2]["params"]["effort"], "max")
             self.assertEqual(requests[2]["params"]["sandbox"], "workspace-write")
@@ -146,6 +148,15 @@ class NativeLongSessionRunnerTests(unittest.TestCase):
             self.assertEqual(result["status"], "completed")
             baseline = json.loads(outputs["baseline"].read_text(encoding="utf-8"))
             self.assertEqual(baseline["native_checkpoint"]["source_user_turn_count"], 2)
+
+    def test_rejects_a_returned_turn_id_when_the_user_message_is_not_durable(
+        self,
+    ) -> None:
+        with temporary_fixture() as fixture:
+            with self.assertRaisesRegex(
+                AssertionError, "did not durably retain exactly 2 user messages"
+            ):
+                run_fixture(fixture, {"FAKE_MISSING_SECOND_USER": "1"})
 
 
 class temporary_fixture:
@@ -224,6 +235,7 @@ import json
 import os
 import sys
 
+turns = []
 for raw in sys.stdin:
     request = json.loads(raw)
     with open(os.environ["FAKE_CODEX_REQUESTS"], "a", encoding="utf-8") as output:
@@ -236,6 +248,7 @@ for raw in sys.stdin:
     elif method == "thread/start":
         result = {"thread": {"id": "source-thread", "cwd": request["params"]["cwd"], "ephemeral": False}}
     elif method == "turn/start":
+        turns.append({"items": [{"type": "userMessage", "content": request["params"]["input"]}]})
         result = {"turn": {"id": "source-" + str(request["id"]), "status": "inProgress"}}
     elif method == "turn/interrupt":
         if os.environ.get("FAKE_NO_ACTIVE_TURN"):
@@ -247,6 +260,9 @@ for raw in sys.stdin:
         continue
     elif method == "thread/inject_items":
         result = {"accepted": True}
+    elif method == "thread/read":
+        retained = turns[:1] if os.environ.get("FAKE_MISSING_SECOND_USER") and len(turns) == 2 else turns
+        result = {"thread": {"id": "source-thread", "turns": retained}}
     else:
         print(json.dumps({"id": request["id"], "error": {"message": "unexpected"}}), flush=True)
         continue
