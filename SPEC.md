@@ -12,7 +12,7 @@
 - Outcome: the same session receives its effective goal and steering before every model turn and after compaction or resume.
 - Authority: explicit user text and operator approvals.
 - Storage: private local source-linked ledger plus bounded active projection.
-- Integration: opt-in Codex lifecycle hooks; no replacement TUI, fork, hosted service, or repository guidance change.
+- Integration: explicit-only `$driftctl` Codex skill plus lifecycle hooks; no replacement TUI, fork, hosted service, or repository guidance change.
 
 ## Commands
 
@@ -20,6 +20,9 @@
 driftctl integrate codex install
 driftctl integrate codex status
 driftctl integrate codex remove
+$driftctl on
+$driftctl status
+$driftctl off
 driftctl attach codex --session <exact-id>
 driftctl status codex --session <exact-id>
 driftctl resolve codex --session <exact-id> ...
@@ -36,16 +39,18 @@ The Codex hook event is read from stdin and validated before enrollment lookup.
 
 ## Runtime Contract
 
-1. `attach` reads the exact persisted Codex thread and native goal through App Server.
-2. `attach` creates private session-keyed state, initial source cursor, immutable semantic history, and bounded projection.
-3. Hook handlers return immediately with no output when the session is not enrolled.
-4. `UserPromptSubmit` reconciles unseen records, folds the current projection with the new authoritative user prompt, validates the keeper proposal, and either:
+1. Installation loads the explicit-only skill and hooks but creates no enrollment.
+2. Exact `$driftctl on` at `UserPromptSubmit` uses Codex-supplied `session_id` and `cwd`, reads that persisted thread and native goal, and creates private session-keyed history, cursor, and projection.
+3. The external `attach --session` command reaches the same bootstrap path for diagnostics and compatibility.
+4. Hook handlers return immediately with no output when the session is not enrolled.
+5. `UserPromptSubmit` reconciles unseen records, folds the current projection with the new authoritative user prompt, validates the keeper proposal, and either:
    - commits and returns the projection as additional developer context; or
    - records a source-linked conflict and blocks before the model runs.
-5. `Stop` records non-authoritative assistant/process evidence and advances the observed cursor.
-6. `PreCompact` flushes durable state.
-7. `SessionStart(startup|resume|compact)` recovers state, reconciles missed records, and injects the active projection before the next model request.
-8. `detach` removes only the exact enrollment; later hooks for that session become no-ops.
+6. Exact `$driftctl status` reads enrollment without keeper reconciliation or state creation.
+7. Exact `$driftctl off` removes only the invoking session's enrollment; later hooks become no-ops.
+8. `Stop` records non-authoritative assistant/process evidence and advances the observed cursor.
+9. `PreCompact` flushes durable state.
+10. `SessionStart(startup|resume|compact)` recovers state, reconciles missed records, and injects the active projection before the next model request.
 
 ## Semantic Contract
 
@@ -79,6 +84,8 @@ The Codex hook event is read from stdin and validated before enrollment lookup.
 
 - Enrollment key: exact provider plus exact session ID; repository identity is validation data, never the enrollment key.
 - Attaching session A cannot activate session B, including another session in the same repository.
+- Installation, startup, resume, compaction, ordinary prompts, and near-match control text cannot create enrollment.
+- Persisted exact control commands are source-accounted system observations, never user task authority.
 - Existing hook definitions, config values, `AGENTS.md`, `CLAUDE.md`, skills, permissions, provider authentication, and worktree remain owned by the user.
 - Integration adds/removes only Driftctl's isolated plugin registration and files.
 - Unenrolled sessions execute no model call, ledger write, warning, block, or injected context.
@@ -134,7 +141,7 @@ pub fn handle(event: HookEvent, state: &mut SessionState) -> Result<HookOutput, 
 ## Success Criteria
 
 - Every test in `tasks/todo.md` passes.
-- Installed hook injects a validated projection into the exact attached session before the model runs.
+- Exact `$driftctl on` injects a validated projection into the invoking session before the model runs.
 - Restart and resume restore the same attachment and projection; `PreCompact` followed by `SessionStart(compact)` restores it through the installed hook entrypoint.
 - Two concurrent sessions in one repository remain isolated.
 - Detach restores no-op behavior.
