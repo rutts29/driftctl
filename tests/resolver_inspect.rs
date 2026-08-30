@@ -82,6 +82,12 @@ if sys.argv[1:3] == ["app-server", "--stdio"]:
                 result = json.loads(os.environ.get("DRIFTCTL_FAKE_GOAL", '{"goal":null}'))
         elif method == "thread/fork":
             result = {"thread":{"id":"continued-child","cwd":request["params"]["cwd"],"ephemeral":False}}
+            if rpc_capture:
+                with open(rpc_capture + ".child", "w", encoding="utf-8") as child_file:
+                    json.dump(result["thread"], child_file)
+        elif method == "thread/resume":
+            with open(rpc_capture + ".child", encoding="utf-8") as child_file:
+                result = {"thread":json.load(child_file)}
         elif method == "thread/goal/clear":
             child_goal = None
             result = {"cleared":True}

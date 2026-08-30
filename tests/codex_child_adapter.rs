@@ -51,6 +51,8 @@ for raw in sys.stdin:
         result = {"userAgent":"fake", "codexHome":"/not-used", "platformFamily":"unix", "platformOs":"linux"}
     elif method == "thread/fork":
         result = {"thread": {"id": child if scenario != "wrong-child" else parent, "cwd": target_cwd if scenario != "wrong-cwd" else "/wrong", "ephemeral": scenario == "ephemeral"}}
+    elif method == "thread/resume":
+        result = {"thread": {"id": child, "cwd": target_cwd, "ephemeral": False}}
     elif method == "thread/goal/get":
         thread_id = request["params"]["threadId"]
         if thread_id == parent:
@@ -63,6 +65,10 @@ for raw in sys.stdin:
         else:
             child_gets = globals().get("child_gets", 0) + 1
             globals()["child_gets"] = child_gets
+            if scenario == "absent-child" and child_gets == 1:
+                result = {"goal": None}
+                print(json.dumps({"id": request["id"], "result": result}), flush=True)
+                continue
             if scenario == "missing-readback" and child_gets > 1:
                 result = {"wrong": None}
                 print(json.dumps({"id": request["id"], "result": result}), flush=True)
@@ -81,8 +87,10 @@ for raw in sys.stdin:
             result = {"goal": {"threadId": child, "objective": approved}}
     elif method == "turn/start":
         if scenario == "turn-notification":
-            print(json.dumps({"method": "turn/completed", "params": {"threadId": "child-thread", "turn": {"id": "turn-1", "items": [], "status": "completed"}}}), flush=True)
             result = {"turn": {"id": "turn-1", "items": [], "status": "inProgress"}}
+            print(json.dumps({"id": request["id"], "result": result}), flush=True)
+            print(json.dumps({"method": "turn/completed", "params": {"threadId": "child-thread", "turn": {"id": "turn-1", "items": [], "status": "completed"}}}), flush=True)
+            continue
         else:
             result = {"turn": {"id": "turn-1", "items": [], "status": "completed"}}
     else:
@@ -186,6 +194,32 @@ fn creates_a_persisted_isolated_child_and_migrates_only_its_goal_transactionally
 }
 
 #[test]
+fn skips_clear_when_the_persisted_child_goal_is_already_absent() {
+    let root = temporary_directory("child-goal-already-absent");
+    let child_cwd = root.join("isolated-child");
+    fs::create_dir(&child_cwd).expect("create child fixture");
+    let objective = "Install the approved objective on the empty child";
+    let adapter = configure_fake(&root, "absent-child", &child_cwd, objective);
+
+    let outcome = adapter
+        .fork_and_migrate(request(&child_cwd, objective))
+        .expect("absent child goal does not require clear");
+    assert_eq!(outcome.child_goal().objective(), Some(objective));
+    let requests = captured_requests(&root);
+    assert!(
+        !requests
+            .iter()
+            .any(|request| request["method"] == "thread/goal/clear")
+    );
+    assert!(
+        requests
+            .iter()
+            .any(|request| request["method"] == "thread/goal/set")
+    );
+    fs::remove_dir_all(root).expect("remove test directory");
+}
+
+#[test]
 fn rejects_unverifiable_or_partial_child_goal_migrations_without_mutating_the_parent_goal() {
     for scenario in [
         "wrong-child",
@@ -235,6 +269,7 @@ fn starts_a_child_turn_with_a_neutral_projection_without_model_or_configuration_
         .start_child_turn(
             ChildTurnRequest::new(
                 "child-thread",
+                &child_cwd,
                 "Continue from the supplied neutral projection.",
                 "Requirement R1 remains unresolved.",
             )
@@ -245,9 +280,11 @@ fn starts_a_child_turn_with_a_neutral_projection_without_model_or_configuration_
     assert!(started.completed());
 
     let requests = captured_requests(&root);
-    assert_eq!(requests[2]["method"], "turn/start");
+    assert_eq!(requests[2]["method"], "thread/resume");
+    assert_eq!(requests[2]["params"], json!({"threadId":"child-thread"}));
+    assert_eq!(requests[3]["method"], "turn/start");
     assert_eq!(
-        requests[2]["params"],
+        requests[3]["params"],
         json!({
             "threadId":"child-thread",
             "input":[{"type":"text", "text":"Continue from the supplied neutral projection.\n\nRequirement R1 remains unresolved."}]
@@ -272,6 +309,7 @@ fn reports_missing_app_server_capabilities_without_interactive_fallback() {
         .fork_and_migrate(request(&child_cwd, "Approved objective"))
         .expect_err("unsupported fork must fail");
     assert!(error.to_string().contains("capability unavailable"));
+    assert!(error.to_string().contains("unsupported"));
     assert!(error.to_string().contains("no interactive fallback"));
     let requests = captured_requests(&root);
     assert_eq!(
