@@ -1,14 +1,16 @@
 use std::fs;
-use std::io::Write as _;
+use std::io::{IsTerminal as _, Write as _};
 use std::path::{Path, PathBuf};
 
-use serde_json::json;
+use serde_json::{Value, json};
 
 use crate::agent::{display_path, run_codex};
+use crate::codex_child::{ChildForkRequest, ChildTurnRequest, CodexChildAdapter};
 use crate::codex_source::{self, SessionSelection};
 use crate::goal_change_store::{GoalChangeStore, PendingGoalChange};
 use crate::inspect_state::InspectSource;
-use crate::projection::ProjectionConfig;
+use crate::intent_history::{Approval, Event, GoalRevision};
+use crate::projection::{ActiveProjection, ProjectionConfig};
 use crate::run_store::{RunStore, SourceCursorComparison};
 use crate::semantic_resolver::{
     self, CompactorConfig, InspectResolution, NativeGoalObservation, ResolverFailureKind,
@@ -26,6 +28,7 @@ Usage:\n\
   driftctl resume [--json]\n\
   driftctl inspect codex (--last | --session <id>) [--json] [--compactor luna|terra|sol] [--reasoning high|medium]\n\
   driftctl bundle --run <run-id> --json\n\
+  driftctl continue codex (--last | --session <id>) [--approve-goal | --edit-goal <text> | --retain-goal | --cancel] [--json]\n\
   driftctl run codex\n\
   driftctl close";
 
@@ -83,6 +86,7 @@ pub fn execute(root: &Path, arguments: impl IntoIterator<Item = String>) -> CliO
         "status" | "resume" => status(root, &arguments),
         "inspect" => return inspect(root, &arguments),
         "bundle" => return bundle(root, &arguments),
+        "continue" => return continue_codex(root, &arguments),
         "run" => run(root, &arguments),
         "close" => return close(root, &arguments),
         _ => Err(format!("unknown command: {command}\n\n{USAGE}")),
@@ -163,7 +167,7 @@ fn inspect(root: &Path, arguments: &[String]) -> CliOutput {
                     Ok(store) => store,
                     Err(error) => return CliOutput::error(error.to_string()),
                 };
-                let pending_goal_change = match proposal_store.load() {
+                let pending_goal_change = match proposal_store.load_pending() {
                     Ok(proposal) => proposal,
                     Err(error) => return CliOutput::error(error.to_string()),
                 };
@@ -386,7 +390,7 @@ fn load_goal_change(
     source_digest: &str,
 ) -> Result<Option<semantic_resolver::GoalChangeObservation>, String> {
     let store = GoalChangeStore::open(run).map_err(|error| error.to_string())?;
-    let Some(proposal) = store.load().map_err(|error| error.to_string())? else {
+    let Some(proposal) = store.load_pending().map_err(|error| error.to_string())? else {
         return Ok(None);
     };
     let event_sequence = accepted_event_sequence(recovered)?;
@@ -476,6 +480,401 @@ fn bundle(root: &Path, arguments: &[String]) -> CliOutput {
     match serde_json::to_string(&output) {
         Ok(output) => CliOutput::success(output),
         Err(_) => CliOutput::error("could not serialize sanitized run bundle"),
+    }
+}
+
+fn continue_codex(root: &Path, arguments: &[String]) -> CliOutput {
+    let options = match parse_continue_arguments(arguments) {
+        Ok(options) => options,
+        Err(error) => return CliOutput::error(error),
+    };
+    let inspect_arguments = options.inspect_arguments();
+    let inspection = inspect(root, &inspect_arguments);
+    if inspection.exit_code == 1 {
+        return inspection;
+    }
+    let document: Value = match serde_json::from_str(&inspection.stdout) {
+        Ok(document) => document,
+        Err(_) => return CliOutput::error("could not read inspect result before continuation"),
+    };
+    let blockers = document["blockers"].as_array().cloned().unwrap_or_default();
+    if blockers.iter().any(|blocker| {
+        !matches!(
+            blocker["kind"].as_str(),
+            Some("goal_change_pending" | "native_goal_conflict")
+        )
+    }) {
+        return inspection;
+    }
+    let Some(run_id) = document["run_id"].as_str() else {
+        return CliOutput::error("inspect result has no run ID");
+    };
+    let store = match RunStore::open_default(root, run_id) {
+        Ok(store) => store,
+        Err(error) => return CliOutput::error(error.to_string()),
+    };
+    let recovered = match store.recover() {
+        Ok(recovered) => recovered,
+        Err(error) => return CliOutput::error(error.to_string()),
+    };
+    let Some(cursor) = recovered.source_cursor.as_ref() else {
+        return CliOutput::error("stored inspect run has no accepted source cursor");
+    };
+    let proposal_store = match GoalChangeStore::open(&store) {
+        Ok(store) => store,
+        Err(error) => return CliOutput::error(error.to_string()),
+    };
+    let pending = match proposal_store.load_pending() {
+        Ok(pending) => pending,
+        Err(error) => return CliOutput::error(error.to_string()),
+    };
+    if let Some(proposal) = pending.as_ref() {
+        let sequence = match accepted_event_sequence(&recovered) {
+            Ok(sequence) => sequence,
+            Err(error) => return CliOutput::error(error),
+        };
+        if !proposal.matches(recovered.projection.revision, sequence, cursor.digest()) {
+            return CliOutput::blocked("pending goal-change decision is stale");
+        }
+    }
+
+    let action = match options.action.clone() {
+        Some(action) => action,
+        None if pending.is_none() && inspection.exit_code == 0 => ContinueAction::UseCurrent,
+        None if !std::io::stdin().is_terminal() => {
+            return CliOutput {
+                exit_code: 2,
+                stdout: inspection.stdout,
+                stderr: "operator decision required; rerun with --approve-goal, --edit-goal <text>, --retain-goal, or --cancel".to_owned(),
+            };
+        }
+        None => match prompt_for_goal_action(pending.as_ref()) {
+            Ok(action) => action,
+            Err(error) => return CliOutput::blocked(error),
+        },
+    };
+
+    let (approved_goal, approving_pending) = match action {
+        ContinueAction::Approve => match pending.as_ref() {
+            Some(proposal) => (proposal.proposed_goal().to_owned(), true),
+            None => (recovered.projection.goal.text.clone(), false),
+        },
+        ContinueAction::Edit(goal) => {
+            let Some(proposal) = pending.as_ref() else {
+                return CliOutput::error("there is no pending goal change to edit");
+            };
+            if let Err(error) = proposal_store.edit(proposal, &goal) {
+                return CliOutput::error(error.to_string());
+            }
+            drop(proposal_store);
+            drop(store);
+            return inspect(root, &inspect_arguments);
+        }
+        ContinueAction::Retain => {
+            let Some(proposal) = pending.as_ref() else {
+                return CliOutput::error("there is no pending goal change to reject");
+            };
+            if let Err(error) = proposal_store.reject(proposal) {
+                return CliOutput::error(error.to_string());
+            }
+            (recovered.projection.goal.text.clone(), false)
+        }
+        ContinueAction::Cancel => return inspection,
+        ContinueAction::UseCurrent => (recovered.projection.goal.text.clone(), false),
+    };
+
+    let imported = match codex_source::inspect(root, options.selection.as_borrowed()) {
+        Ok(imported) => imported,
+        Err(error) => return CliOutput::error(error.to_string()),
+    };
+    let source_bundle = match imported.neutral_bundle() {
+        Ok(bundle) => bundle,
+        Err(error) => return CliOutput::error(error.to_string()),
+    };
+    let observed_source = match InspectSource::from_bundle(&source_bundle) {
+        Ok(source) => source,
+        Err(error) => return CliOutput::error(error.to_string()),
+    };
+    if observed_source.run_id().as_str() != run_id
+        || observed_source.cursor().digest() != cursor.digest()
+    {
+        return CliOutput::blocked("source changed after inspect; inspect again before continuing");
+    }
+
+    let candidate_parent = store.path().join("workspaces");
+    if let Err(error) = create_private_directory(&candidate_parent) {
+        return CliOutput::error(error);
+    }
+    let pair = match crate::workspace::isolate_workspace(root, &candidate_parent) {
+        Ok(pair) => pair,
+        Err(error) => return CliOutput::error(error.to_string()),
+    };
+    let adapter = CodexChildAdapter::from_environment();
+    let request = match ChildForkRequest::new(
+        source_bundle.source().session_ref_private(),
+        pair.workflow().root(),
+        &approved_goal,
+    ) {
+        Ok(request) => request,
+        Err(error) => return CliOutput::error(error.to_string()),
+    };
+    let migration = match adapter.fork_and_migrate(request) {
+        Ok(migration) => migration,
+        Err(error) => return CliOutput::blocked(error.to_string()),
+    };
+    if let Err(error) = codex_source::verify_unchanged(root, &imported) {
+        return CliOutput::blocked(error.to_string());
+    }
+
+    let final_recovered = if approving_pending {
+        let proposal = pending.as_ref().expect("approval has pending proposal");
+        match apply_approved_goal(&store, &recovered, proposal) {
+            Ok(recovered) => {
+                if let Err(error) = proposal_store.mark_applied(proposal) {
+                    return CliOutput::blocked(error.to_string());
+                }
+                recovered
+            }
+            Err(error) => return CliOutput::blocked(error),
+        }
+    } else {
+        recovered
+    };
+    let projection_context = match public_projection_context(&final_recovered) {
+        Ok(context) => context,
+        Err(error) => return CliOutput::error(error),
+    };
+    let turn_request = match ChildTurnRequest::new(
+        migration.child_id(),
+        "Continue the accepted task from this bounded active-intent projection. Preserve every listed invariant and do not claim completion without the listed validation evidence.",
+        projection_context,
+    ) {
+        Ok(request) => request,
+        Err(error) => return CliOutput::error(error.to_string()),
+    };
+    let turn = match adapter.start_child_turn(turn_request) {
+        Ok(turn) => turn,
+        Err(error) => return CliOutput::blocked(error.to_string()),
+    };
+    if let Err(error) = codex_source::verify_unchanged(root, &imported) {
+        return CliOutput::blocked(error.to_string());
+    }
+
+    let output = json!({
+        "schema_version":1,
+        "status":"started",
+        "run_id":run_id,
+        "child_thread_id":migration.child_id(),
+        "child_cwd":migration.child_cwd(),
+        "goal":approved_goal,
+        "turn_id":turn.turn_id(),
+        "turn_status":format!("{:?}", turn.status()).to_ascii_lowercase(),
+        "parent_unchanged":true,
+        "source_unchanged":true,
+        "adoption":"manual",
+    });
+    if options.json {
+        match serde_json::to_string(&output) {
+            Ok(output) => CliOutput::success(output),
+            Err(_) => CliOutput::error("could not serialize continuation result"),
+        }
+    } else {
+        CliOutput::success(format!(
+            "started child {} in {}\nparent and source unchanged; adoption remains manual",
+            migration.child_id(),
+            migration.child_cwd().display()
+        ))
+    }
+}
+
+fn apply_approved_goal(
+    store: &RunStore,
+    recovered: &crate::run_store::RecoveredRun,
+    proposal: &PendingGoalChange,
+) -> Result<crate::run_store::RecoveredRun, String> {
+    let mut history = recovered.history.clone();
+    let current = history.goal();
+    let mut goal = GoalRevision::new(
+        current.revision.saturating_add(1),
+        proposal.proposed_goal(),
+        proposal.source_refs().to_vec(),
+    );
+    goal.supersedes_revision = Some(current.revision);
+    goal.approval = Some(Approval::from_sources(proposal.source_refs().to_vec()));
+    history
+        .append(Event::GoalRevised { goal })
+        .map_err(|error| error.to_string())?;
+    let record = history
+        .records()
+        .last()
+        .cloned()
+        .ok_or_else(|| "approved goal revision produced no history event".to_owned())?;
+    store
+        .append_pending(record)
+        .map_err(|error| error.to_string())?;
+    let mut projection = ActiveProjection::from_history(
+        &history,
+        ProjectionConfig::new(recovered.projection.overflow.budget),
+    )
+    .map_err(|error| error.to_string())?;
+    projection.generated_by = recovered.projection.generated_by.clone();
+    let cursor = recovered
+        .source_cursor
+        .as_ref()
+        .ok_or_else(|| "stored inspect run has no accepted source cursor".to_owned())?;
+    store
+        .commit_projection_with_source_cursor(&projection, cursor)
+        .map_err(|error| error.to_string())?;
+    store.recover().map_err(|error| error.to_string())
+}
+
+fn public_projection_context(recovered: &crate::run_store::RecoveredRun) -> Result<String, String> {
+    let cursor = recovered
+        .source_cursor
+        .as_ref()
+        .ok_or_else(|| "stored inspect run has no accepted source cursor".to_owned())?;
+    let resolution = cached_resolution(recovered.clone(), None, None);
+    let document = sanitized_json(&resolution, cursor.accepted_record_count(), cursor.digest())
+        .map_err(|error| error.to_string())?;
+    let document: Value = serde_json::from_str(&document).map_err(|error| error.to_string())?;
+    serde_json::to_string(&document["projection"]).map_err(|error| error.to_string())
+}
+
+fn create_private_directory(path: &Path) -> Result<(), String> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_dir() => {}
+        Ok(_) => return Err("workspace state path is not a private directory".to_owned()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            fs::create_dir(path)
+                .map_err(|error| format!("could not create workspace state: {error}"))?;
+        }
+        Err(error) => return Err(format!("could not inspect workspace state: {error}")),
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o700))
+            .map_err(|error| format!("could not protect workspace state: {error}"))?;
+    }
+    Ok(())
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum ContinueAction {
+    Approve,
+    Edit(String),
+    Retain,
+    Cancel,
+    UseCurrent,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum OwnedSessionSelection {
+    Last,
+    Session(String),
+}
+
+impl OwnedSessionSelection {
+    fn as_borrowed(&self) -> SessionSelection<'_> {
+        match self {
+            Self::Last => SessionSelection::Last,
+            Self::Session(id) => SessionSelection::Explicit(id),
+        }
+    }
+}
+
+struct ContinueOptions {
+    selection: OwnedSessionSelection,
+    action: Option<ContinueAction>,
+    json: bool,
+}
+
+impl ContinueOptions {
+    fn inspect_arguments(&self) -> Vec<String> {
+        let mut arguments = vec!["codex".to_owned()];
+        match &self.selection {
+            OwnedSessionSelection::Last => arguments.push("--last".to_owned()),
+            OwnedSessionSelection::Session(id) => {
+                arguments.push("--session".to_owned());
+                arguments.push(id.clone());
+            }
+        }
+        arguments.push("--json".to_owned());
+        arguments
+    }
+}
+
+fn parse_continue_arguments(arguments: &[String]) -> Result<ContinueOptions, String> {
+    if arguments.first().map(String::as_str) != Some("codex") {
+        return Err("continue requires provider codex".to_owned());
+    }
+    let mut selection = None;
+    let mut action = None;
+    let mut json = false;
+    let mut index = 1;
+    while index < arguments.len() {
+        match arguments[index].as_str() {
+            "--last" if selection.is_none() => selection = Some(OwnedSessionSelection::Last),
+            "--session" if selection.is_none() => {
+                index += 1;
+                let id = arguments
+                    .get(index)
+                    .filter(|id| !id.is_empty())
+                    .ok_or_else(|| "--session requires an ID".to_owned())?;
+                selection = Some(OwnedSessionSelection::Session(id.clone()));
+            }
+            "--approve-goal" if action.is_none() => action = Some(ContinueAction::Approve),
+            "--edit-goal" if action.is_none() => {
+                index += 1;
+                let goal = arguments
+                    .get(index)
+                    .filter(|goal| !goal.trim().is_empty())
+                    .ok_or_else(|| "--edit-goal requires text".to_owned())?;
+                action = Some(ContinueAction::Edit(goal.clone()));
+            }
+            "--retain-goal" if action.is_none() => action = Some(ContinueAction::Retain),
+            "--cancel" if action.is_none() => action = Some(ContinueAction::Cancel),
+            "--json" if !json => json = true,
+            option => return Err(format!("unsupported or repeated continue option: {option}")),
+        }
+        index += 1;
+    }
+    Ok(ContinueOptions {
+        selection: selection
+            .ok_or_else(|| "continue requires --last or --session <id>".to_owned())?,
+        action,
+        json,
+    })
+}
+
+fn prompt_for_goal_action(pending: Option<&PendingGoalChange>) -> Result<ContinueAction, String> {
+    if let Some(proposal) = pending {
+        eprintln!("proposed goal: {}", proposal.proposed_goal());
+        eprintln!("approve, edit, retain, or cancel? [a/e/r/c]");
+    } else {
+        eprintln!("approve migration of the accepted goal to an isolated child? [a/c]");
+    }
+    let mut answer = String::new();
+    std::io::stdin()
+        .read_line(&mut answer)
+        .map_err(|error| format!("could not read operator decision: {error}"))?;
+    match answer.trim().to_ascii_lowercase().as_str() {
+        "a" | "approve" => Ok(ContinueAction::Approve),
+        "r" | "retain" if pending.is_some() => Ok(ContinueAction::Retain),
+        "c" | "cancel" => Ok(ContinueAction::Cancel),
+        "e" | "edit" if pending.is_some() => {
+            eprintln!("new goal:");
+            let mut goal = String::new();
+            std::io::stdin()
+                .read_line(&mut goal)
+                .map_err(|error| format!("could not read edited goal: {error}"))?;
+            if goal.trim().is_empty() {
+                Err("edited goal must not be empty".to_owned())
+            } else {
+                Ok(ContinueAction::Edit(goal.trim().to_owned()))
+            }
+        }
+        _ => Err("operator cancelled: unrecognized decision".to_owned()),
     }
 }
 
