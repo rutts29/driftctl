@@ -469,6 +469,22 @@ impl CodexChildAdapter {
         server.stop();
         result
     }
+
+    /// Re-read one persisted child goal through a fresh App Server process.
+    pub fn observe_persisted_goal(
+        &self,
+        child_thread_id: &str,
+    ) -> Result<GoalObservation, ChildAdapterError> {
+        let child_thread_id = validate_identifier(child_thread_id.to_owned(), "child thread ID")?;
+        let policy = WorkerPolicy::luna_max();
+        let mut server = AppServer::start(&self.program, &policy)?;
+        let result = (|| {
+            server.initialize()?;
+            server.get_goal(&child_thread_id)
+        })();
+        server.stop();
+        result
+    }
 }
 
 fn manual_goal_handoff_error(

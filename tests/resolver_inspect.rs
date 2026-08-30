@@ -69,11 +69,19 @@ import os
 import sys
 
 if "app-server" in sys.argv and "--stdio" in sys.argv:
-    child_goal = None
+    rpc_capture = os.environ["DRIFTCTL_FAKE_RPC_CAPTURE"]
+    goals_path = rpc_capture + ".goals"
+    try:
+        with open(goals_path, encoding="utf-8") as goals_file:
+            child_goals = json.load(goals_file)
+    except FileNotFoundError:
+        child_goals = {}
+    def save_goals():
+        with open(goals_path, "w", encoding="utf-8") as goals_file:
+            json.dump(child_goals, goals_file, sort_keys=True)
     for raw in sys.stdin:
         request = json.loads(raw)
         method = request.get("method")
-        rpc_capture = os.environ.get("DRIFTCTL_FAKE_RPC_CAPTURE")
         if rpc_capture:
             with open(rpc_capture, "a", encoding="utf-8") as capture:
                 capture.write(json.dumps(request, sort_keys=True) + "\n")
@@ -105,6 +113,9 @@ if "app-server" in sys.argv and "--stdio" in sys.argv:
         elif method == "thread/goal/get":
             thread_id = request["params"]["threadId"]
             if thread_id.startswith("continued-child"):
+                child_goal = os.environ.get(
+                    "DRIFTCTL_FAKE_CHILD_GOAL_OVERRIDE", child_goals.get(thread_id)
+                )
                 result = {"goal": None if child_goal is None else {"threadId":thread_id,"objective":child_goal}}
             else:
                 result = json.loads(os.environ.get("DRIFTCTL_FAKE_GOAL", '{"goal":null}'))
@@ -151,19 +162,26 @@ if "app-server" in sys.argv and "--stdio" in sys.argv:
                 }
             }}), flush=True)
         elif method == "thread/goal/clear":
-            child_goal = None
+            child_goals.pop(request["params"]["threadId"], None)
+            save_goals()
             result = {"cleared":True}
         elif method == "thread/goal/set":
             if os.environ.get("DRIFTCTL_FAKE_GOAL_SET_UNAVAILABLE") == "1":
                 print(json.dumps({"id":request["id"],"error":{"code":-32601,"message":"unsupported goal set"}}), flush=True)
                 continue
             child_goal = request["params"]["objective"]
+            child_goals[request["params"]["threadId"]] = child_goal
+            save_goals()
             result = {"goal":{"threadId":request["params"]["threadId"],"objective":child_goal}}
         elif method == "turn/start":
             source_path = os.environ.get("DRIFTCTL_FAKE_MUTATE_SOURCE_PATH")
             if source_path:
                 with open(source_path, "w", encoding="utf-8") as source_file:
                     source_file.write("mutated by child turn\n")
+            post_turn_goal = os.environ.get("DRIFTCTL_FAKE_POST_TURN_GOAL")
+            if post_turn_goal:
+                child_goals[request["params"]["threadId"]] = post_turn_goal
+                save_goals()
             result = {"turn":{"id":"continued-turn-" + request["params"]["threadId"],"items":[],"status":os.environ.get("DRIFTCTL_FAKE_TURN_STATUS", "completed")}}
         else:
             print(json.dumps({"id":request["id"],"error":{"code":-32601,"message":"unexpected"}}), flush=True)
@@ -1076,6 +1094,70 @@ fn run_bound_verification_attaches_evidence_and_candidate_change_reopens_it() {
 }
 
 #[test]
+fn continue_blocks_when_the_child_goal_changes_during_the_turn() {
+    let mut fixture = Fixture::new(vec![base_proposal()]);
+    fixture.environment.insert(
+        "DRIFTCTL_FAKE_POST_TURN_GOAL",
+        "unapproved replacement goal".to_owned(),
+    );
+    let inspected = fixture.run(&["--json"]);
+    assert_eq!(inspected.status.code(), Some(0), "{inspected:?}");
+
+    let continued = fixture.run_continue(&["--json"]);
+    assert_eq!(continued.status.code(), Some(2), "{continued:?}");
+    assert!(
+        String::from_utf8_lossy(&continued.stderr)
+            .contains("child native goal changed after continuation"),
+        "{continued:?}"
+    );
+    fixture.assert_unchanged();
+}
+
+#[test]
+fn external_child_goal_change_prevents_verified_completion() {
+    let mut fixture = Fixture::new(vec![base_proposal()]);
+    let inspected = fixture.run(&["--json"]);
+    assert_eq!(inspected.status.code(), Some(0), "{inspected:?}");
+    let inspected_document: Value =
+        serde_json::from_slice(&inspected.stdout).expect("inspect JSON");
+    let run_id = inspected_document["run_id"].as_str().expect("run ID");
+    let requirement_id = inspected_document["projection"]["frontier"][0]["id"]
+        .as_str()
+        .expect("requirement ID");
+    let continued = fixture.run_continue(&["--json"]);
+    assert_eq!(continued.status.code(), Some(0), "{continued:?}");
+    assert_eq!(
+        fixture
+            .run_bound_verify(run_id, requirement_id, "/bin/true")
+            .status
+            .code(),
+        Some(0)
+    );
+    for gate in ["regression", "integration", "protected_scope"] {
+        let gated = fixture.run_bound_gate(run_id, gate, "/bin/true");
+        assert_eq!(gated.status.code(), Some(0), "{gate}: {gated:?}");
+    }
+    fixture.environment.insert(
+        "DRIFTCTL_FAKE_CHILD_GOAL_OVERRIDE",
+        "externally changed goal".to_owned(),
+    );
+
+    let review = fixture.run_bound_gate(run_id, "review", "/bin/true");
+    assert_eq!(review.status.code(), Some(0), "{review:?}");
+    let review_document: Value = serde_json::from_slice(&review.stdout).expect("review JSON");
+    assert_eq!(review_document["verified_completion"], false);
+    assert!(
+        review_document["completion_blockers"]
+            .as_array()
+            .expect("completion blockers")
+            .iter()
+            .any(|blocker| blocker["kind"] == "native_goal_alignment"),
+        "{review_document}"
+    );
+    fixture.assert_unchanged();
+}
+
+#[test]
 fn continue_returns_a_child_only_manual_goal_handoff_when_migration_is_unavailable() {
     let mut fixture = Fixture::new(vec![base_proposal()]);
     fixture
@@ -1134,6 +1216,46 @@ fn continue_blocks_when_the_child_mutates_the_source_after_isolation() {
     fixture.environment.insert(
         "DRIFTCTL_FAKE_MUTATE_SOURCE_PATH",
         fixture.root.join("README.md").display().to_string(),
+    );
+
+    let continued = fixture.run_continue(&["--json"]);
+    assert_eq!(continued.status.code(), Some(2), "{continued:?}");
+    assert!(
+        String::from_utf8_lossy(&continued.stderr).contains("source workspace changed"),
+        "{continued:?}"
+    );
+}
+
+#[test]
+fn compare_blocks_when_a_child_mutates_excluded_harness_configuration() {
+    let mut fixture = Fixture::new(vec![base_proposal()]);
+    fs::create_dir(fixture.root.join(".codex")).expect("create excluded harness directory");
+    let configuration = fixture.root.join(".codex/config.toml");
+    fs::write(&configuration, "sandbox = 'workspace-write'\n")
+        .expect("write excluded harness configuration");
+    fixture.environment.insert(
+        "DRIFTCTL_FAKE_MUTATE_SOURCE_PATH",
+        configuration.display().to_string(),
+    );
+
+    let compared = fixture.run_compare(&["--json"]);
+    assert_eq!(compared.status.code(), Some(2), "{compared:?}");
+    assert!(
+        String::from_utf8_lossy(&compared.stderr).contains("source workspace changed"),
+        "{compared:?}"
+    );
+}
+
+#[test]
+fn continue_blocks_when_the_child_mutates_excluded_harness_configuration() {
+    let mut fixture = Fixture::new(vec![base_proposal()]);
+    fs::create_dir(fixture.root.join(".codex")).expect("create excluded harness directory");
+    let configuration = fixture.root.join(".codex/config.toml");
+    fs::write(&configuration, "sandbox = 'workspace-write'\n")
+        .expect("write excluded harness configuration");
+    fixture.environment.insert(
+        "DRIFTCTL_FAKE_MUTATE_SOURCE_PATH",
+        configuration.display().to_string(),
     );
 
     let continued = fixture.run_continue(&["--json"]);

@@ -7,7 +7,9 @@ use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use driftctl::workspace::{WorkspaceError, candidate_diff, isolate_workspace};
+use driftctl::workspace::{
+    WorkspaceError, candidate_diff, isolate_workspace, verify_source_attestation,
+};
 
 static TEMPORARY_DIRECTORY_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
@@ -64,6 +66,35 @@ fn write_executable(path: &Path, contents: &str) {
     fs::set_permissions(path, permissions).expect("make fixture executable");
 }
 
+fn assert_protected_source_change_is_detected(
+    case: &str,
+    arrange: impl FnOnce(&Path),
+    mutate: impl FnOnce(&Path),
+) {
+    let (root, source, candidates) = repository(case);
+    fs::write(
+        source.join(".gitignore"),
+        ".aider/\n.codex/\n.cursor/\n.driftctl/\n.env\nevals/hidden-graders/\n",
+    )
+    .expect("write protected-path ignore policy");
+    fs::write(source.join("tracked.txt"), "tracked\n").expect("write tracked fixture");
+    fs::write(source.join("other.txt"), "other\n").expect("write alternate fixture");
+    git(&source, &["add", ".gitignore", "tracked.txt", "other.txt"]);
+    git(&source, &["commit", "--quiet", "-m", "fixture"]);
+    arrange(&source);
+
+    let pair = isolate_workspace(&source, &candidates).expect("isolate workspace snapshot");
+    verify_source_attestation(&source, pair.source_attestation())
+        .expect("unchanged protected source matches its attestation");
+    mutate(&source);
+
+    assert!(matches!(
+        verify_source_attestation(&source, pair.source_attestation()),
+        Err(WorkspaceError::SourceChanged)
+    ));
+    fs::remove_dir_all(root).expect("remove isolated test directory");
+}
+
 #[test]
 fn isolates_an_equal_read_only_snapshot_with_dirty_untracked_ignored_and_symlink_content() {
     let (root, source, candidates) = repository("complete-snapshot");
@@ -73,10 +104,12 @@ fn isolates_an_equal_read_only_snapshot_with_dirty_untracked_ignored_and_symlink
     )
     .expect("write ignore policy");
     fs::write(source.join("tracked.txt"), "committed\n").expect("write tracked fixture");
+    fs::write(source.join(".env"), "tracked secret\n").expect("write tracked secret fixture");
     write_executable(&source.join("bin.sh"), "#!/bin/sh\necho committed\n");
     fs::create_dir_all(source.join("links")).expect("create symlink directory");
     symlink("../tracked.txt", source.join("links/tracked-link")).expect("create safe symlink");
     git(&source, &["add", "."]);
+    git(&source, &["add", "--force", ".env"]);
     git(&source, &["commit", "--quiet", "-m", "fixture"]);
 
     fs::write(source.join("tracked.txt"), "dirty working-tree bytes\n")
@@ -156,6 +189,7 @@ fn isolates_an_equal_read_only_snapshot_with_dirty_untracked_ignored_and_symlink
             PathBuf::from("../tracked.txt")
         );
         assert!(!root.join("ignored.txt").exists());
+        assert!(!root.join(".env").exists());
         assert!(!root.join(".driftctl").exists());
         assert!(!root.join(".codex").exists());
         assert!(!root.join("evals/hidden-graders").exists());
@@ -232,5 +266,94 @@ fn refuses_special_files_and_candidate_roots_inside_the_source() {
         Err(WorkspaceError::CandidateRootInsideSource { .. })
     ));
 
+    fs::remove_dir_all(root).expect("remove isolated test directory");
+}
+
+#[test]
+fn detects_every_protected_excluded_source_change_without_copying_it_to_candidates() {
+    assert_protected_source_change_is_detected(
+        "protected-create",
+        |_| {},
+        |source| {
+            fs::create_dir(source.join(".aider")).expect("create protected directory");
+            fs::write(source.join(".aider/created.json"), "private")
+                .expect("create protected file");
+        },
+    );
+    assert_protected_source_change_is_detected(
+        "protected-delete",
+        |source| {
+            fs::create_dir(source.join(".driftctl")).expect("create protected directory");
+            fs::write(source.join(".driftctl/state.json"), "private")
+                .expect("write protected file");
+        },
+        |source| {
+            fs::remove_file(source.join(".driftctl/state.json")).expect("delete protected file");
+        },
+    );
+    assert_protected_source_change_is_detected(
+        "protected-content",
+        |source| {
+            fs::create_dir(source.join(".codex")).expect("create protected directory");
+            fs::write(source.join(".codex/auth.json"), "before").expect("write protected file");
+        },
+        |source| {
+            fs::write(source.join(".codex/auth.json"), "after").expect("change protected content");
+        },
+    );
+    assert_protected_source_change_is_detected(
+        "protected-mode",
+        |source| {
+            fs::write(source.join(".env"), "private").expect("write secret-named file");
+        },
+        |source| {
+            let mut permissions = fs::metadata(source.join(".env"))
+                .expect("inspect secret-named file")
+                .permissions();
+            permissions.set_mode(0o600);
+            fs::set_permissions(source.join(".env"), permissions)
+                .expect("change protected file mode");
+        },
+    );
+    assert_protected_source_change_is_detected(
+        "protected-symlink",
+        |source| {
+            fs::create_dir(source.join(".cursor")).expect("create protected directory");
+            symlink("../tracked.txt", source.join(".cursor/current"))
+                .expect("create protected symlink");
+        },
+        |source| {
+            fs::remove_file(source.join(".cursor/current")).expect("remove protected symlink");
+            symlink("../other.txt", source.join(".cursor/current"))
+                .expect("change protected symlink target");
+        },
+    );
+    assert_protected_source_change_is_detected(
+        "protected-hidden-grader",
+        |source| {
+            fs::create_dir_all(source.join("evals/hidden-graders"))
+                .expect("create protected hidden grader directory");
+            fs::write(source.join("evals/hidden-graders/check.py"), "before")
+                .expect("write protected hidden grader");
+        },
+        |source| {
+            fs::write(source.join("evals/hidden-graders/check.py"), "after")
+                .expect("change protected hidden grader");
+        },
+    );
+}
+
+#[test]
+fn excludes_git_internals_from_source_attestation() {
+    let (root, source, candidates) = repository("attestation-excludes-git");
+    fs::write(source.join("tracked.txt"), "tracked\n").expect("write tracked fixture");
+    git(&source, &["add", "tracked.txt"]);
+    git(&source, &["commit", "--quiet", "-m", "fixture"]);
+    let pair = isolate_workspace(&source, &candidates).expect("isolate workspace snapshot");
+
+    git(&source, &["config", "driftctl.attestation-test", "changed"]);
+
+    verify_source_attestation(&source, pair.source_attestation())
+        .expect("Git internals are outside source attestation");
     fs::remove_dir_all(root).expect("remove isolated test directory");
 }

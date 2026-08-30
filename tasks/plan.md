@@ -50,31 +50,31 @@
 
 ### G1 — Feasibility
 
-- [ ] T01–T03 complete.
-- [ ] Session discovery, fork isolation, and goal capability branches selected from evidence.
-- [ ] Human approves manual goal fallback when automation is unsupported.
+- [x] T01–T03 complete.
+- [x] Session discovery, fork isolation, and goal capability branches selected from evidence.
+- [x] Manual child-only goal fallback is explicit, blocked, and requires fresh operator approval when automation is unsupported.
 
 ### G2 — Intent core
 
-- [ ] T04–T08 complete.
-- [ ] Active intent cannot disappear without a source-linked transition.
-- [ ] Repeated compaction remains bounded.
-- [ ] Ambiguous conflict cannot auto-commit.
+- [x] T04–T08 complete.
+- [x] Active intent cannot disappear without a source-linked transition.
+- [x] Repeated compaction remains bounded.
+- [x] Ambiguous conflict cannot auto-commit.
 
 ### G3 — Workflow
 
-- [ ] T09–T13 complete.
-- [ ] Install → inspect → compare works.
-- [ ] Parent session, goal, source worktree, and harness configuration remain unchanged.
-- [ ] Host-wide YOLO limitation is visible.
+- [x] T09–T13 complete.
+- [x] Install → inspect → compare works through the packaged binary boundary.
+- [x] Parent session, goal, source worktree, and harness configuration remain unchanged or the run blocks.
+- [x] Host-wide YOLO limitation is visible.
 
 ### G4 — Evidence
 
-- [ ] T14–T17 complete.
-- [ ] Five checkpoint pairs are complete or reduced scope is disclosed.
-- [ ] Retrospective results are labelled fidelity-only.
-- [ ] Pilot and long-session results remain separate.
-- [ ] Five-case results are described without significance claims.
+- [x] T14–T17 complete.
+- [x] Five frozen checkpoints were processed once: four coding comparisons and one disclosed pre-coding safety block.
+- [x] Retrospective results are labelled fidelity-only.
+- [x] Pilot and long-session results remain separate.
+- [x] Five-case results are described without significance claims.
 
 ### G5 — Ship
 

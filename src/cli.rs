@@ -967,11 +967,17 @@ fn verify_requirement(root: &Path, arguments: &[String]) -> CliOutput {
                 Ok(gates) => gates,
                 Err(error) => return CliOutput::error(error.to_string()),
             };
+            let native_goal_aligned = CodexChildAdapter::from_environment()
+                .observe_persisted_goal(binding.child_thread_id())
+                .ok()
+                .and_then(|goal| goal.objective().map(str::to_owned))
+                .is_some_and(|goal| binding.matches_approved_goal(&goal));
             let completion_blockers = completion_blockers(
                 &update.projection,
                 &gates,
                 binding,
                 &result.candidate_after_digest,
+                native_goal_aligned,
             );
             document.insert(
                 "verified_completion".to_owned(),
@@ -1130,6 +1136,7 @@ fn completion_blockers(
     gates: &CompletionGateState,
     binding: &crate::run_store::CandidateBinding,
     candidate_digest: &str,
+    native_goal_aligned: bool,
 ) -> Vec<Value> {
     let mut blockers = projection
         .closure
@@ -1144,10 +1151,10 @@ fn completion_blockers(
             })
         })
         .collect::<Vec<_>>();
-    if binding.approved_goal_digest().trim().is_empty() {
+    if binding.approved_goal_digest().trim().is_empty() || !native_goal_aligned {
         blockers.push(json!({
             "kind":"native_goal_alignment",
-            "reason":"the continued child has no verified approved-goal binding",
+            "reason":"the continued child's observable native goal does not match its approved-goal binding",
         }));
     }
     for gate in CompletionGate::ALL {
@@ -1282,10 +1289,23 @@ fn compare_codex(root: &Path, arguments: &[String]) -> CliOutput {
         Ok(turn) => turn,
         Err(error) => return CliOutput::blocked(error.to_string()),
     };
+    let baseline_goal_after = match adapter.observe_persisted_goal(baseline.child_id()) {
+        Ok(goal) => goal,
+        Err(error) => return CliOutput::blocked(error.to_string()),
+    };
+    let workflow_goal_after = match adapter.observe_persisted_goal(workflow.child_id()) {
+        Ok(goal) => goal,
+        Err(error) => return CliOutput::blocked(error.to_string()),
+    };
+    if baseline_goal_after.objective() != Some(goal.as_str())
+        || workflow_goal_after.objective() != Some(goal.as_str())
+    {
+        return CliOutput::blocked("a child native goal changed after comparison");
+    }
     if let Err(error) = codex_source::verify_unchanged(root, &imported) {
         return CliOutput::blocked(error.to_string());
     }
-    if let Err(error) = crate::workspace::verify_source_unchanged(root, pair.source_pre_manifest())
+    if let Err(error) = crate::workspace::verify_source_attestation(root, pair.source_attestation())
     {
         return CliOutput::blocked(error.to_string());
     }
@@ -1557,7 +1577,7 @@ fn continue_codex(root: &Path, arguments: &[String]) -> CliOutput {
                 return CliOutput::blocked(source_error.to_string());
             }
             if let Err(source_error) =
-                crate::workspace::verify_source_unchanged(root, pair.source_pre_manifest())
+                crate::workspace::verify_source_attestation(root, pair.source_attestation())
             {
                 return CliOutput::blocked(source_error.to_string());
             }
@@ -1599,10 +1619,17 @@ fn continue_codex(root: &Path, arguments: &[String]) -> CliOutput {
         Ok(turn) => turn,
         Err(error) => return CliOutput::blocked(error.to_string()),
     };
+    let child_goal_after = match adapter.observe_persisted_goal(migration.child_id()) {
+        Ok(goal) => goal,
+        Err(error) => return CliOutput::blocked(error.to_string()),
+    };
+    if child_goal_after.objective() != Some(approved_goal.as_str()) {
+        return CliOutput::blocked("child native goal changed after continuation");
+    }
     if let Err(error) = codex_source::verify_unchanged(root, &imported) {
         return CliOutput::blocked(error.to_string());
     }
-    if let Err(error) = crate::workspace::verify_source_unchanged(root, pair.source_pre_manifest())
+    if let Err(error) = crate::workspace::verify_source_attestation(root, pair.source_attestation())
     {
         return CliOutput::blocked(error.to_string());
     }
@@ -1613,7 +1640,7 @@ fn continue_codex(root: &Path, arguments: &[String]) -> CliOutput {
         Err(error) => return CliOutput::error(error.to_string()),
     };
     if continuation_completed {
-        let Some(observed_child_goal) = migration.child_goal().objective() else {
+        let Some(observed_child_goal) = child_goal_after.objective() else {
             return CliOutput::blocked(
                 "completed child has no observed native goal; candidate was not bound",
             );

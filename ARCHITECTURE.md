@@ -375,19 +375,21 @@ preconditions
 - Tracked working-tree bytes.
 - Selected untracked, non-ignored files.
 - File mode and symlink metadata.
-- Exclusions:
+- Candidate-copy exclusions:
   - `.git/` internals;
   - Driftctl state;
   - provider credentials/configuration;
   - explicit secret patterns;
   - evaluator hidden graders.
+- Source attestation streams every excluded protected path into an opaque digest; paths and contents are not retained or rendered.
+- `.git/` internals are outside both candidate copies and source attestation.
 
 ### Snapshot outputs
 
 - Baseline root.
 - Workflow root.
 - Identical pre-run manifest digest.
-- Source pre/post manifest digest.
+- Opaque source pre/post attestation covering the candidate-visible manifest plus protected excluded paths.
 - Candidate diff per arm.
 
 ### Execution policy
@@ -398,6 +400,7 @@ preconditions
 - Driftctl does not add YOLO permission.
 - Host-wide provider permission voids containment guarantee.
 - Source non-mutation still checked and reported after every run.
+- Observable child native goal is re-read after the child turn and before each run-bound completion decision.
 
 ## Closure Model
 

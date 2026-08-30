@@ -70,7 +70,7 @@ driftctl verify --run <run-id> --gate review --json -- <review-command>
 
 The review command must exit nonzero when any unresolved `Critical` or `Required` finding exists. Review is one-shot per candidate digest: after it records a failure, the candidate must change before another review, which also makes prior requirement and gate evidence stale. `verified_completion` becomes true only when every active requirement has current evidence, all four gates pass on the same candidate digest, no conflict or overflow remains, and the continued child has the exact goal binding already proved during migration.
 
-Driftctl has no service and no telemetry. Provider calls use the user's existing Codex authentication and usage allowance. Source session, source worktree, and parent native goal are read-only; candidate edits occur in an isolated workspace. Isolation is workspace-only: inherited host-wide or YOLO permissions remain outside Driftctl's containment guarantee.
+Driftctl has no service and no telemetry. Provider calls use the user's existing Codex authentication and usage allowance. Source session, source worktree, and parent native goal are read-only; candidate edits occur in an isolated workspace. Paths excluded from candidate copies—harness/provider configuration, local Driftctl state, secret-named files, and hidden graders—are streamed into an opaque source attestation so create/delete/content/mode/symlink changes block without exposing or copying them; `.git` internals remain outside this check. The child native goal is re-read after its turn and before run-bound verified completion. Isolation is workspace-only: inherited host-wide or YOLO permissions remain outside Driftctl's containment guarantee.
 
 Older `start`, `steer`, `resume`, `verify`, and `close` commands remain available for the legacy local-ledger workflow; they are not the current native-session flow above.
 
@@ -87,6 +87,17 @@ One separate no-TTY conflict safety case passed: `continue` exited blocked befor
 The archived five-case hard-loss result remains historical fault-injection evidence only: workflow 5/5 versus worktree-only baseline 3/5. It predates the current exact-scope and independent-review gates and is not combined with the intact-session result.
 
 The native runner uses `gpt-5.6-luna` at `max` reasoning by default. Recorded environment versions include Rust/Cargo 1.97.1, Python 3.14.4 (3.11+ required), Git 2.53.0, and `codex-cli 0.150.1`; live behavior, timing, and usage depend on the executing user's Codex account and configuration.
+
+### Claim index
+
+| Public claim | Reproducible evidence |
+|---|---|
+| Native-session projection is source-linked, bounded, and compaction-aware | [`tests/inspect.rs`](tests/inspect.rs), [`tests/resolver_inspect.rs`](tests/resolver_inspect.rs), long-session compaction entry in [`IMPROVEMENT-CHANGELOG.md`](IMPROVEMENT-CHANGELOG.md) |
+| Parent session, native goal, and source worktree are read-only inputs | Installed-boundary regressions in [`tests/resolver_inspect.rs`](tests/resolver_inspect.rs), [`evals/results/conflict-gate.json`](evals/results/conflict-gate.json) |
+| Ambiguous unattended steering blocks before child creation | [`evals/results/conflict-gate.json`](evals/results/conflict-gate.json), case 05 in [`evals/results/native-suite-20260830/summary.json`](evals/results/native-suite-20260830/summary.json) |
+| The frozen suite measured no coding-efficacy improvement | [`evals/results/native-suite-20260830/summary.json`](evals/results/native-suite-20260830/summary.json), immutable arm files in [`evals/results/native-suite-20260830`](evals/results/native-suite-20260830) |
+| The Linux archive installs only after checksum and entrypoint verification | [`release/tests/test_installer.py`](release/tests/test_installer.py), exact commands in [`REPRODUCING.md`](REPRODUCING.md) |
+| Cross-harness portability is a strict bundle seam, not native control | [`tests/session_bundle.rs`](tests/session_bundle.rs), bundle process test in [`tests/resolver_inspect.rs`](tests/resolver_inspect.rs), schema in [`SPEC.md`](SPEC.md) |
 
 ## Checks
 

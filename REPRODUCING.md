@@ -66,6 +66,14 @@ PYTHONDONTWRITEBYTECODE=1 python3 -m unittest \
 
 The evaluator command runs the complete deterministic evaluator suite; it does not invoke Codex. The release test builds and installs the real binary locally and checks corrupted-archive rejection.
 
+An optional read-only live probe exercises the fresh-process native-goal observation used after child turns and before closure. It starts no model turn and changes no session:
+
+```sh
+DRIFTCTL_REAL_THREAD_ID=<approved-persisted-thread-id> \
+  cargo test --locked --test codex_child_adapter \
+  observes_a_persisted_goal_through_a_fresh_real_app_server -- --ignored
+```
+
 ## Local install rehearsal
 
 Rehearse the release archive, sidecar checksum, and installer without modifying the user's normal binary directory:

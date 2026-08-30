@@ -445,3 +445,13 @@ fn returns_an_exact_manual_child_handoff_after_goal_capability_failure() {
     );
     fs::remove_dir_all(root).expect("remove test directory");
 }
+
+#[test]
+#[ignore = "requires an authenticated Codex CLI and DRIFTCTL_REAL_THREAD_ID"]
+fn observes_a_persisted_goal_through_a_fresh_real_app_server() {
+    let thread_id = std::env::var("DRIFTCTL_REAL_THREAD_ID")
+        .expect("set DRIFTCTL_REAL_THREAD_ID to an approved persisted thread");
+    CodexChildAdapter::from_environment()
+        .observe_persisted_goal(&thread_id)
+        .expect("read persisted goal through a fresh App Server process");
+}
