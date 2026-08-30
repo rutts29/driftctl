@@ -1,10 +1,15 @@
 use std::fs;
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
 use serde_json::json;
 
 use crate::agent::{display_path, run_codex};
 use crate::codex_source::{self, SessionSelection};
+use crate::projection::ProjectionConfig;
+use crate::semantic_resolver::{
+    self, CompactorConfig, ResolverFailureKind, sanitized_human, sanitized_json,
+};
 use crate::{ClosureError, Ledger, Snapshot};
 
 const USAGE: &str = "driftctl — durable continuity for coding-agent tasks\n\n\
@@ -14,7 +19,7 @@ Usage:\n\
   driftctl satisfy --id <requirement-id> --evidence <text>\n\
   driftctl status [--json]\n\
   driftctl resume [--json]\n\
-  driftctl inspect codex (--last | --session <id>) [--json]\n\
+  driftctl inspect codex (--last | --session <id>) [--json] [--compactor luna|terra|sol] [--reasoning high|medium]\n\
   driftctl run codex\n\
   driftctl close";
 
@@ -84,40 +89,89 @@ pub fn execute(root: &Path, arguments: impl IntoIterator<Item = String>) -> CliO
 
 fn inspect(root: &Path, arguments: &[String]) -> CliOutput {
     let parsed = parse_inspect_arguments(arguments);
-    let Ok((selection, json)) = parsed else {
+    let Ok(options) = parsed else {
         return CliOutput::error(parsed.expect_err("checked error"));
     };
-    match codex_source::inspect(root, selection) {
-        Ok(imported) => {
-            let output = if json {
-                serde_json::to_string(&json!({
-                    "schema_version": 1,
-                    "provider": "codex",
-                    "session": imported.redacted_session(),
-                    "imported_user_records": imported.imported_user_record_count(),
-                    "source_digest": imported.source_digest(),
-                    "blocker": "projection_not_built",
-                }))
-                .unwrap_or_else(|_| "{\"schema_version\":1}".to_owned())
-            } else {
-                format!(
-                    "provider: codex\nsession: {}\nimported user records: {}\nsource digest: {}\nblocker: projection_not_built",
-                    imported.redacted_session(),
+    let imported = match codex_source::inspect(root, options.selection) {
+        Ok(imported) => imported,
+        Err(error) => return CliOutput::error(error.to_string()),
+    };
+    let bundle = match imported.neutral_bundle() {
+        Ok(bundle) => bundle,
+        Err(error) => return CliOutput::error(error.to_string()),
+    };
+    let projection_config = match inspect_projection_config() {
+        Ok(config) => config,
+        Err(error) => return CliOutput::error(error),
+    };
+    let disclosure = options.compactor.disclosure();
+    // This write intentionally occurs before spawning the paid provider call.
+    // JSON mode reserves stdout for its single machine document.
+    if writeln!(std::io::stderr().lock(), "{disclosure}").is_err() {
+        return CliOutput::error("could not write compactor disclosure before provider call");
+    }
+    match semantic_resolver::resolve(root, &bundle, options.compactor, projection_config) {
+        Ok(resolution) => {
+            let output = if options.json {
+                sanitized_json(
+                    &resolution,
                     imported.imported_user_record_count(),
-                    imported.source_digest(),
+                    &imported.source_digest(),
+                )
+                .unwrap_or_else(|_| {
+                    "{\"schema_version\":1,\"status\":\"error\",\"error\":\"serialization_failed\"}"
+                        .to_owned()
+                })
+            } else {
+                sanitized_human(
+                    &resolution,
+                    imported.imported_user_record_count(),
+                    &imported.source_digest(),
                 )
             };
             CliOutput {
-                exit_code: 2,
+                exit_code: if resolution.projection.continuation_blocked() {
+                    2
+                } else {
+                    0
+                },
                 stdout: output,
                 stderr: String::new(),
             }
         }
-        Err(error) => CliOutput::error(error.to_string()),
+        Err(failure) => {
+            let error = match failure.kind {
+                ResolverFailureKind::Execution => "compactor_execution_failed",
+                ResolverFailureKind::InvalidProposal => "invalid_compactor_proposal",
+            };
+            let output = if options.json {
+                serde_json::to_string(&json!({
+                    "schema_version":1,
+                    "status":"error",
+                    "error":error,
+                    "resolver":failure.metadata,
+                }))
+                .unwrap_or_else(|_| "{\"schema_version\":1,\"status\":\"error\"}".to_owned())
+            } else {
+                String::new()
+            };
+            CliOutput {
+                exit_code: 1,
+                stdout: output,
+                stderr: error.to_owned(),
+            }
+        }
     }
 }
 
-fn parse_inspect_arguments(arguments: &[String]) -> Result<(SessionSelection<'_>, bool), String> {
+#[derive(Debug)]
+struct InspectOptions<'a> {
+    selection: SessionSelection<'a>,
+    json: bool,
+    compactor: CompactorConfig,
+}
+
+fn parse_inspect_arguments(arguments: &[String]) -> Result<InspectOptions<'_>, String> {
     let Some(provider) = arguments.first() else {
         return Err("inspect requires provider `codex`".to_owned());
     };
@@ -126,6 +180,8 @@ fn parse_inspect_arguments(arguments: &[String]) -> Result<(SessionSelection<'_>
     }
     let mut selection = None;
     let mut json = false;
+    let mut compactor = None;
+    let mut reasoning = None;
     let mut index = 1;
     while index < arguments.len() {
         match arguments[index].as_str() {
@@ -144,16 +200,53 @@ fn parse_inspect_arguments(arguments: &[String]) -> Result<(SessionSelection<'_>
                 json = true;
                 index += 1;
             }
+            "--compactor" if compactor.is_none() => {
+                let Some(value) = arguments.get(index + 1) else {
+                    return Err("missing value for --compactor".to_owned());
+                };
+                compactor = Some(value.as_str());
+                index += 2;
+            }
+            "--reasoning" if reasoning.is_none() => {
+                let Some(value) = arguments.get(index + 1) else {
+                    return Err("missing value for --reasoning".to_owned());
+                };
+                reasoning = Some(value.as_str());
+                index += 2;
+            }
             "--last" | "--session" => {
                 return Err("inspect requires exactly one of --last or --session <id>".to_owned());
             }
             "--json" => return Err("--json may only be supplied once".to_owned()),
+            "--compactor" => return Err("--compactor may only be supplied once".to_owned()),
+            "--reasoning" => return Err("--reasoning may only be supplied once".to_owned()),
             option => return Err(format!("unknown inspect option: {option}")),
         }
     }
-    selection
-        .map(|selection| (selection, json))
-        .ok_or_else(|| "inspect requires exactly one of --last or --session <id>".to_owned())
+    let selection = selection
+        .ok_or_else(|| "inspect requires exactly one of --last or --session <id>".to_owned())?;
+    let compactor = CompactorConfig::new(compactor.unwrap_or("luna"), reasoning)?;
+    Ok(InspectOptions {
+        selection,
+        json,
+        compactor,
+    })
+}
+
+fn inspect_projection_config() -> Result<ProjectionConfig, String> {
+    let Some(value) = std::env::var_os("DRIFTCTL_PROJECTION_BYTE_BUDGET") else {
+        return Ok(ProjectionConfig::default());
+    };
+    let value = value
+        .to_str()
+        .ok_or_else(|| "DRIFTCTL_PROJECTION_BYTE_BUDGET must be valid UTF-8".to_owned())?;
+    let budget = value
+        .parse::<usize>()
+        .map_err(|_| "DRIFTCTL_PROJECTION_BYTE_BUDGET must be a positive integer".to_owned())?;
+    if budget == 0 {
+        return Err("DRIFTCTL_PROJECTION_BYTE_BUDGET must be a positive integer".to_owned());
+    }
+    Ok(ProjectionConfig::new(budget))
 }
 
 fn start(root: &Path, arguments: &[String]) -> Result<String, String> {
