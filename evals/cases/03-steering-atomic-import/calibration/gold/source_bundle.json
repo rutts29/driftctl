@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "source": {
+    "provider": "codex",
+    "session_ref": "synthetic-03-steering-atomic-import",
+    "repository_digest": "sha256:46acc29ab81f79bc8986addaa52d032d0394a89805187a4bea1bfdde96753d80",
+    "head": "steering-1",
+    "digest": "sha256:291b37f1d84e20bd578491de5477371f8d6565ab68abc1e352b481b51d00da43"
+  },
+  "native_goal": {
+    "state": "absent"
+  },
+  "records": [
+    {
+      "id": "initial",
+      "role": "user",
+      "content": "Goal:\nAdd CSV user import to the admin service.\n\nKnown requirements:\n- Import valid email and name CSV rows into UserStore and return the number of users imported.\n- Change only import_users.py and tests/test_unit_import.py; do not create or modify any other path.",
+      "content_digest": "sha256:bfa0c94dcb7ab95434d7b2aed38e8a4d5cae8d818be57ec9ec464470704ed66b"
+    },
+    {
+      "id": "steering-1",
+      "role": "user",
+      "content": "Late steering 1:\n- Validate the complete import before mutating the store, raise ValueError for malformed rows or duplicate emails, and leave existing users exactly unchanged when any row is invalid.",
+      "content_digest": "sha256:769f988bfeb90d07110760b7fbcf7dbd2301a3f291e795b6981355b18b7045e9"
+    }
+  ]
+}

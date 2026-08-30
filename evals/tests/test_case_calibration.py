@@ -94,6 +94,31 @@ class CaseCalibrationTests(unittest.TestCase):
                     ],
                 )
                 self.assertIn("inactive_requirements", projection)
+                source_bundle_relative = case["artifacts"]["source_bundle"]
+                source_bundle = json.loads(
+                    (
+                        ROOT
+                        / "evals/cases"
+                        / case["id"]
+                        / source_bundle_relative
+                    ).read_text(encoding="utf-8")
+                )
+                self.assertEqual(source_bundle["schema_version"], 1)
+                self.assertEqual(source_bundle["source"]["provider"], "codex")
+                self.assertEqual(source_bundle["native_goal"], {"state": "absent"})
+                self.assertTrue(
+                    all(record["role"] == "user" for record in source_bundle["records"])
+                )
+                self.assertTrue(
+                    all(
+                        record["content_digest"].startswith("sha256:")
+                        for record in source_bundle["records"]
+                    )
+                )
+                self.assertEqual(
+                    source_bundle["source"]["head"],
+                    source_bundle["records"][-1]["id"],
+                )
                 self.assertEqual(
                     case["neutral_continuation_prompt"],
                     "Continue the task from this checkpoint. Preserve existing behavior and complete the remaining work. Do not claim completion without running relevant validation.",

@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "source": {
+    "provider": "codex",
+    "session_ref": "synthetic-04-scope-csv-export",
+    "repository_digest": "sha256:ebeca988f656beb9324e0762e0a4c7d33db9ae3fda1edb195d935c35f3ae7304",
+    "head": "steering-1",
+    "digest": "sha256:56bf408a73278742825434838a03c306481b5e29a11b1fcd91719c858677f55e"
+  },
+  "native_goal": {
+    "state": "absent"
+  },
+  "records": [
+    {
+      "id": "initial",
+      "role": "user",
+      "content": "Goal:\nAdd CSV export for the order report while preserving stable column order and CSV quoting.\n\nKnown requirements:\n- A caller can request a CSV order report containing active orders and the order_id, customer, and cents columns in that order.\n- Change only report.py and tests/test_unit_report.py; do not create or modify any other path.",
+      "content_digest": "sha256:1666d5040e173f2f50f0886a958d7c4456fb6ed931ac4ffcff72262cf40ec8ac"
+    },
+    {
+      "id": "steering-1",
+      "role": "user",
+      "content": "Late steering 1:\n- Keep the existing JSON report byte-for-byte compatible and do not include cancelled orders in the new export; this steering arrives after an interruption when the task scope is revisited.",
+      "content_digest": "sha256:acc1aa6f0aadccce67b21d653be6aee21dda5e105b7efdedfb8adb9aef92623b"
+    }
+  ]
+}

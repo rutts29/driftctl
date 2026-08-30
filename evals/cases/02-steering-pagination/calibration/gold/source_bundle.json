@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "source": {
+    "provider": "codex",
+    "session_ref": "synthetic-02-steering-pagination",
+    "repository_digest": "sha256:08c2ae9df0cad9463fb5e8b92c13d24fd5ff1b2d7beb16b2e495c189f2303fec",
+    "head": "steering-2",
+    "digest": "sha256:f2fbb1d76633f4e7fa0d0b54a0f92e1a9613bc854b9b9226428f49006be3b723"
+  },
+  "native_goal": {
+    "state": "absent"
+  },
+  "records": [
+    {
+      "id": "initial",
+      "role": "user",
+      "content": "Goal:\nMake the catalog service return every page of search results.\n\nKnown requirements:\n- Fetch all catalog pages in order until the service reports no next page.\n- Change only catalog_service.py and tests/test_unit_catalog.py; do not create or modify any other path.",
+      "content_digest": "sha256:95949f4f999ca3e18311eca197fa5e79342b42ee9311297ddfb37a7220f02007"
+    },
+    {
+      "id": "steering-1",
+      "role": "user",
+      "content": "Late steering 1:\n- When pages overlap, keep the last occurrence of each duplicate item ID because a later page should be treated as newer data. Preserve the order of the retained occurrences.",
+      "content_digest": "sha256:17bd0ef65fd650abc145de890de8ade38957b151de00311467801cc9cd264597"
+    },
+    {
+      "id": "steering-2",
+      "role": "user",
+      "content": "Late steering 2:\n- Final correction: supersede the earlier duplicate rule. Keep the first occurrence of each duplicate item ID in first-seen order, and keep the caller's filters unchanged.",
+      "content_digest": "sha256:08481c79490621f91c551b275dc44978527a2efe1bf875b44501351629b56409"
+    }
+  ]
+}

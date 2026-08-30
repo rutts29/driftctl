@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "source": {
+    "provider": "codex",
+    "session_ref": "synthetic-05-rename-resume",
+    "repository_digest": "sha256:b9e2008b82b22eb462b313f9a912cdf04d9f1bf516258778399d1d7eb645b6fc",
+    "head": "steering-1",
+    "digest": "sha256:0204fdcfef92febaa535167afd80a58cdfd75ae7a8ec90454cf9d98babaac602"
+  },
+  "native_goal": {
+    "state": "absent"
+  },
+  "records": [
+    {
+      "id": "initial",
+      "role": "user",
+      "content": "Goal:\nAdd resumable retry scheduling so a failed task returns to the pending queue without losing its attempt count.\n\nKnown requirements:\n- A failed task can be resumed once, moves back to pending, and keeps the incremented attempt count.\n- Change only scheduler.py, work_queue.py, and tests/test_unit_scheduler.py; do not create or modify any other path.",
+      "content_digest": "sha256:d0c1dc0dc38ce8116fd18bd5b696f60894d454bb7f74de020da99199ed1f8dd0"
+    },
+    {
+      "id": "steering-1",
+      "role": "user",
+      "content": "Late steering 1:\n- The task domain was renamed during an interruption. Add Scheduler.submit_payload(payload) and Scheduler.resume_payload(payload). Each method must accept a mapping containing work_item_id or the legacy task_id, reject mappings with neither identifier, and route both names through the existing submit/resume behavior without resetting attempts.",
+      "content_digest": "sha256:6c41db2aa9f074fcd96328b576cacae956d2e128dafd92337d35e9ff2da7e9a8"
+    }
+  ]
+}

@@ -9,7 +9,8 @@
         "gold_projection": "calibration/gold/active_projection.json",
         "known_bad": "calibration/known-bad",
         "plain_summary": "calibration/gold/plain_summary.txt",
-        "reference": "calibration/reference"
+        "reference": "calibration/reference",
+        "source_bundle": "calibration/gold/source_bundle.json"
       },
       "case_contract": {
         "fields": {
@@ -60,6 +61,7 @@
         "plain_summary_artifact_sha256": "5685ebb5c0b58ed7eb07fe80ef309f8559c9414c11ed882a7a49f3d3a566f58a",
         "plain_summary_sha256": "37795ad66a21e6deab1963c3df7190c60e2c3cd089639aa6505dcf33fd405de6",
         "reference_artifact_sha256": "1acd9b5b9bfb8e9f781cb949e3df4ee8bb63399091c2cadccb4742ea3c396a4a",
+        "source_bundle_sha256": "f30d89a32d0e9283b12f2447434ed8d527e56a6e1f6df3facfd51c8981235a5c",
         "workspace_sha256": "04ee5c97bcb206f86aad610ba2231cf663db16bdede77b74057dd2e13991e8e9"
       },
       "gold_projection": {
@@ -186,7 +188,8 @@
         "gold_projection": "calibration/gold/active_projection.json",
         "known_bad": "calibration/known-bad",
         "plain_summary": "calibration/gold/plain_summary.txt",
-        "reference": "calibration/reference"
+        "reference": "calibration/reference",
+        "source_bundle": "calibration/gold/source_bundle.json"
       },
       "case_contract": {
         "fields": {
@@ -237,6 +240,7 @@
         "plain_summary_artifact_sha256": "d20e3ada6448ceb5d19a844685d5b2c90da7f9a3ab992cef75a9516d847cfd89",
         "plain_summary_sha256": "c43c8ba69e35081607ba4b2dabf6a1c51b3427618091e3d71bf472806da4f742",
         "reference_artifact_sha256": "7200bfc84a9d78ce8ca53142e4891e623daf108fbe054f991f696735e281f843",
+        "source_bundle_sha256": "a058e72764179538411ae1bd9856ecd6ab9c9f7ed868f7d516a4a9504ccacc15",
         "workspace_sha256": "08c2ae9df0cad9463fb5e8b92c13d24fd5ff1b2d7beb16b2e495c189f2303fec"
       },
       "gold_projection": {
@@ -373,7 +377,8 @@
         "gold_projection": "calibration/gold/active_projection.json",
         "known_bad": "calibration/known-bad",
         "plain_summary": "calibration/gold/plain_summary.txt",
-        "reference": "calibration/reference"
+        "reference": "calibration/reference",
+        "source_bundle": "calibration/gold/source_bundle.json"
       },
       "case_contract": {
         "fields": {
@@ -424,6 +429,7 @@
         "plain_summary_artifact_sha256": "cfda19b01b50f99d63829b8cb6b58afe01c7a77d7efeedc21e9ac4f09d5afd05",
         "plain_summary_sha256": "db2bc6819a71261508e81e59cf4c2ba75db6435b9e8795b04533941c51f9f5e9",
         "reference_artifact_sha256": "61f147e182eeda690a0f915abcf66751ad6f4b208cfba1703bf4c666123df46c",
+        "source_bundle_sha256": "0bae593cd6f2b2ceff99f5f028a6946d0c45ada69e49a33e2e33a214f711821a",
         "workspace_sha256": "46acc29ab81f79bc8986addaa52d032d0394a89805187a4bea1bfdde96753d80"
       },
       "gold_projection": {
@@ -549,7 +555,8 @@
         "gold_projection": "calibration/gold/active_projection.json",
         "known_bad": "calibration/known-bad",
         "plain_summary": "calibration/gold/plain_summary.txt",
-        "reference": "calibration/reference"
+        "reference": "calibration/reference",
+        "source_bundle": "calibration/gold/source_bundle.json"
       },
       "case_contract": {
         "fields": {
@@ -600,6 +607,7 @@
         "plain_summary_artifact_sha256": "f320983c4244a3db58cd8dae7f848d70d2b23227ba04665380a9c8d4519d197b",
         "plain_summary_sha256": "34c271da2ddbe79b44e41309b4bb3f73a9083caeb692c53dbf6593dcf2f4ed48",
         "reference_artifact_sha256": "0380b6da44983b58a69f96a9ef51c28c524a3cd7ced1d02f38f5ef25901f7bbd",
+        "source_bundle_sha256": "07949b72473b0074e36637ec344f14a69ef0bff6e29f826dd276465425ff00b8",
         "workspace_sha256": "ebeca988f656beb9324e0762e0a4c7d33db9ae3fda1edb195d935c35f3ae7304"
       },
       "gold_projection": {
@@ -726,7 +734,8 @@
         "gold_projection": "calibration/gold/active_projection.json",
         "known_bad": "calibration/known-bad",
         "plain_summary": "calibration/gold/plain_summary.txt",
-        "reference": "calibration/reference"
+        "reference": "calibration/reference",
+        "source_bundle": "calibration/gold/source_bundle.json"
       },
       "case_contract": {
         "fields": {
@@ -777,6 +786,7 @@
         "plain_summary_artifact_sha256": "10beace82e73eb6d5d4b4baf08437c2f40ab04b7cbb147395c74800d1d081a10",
         "plain_summary_sha256": "3a59d6ef3f55ae41ccf755d46b88b3f1c180da1ef34e91bc764cf38c59f43785",
         "reference_artifact_sha256": "85c5fb1dd1571397ab8cc52e26e6dfcaf213a8276b81e560b38e88b91cf8fbca",
+        "source_bundle_sha256": "d9065dbf0b65bd5eff496a57b1235a0c1123b44d5b40885e8de6d0e1b472443b",
         "workspace_sha256": "b9e2008b82b22eb462b313f9a912cdf04d9f1bf516258778399d1d7eb645b6fc"
       },
       "gold_projection": {
@@ -903,5 +913,5 @@
   ],
   "manifest_id": "t14-case-calibration",
   "schema_version": 1,
-  "suite_fingerprint_sha256": "66571da7edb044f5c0ad75dea99ae561ad7b0a4a91d4db467420a81767c66975"
+  "suite_fingerprint_sha256": "963bd87beb9bf09d895822c076e68fa6572c5aced00d8b4acc90d1b676eb04d4"
 }
