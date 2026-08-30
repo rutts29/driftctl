@@ -111,16 +111,18 @@ driftctl run codex
 
 It launches `codex exec --json --ephemeral --sandbox workspace-write` with the durable goal and requirements, then stores the provider trajectory under `.driftctl/trajectories/`. Other harnesses use the JSON contract until a dedicated adapter is added; portability beyond Codex is a tested interface property, not a claim that every provider adapter already ships.
 
-## First-pass evaluation
+## Archived first-pass evaluation
 
-The primary metric is verified completion: the agent process must finish, every case-owned external grader must pass, and the workflow must close without unresolved requirements.
+The current primary metric is verified completion: the agent process must finish, every case-owned external grader must pass, every changed path must be inside the case's exact declared mutation scope, and the workflow must close without unresolved requirements.
+
+The table below predates the mutation-scope gate and is retained as historical hard-loss evidence. It must not be presented as the final long-session result. The current case fingerprints differ, and the current scorer intentionally rejects these archived results because they do not contain scope evidence.
 
 | Mode | Verified completion | Premature completion | Mean time | Total tokens |
 |---|---:|---:|---:|---:|
 | Worktree-only recovery baseline | 3/5 (60%) | 2 | 200.850 s | 2,589,433 |
 | `driftctl` workflow | 5/5 (100%) | 0 | 221.897 s | 2,937,945 |
 
-The workflow improved verified completion by 40 percentage points in this first pass, while mean runtime increased 10.5% and total tokens increased 13.5%. Three cases were quality ties; the two separating cases were overlapping-page deduplication and a task-to-work-item API rename.
+Under that archived metric, the workflow improved completion by 40 percentage points, while mean runtime increased 10.5% and total tokens increased 13.5%. Three cases were quality ties; the two separating cases were overlapping-page deduplication and a task-to-work-item API rename.
 
 This is deliberately a narrow result. The baseline models a hard transcript loss: a fresh Codex session gets the existing worktree but not the lost task record or late steering. It does not represent native Codex/Claude session resume or normal context compaction. Each case/mode was run once with `codex-cli 0.150.1`, `gpt-5.6-sol`, and `xhigh` reasoning, so cost and timing are descriptive rather than causal. Independent review and reruns are expected.
 
@@ -140,6 +142,7 @@ cargo clippy --locked --all-targets -- -D warnings
 cargo test --locked
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest \
   evals.tests.test_baseline_runner \
+  evals.tests.test_native_long_session_runner \
   evals.tests.test_workflow_runner \
   evals.tests.test_score_results -v
 ```

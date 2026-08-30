@@ -24,6 +24,7 @@ try:
         evaluation_fingerprint,
         initialize_git_repository,
         load_case,
+        mutation_scope,
         require_evaluation_fingerprint,
     )
 except ImportError:
@@ -34,6 +35,7 @@ except ImportError:
         evaluation_fingerprint,
         initialize_git_repository,
         load_case,
+        mutation_scope,
         require_evaluation_fingerprint,
     )
 
@@ -448,11 +450,17 @@ def arm_result(
     )
     require_evaluation_fingerprint(case_directory, fingerprint)
     agent_succeeded = arm.get("turn_status") == "completed"
-    verified = agent_succeeded and all(item["passed"] for item in verifiers)
+    changed_paths = arm.get("changed_paths", [])
+    scope = mutation_scope(changed_paths, definition.allowed_changed_paths)
+    verified = (
+        agent_succeeded
+        and all(item["passed"] for item in verifiers)
+        and scope["passed"]
+    )
     result: dict[str, Any] = {
         "agent_succeeded": agent_succeeded,
         "case_id": definition.case_id,
-        "changed_paths": arm.get("changed_paths", []),
+        "changed_paths": changed_paths,
         "evaluation_kind": LONG_SESSION_LABEL,
         "mode": mode,
         "native_checkpoint": {
@@ -468,6 +476,7 @@ def arm_result(
         },
         "recovery_context": "intact_native_session",
         "source_session_sha256": digest_text(source_session_id),
+        "scope": scope,
         "statistical_claim": NO_SIGNIFICANCE_LABEL,
         "status": (
             "verified"

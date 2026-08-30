@@ -46,6 +46,7 @@ class CaseDefinition:
     goal: str
     initial_requirements: tuple[str, ...]
     steering: tuple[SteeringPoint, ...]
+    allowed_changed_paths: tuple[str, ...]
     verifiers: tuple[Verifier, ...]
 
 
@@ -159,6 +160,7 @@ def run_case(
         verifiers = run_verifiers(workspace, definition.verifiers, case_directory)
         require_evaluation_fingerprint(case_directory, verifier_fingerprint)
         changed_paths = changed_paths_since(workspace, initial_commit)
+        scope = mutation_scope(changed_paths, definition.allowed_changed_paths)
 
     token_usage = TokenUsage()
     for turn in turns:
@@ -167,6 +169,11 @@ def run_case(
         artifact_directory, definition.case_id, turns
     )
     elapsed_seconds = round(time.monotonic() - started_at, 3)
+    verified_completion = (
+        all(turn.exit_code == 0 and turn.completed() for turn in turns)
+        and all(outcome["passed"] for outcome in verifiers)
+        and scope["passed"]
+    )
     return {
         "case_id": definition.case_id,
         "changed_paths": changed_paths,
@@ -176,13 +183,15 @@ def run_case(
         "mode": "baseline",
         "premature_completion": premature_completion(turns, verifiers),
         "recovery_context": "worktree_only",
-        "status": run_status(turns),
+        "scope": scope,
+        "status": "verified" if verified_completion else run_status(turns),
         "thread_id": thread_id,
         "title": definition.title,
         "token_usage": token_usage.as_dict(),
         "trajectory_files": trajectory_files,
         "turns": [turn_summary(turn) for turn in turns],
         "verifier_fingerprint_sha256": verifier_fingerprint,
+        "verified_completion": verified_completion,
         "verifiers": verifiers,
     }
 
@@ -224,13 +233,15 @@ def load_case(case_directory: Path) -> CaseDefinition:
     if not isinstance(raw, Mapping):
         raise RunnerError("case definition must be a JSON object")
 
+    workspace = relative_path(required_string(raw, "workspace"), "workspace")
     return CaseDefinition(
         case_id=required_string(raw, "id"),
         title=required_string(raw, "title"),
-        workspace=relative_path(required_string(raw, "workspace"), "workspace"),
+        workspace=workspace,
         goal=required_string(raw, "goal"),
         initial_requirements=string_list(raw, "initial_requirements"),
         steering=steering_points(raw),
+        allowed_changed_paths=allowed_path_list(raw, case_directory, workspace),
         verifiers=verifier_list(raw),
     )
 
@@ -254,6 +265,70 @@ def string_list(raw: Mapping[str, Any], field: str) -> tuple[str, ...]:
     if len(strings) != len(value):
         raise RunnerError(f"case field {field!r} must contain only nonempty strings")
     return strings
+
+
+def allowed_path_list(
+    raw: Mapping[str, Any],
+    case_directory: Path,
+    workspace: PurePosixPath,
+) -> tuple[str, ...]:
+    """Validate the exact existing files an agent may modify for this case."""
+
+    value = raw.get("allowed_changed_paths")
+    if not isinstance(value, list) or not value:
+        raise RunnerError("case field 'allowed_changed_paths' must be a nonempty array")
+
+    paths: list[str] = []
+    seen: set[str] = set()
+    workspace_root = contained_path(case_directory, workspace, "workspace")
+    for item in value:
+        if not isinstance(item, str) or not item:
+            raise RunnerError(
+                "case field 'allowed_changed_paths' must contain only nonempty strings"
+            )
+        segments = item.split("/")
+        if (
+            "\\" in item
+            or any(character in item for character in "*?[]{}")
+            or any(segment in {"", ".", ".."} for segment in segments)
+        ):
+            raise RunnerError(
+                "allowed changed paths must be exact portable relative file paths"
+            )
+        path = PurePosixPath(item)
+        if path.is_absolute():
+            raise RunnerError(
+                "allowed changed paths must be exact portable relative file paths"
+            )
+        if item in seen:
+            raise RunnerError("allowed changed paths must not contain duplicates")
+        candidate = contained_path(workspace_root, path, "allowed changed path")
+        lexical_candidate = workspace_root.joinpath(*path.parts)
+        if lexical_candidate.is_symlink() or not candidate.is_file():
+            raise RunnerError(
+                f"allowed changed path must be an existing regular file: {item}"
+            )
+        seen.add(item)
+        paths.append(item)
+    return tuple(paths)
+
+
+def mutation_scope(
+    changed_paths: Sequence[str], allowed_changed_paths: Sequence[str]
+) -> dict[str, Any]:
+    """Compare observed mutations with the case-owned exact path allowlist."""
+
+    if not isinstance(changed_paths, list) or any(
+        not isinstance(path, str) for path in changed_paths
+    ):
+        raise RunnerError("candidate changed paths must be an array of strings")
+    allowed = sorted(set(allowed_changed_paths))
+    unexpected = sorted(set(changed_paths) - set(allowed))
+    return {
+        "allowed_changed_paths": allowed,
+        "passed": not unexpected,
+        "unexpected_changed_paths": unexpected,
+    }
 
 
 def steering_points(raw: Mapping[str, Any]) -> tuple[SteeringPoint, ...]:

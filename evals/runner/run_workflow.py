@@ -25,6 +25,7 @@ try:
         evaluation_fingerprint,
         initialize_git_repository,
         load_case,
+        mutation_scope,
         parse_events,
         premature_completion,
         require_evaluation_fingerprint,
@@ -43,6 +44,7 @@ except ImportError:  # Direct script execution has no package context.
         evaluation_fingerprint,
         initialize_git_repository,
         load_case,
+        mutation_scope,
         parse_events,
         premature_completion,
         require_evaluation_fingerprint,
@@ -144,6 +146,7 @@ def run_case(
             satisfy_requirement_ids(driftctl_bin, workspace, steering_ids, final_evidence)
         closure = attempted_closure(driftctl_bin, workspace)
         changed_paths = workflow_changed_paths(workspace, initial_commit)
+        scope = mutation_scope(changed_paths, definition.allowed_changed_paths)
 
     token_usage = TokenUsage()
     for turn in turns:
@@ -154,7 +157,8 @@ def run_case(
     verified_completion = (
         closure["exit_code"] == 0
         and all(outcome["passed"] for outcome in verifiers)
-        and all(turn.exit_code == 0 for turn in turns)
+        and all(turn.exit_code == 0 and turn.completed() for turn in turns)
+        and scope["passed"]
     )
     return {
         "case_id": definition.case_id,
@@ -171,6 +175,7 @@ def run_case(
         "trajectory_files": trajectory_files,
         "turns": [turn_summary(turn) for turn in turns],
         "recovered_steering_count": len(definition.steering),
+        "scope": scope,
         "verifier_fingerprint_sha256": verifier_fingerprint,
         "verified_completion": verified_completion,
         "verifiers": verifiers,

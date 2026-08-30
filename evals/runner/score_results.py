@@ -29,6 +29,7 @@ class ParsedResult:
     verified_completion: bool
     agent_succeeded: bool
     all_verifiers_passed: bool
+    scope_passed: bool
     premature_completion: bool
     elapsed_seconds: float
     input_tokens: int
@@ -97,11 +98,13 @@ def parse_result(path: Path) -> ParsedResult:
     elapsed_seconds = nonnegative_number(raw, "elapsed_seconds", path)
     agent_succeeded = agent_success(raw, path)
     all_verifiers_passed = verifier_success(raw, path)
+    scope_passed = scope_success(raw, path)
     explicit_completion = explicit_verified_completion(raw, mode, path)
     verified_completion = (
-        explicit_completion
-        if explicit_completion is not None
-        else agent_succeeded and all_verifiers_passed
+        agent_succeeded
+        and all_verifiers_passed
+        and scope_passed
+        and (explicit_completion if explicit_completion is not None else True)
     )
     premature = premature_completion(raw, path)
     input_tokens, cached_input_tokens, output_tokens = token_usage(raw, path)
@@ -111,6 +114,7 @@ def parse_result(path: Path) -> ParsedResult:
         verified_completion=verified_completion,
         agent_succeeded=agent_succeeded,
         all_verifiers_passed=all_verifiers_passed,
+        scope_passed=scope_passed,
         premature_completion=premature,
         elapsed_seconds=elapsed_seconds,
         input_tokens=input_tokens,
@@ -188,10 +192,22 @@ def verifier_success(raw: Mapping[str, Any], path: Path) -> bool:
     return all(passed)
 
 
+def scope_success(raw: Mapping[str, Any], path: Path) -> bool:
+    """Require the runner's declared mutation-scope result."""
+
+    scope = raw.get("scope")
+    if not isinstance(scope, Mapping):
+        raise ScoreError(f"result file {path} field 'scope' must be an object")
+    passed = scope.get("passed")
+    if not isinstance(passed, bool):
+        raise ScoreError(f"result file {path} field 'scope.passed' must be boolean")
+    return passed
+
+
 def explicit_verified_completion(
     raw: Mapping[str, Any], mode: str, path: Path
 ) -> bool | None:
-    """Prefer workflow closure evidence when the runner recorded it explicitly."""
+    """Read optional explicit completion/closure evidence."""
 
     if "verified_completion" in raw:
         value = raw["verified_completion"]
@@ -299,6 +315,7 @@ def case_outcome(result: ParsedResult) -> dict[str, Any]:
         "elapsed_seconds": result.elapsed_seconds,
         "mode": result.mode,
         "premature_completion": result.premature_completion,
+        "scope_passed": result.scope_passed,
         "token_usage": {
             "cached_input_tokens": result.cached_input_tokens,
             "input_tokens": result.input_tokens,

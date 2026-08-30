@@ -11,6 +11,10 @@
       "requirement": "Do not retry 401 or 403 authentication failures because a checkout operation must never be replayed after an authorization rejection."
     }
   ],
+  "allowed_changed_paths": [
+    "service_client.py",
+    "tests/test_unit_client.py"
+  ],
   "verifiers": [
     {
       "name": "unit",

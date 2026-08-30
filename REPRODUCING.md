@@ -1,6 +1,6 @@
-# Reproducing the first-pass evaluation
+# Reproducing the current evaluation contract
 
-This guide reproduces the hard transcript-loss experiment reported in [`evals/results/summary.json`](evals/results/summary.json). All cases use synthetic data and require no private repository or credentials beyond an authenticated Codex CLI for live agent runs.
+This guide runs the current hard transcript-loss baseline and workflow on synthetic cases. Live runs require only an authenticated Codex CLI; raw trajectories remain local.
 
 ## Evaluation boundary
 
@@ -42,6 +42,7 @@ cargo clippy --locked --all-targets -- -D warnings
 cargo test --locked
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest \
   evals.tests.test_baseline_runner \
+  evals.tests.test_native_long_session_runner \
   evals.tests.test_workflow_runner \
   evals.tests.test_score_results -v
 ```
@@ -76,23 +77,15 @@ Expected structure, not an independently guaranteed stochastic outcome:
 - Both result files identify the same case and grader SHA-256 fingerprint.
 - The baseline reports `recovery_context: "worktree_only"`.
 - The workflow records a blocked pre-evidence closure attempt.
-- `verified_completion` depends on the external grader, not the agent's final message.
+- `verified_completion` depends on process completion, external graders, the exact declared mutation scope, and workflow closure—not the agent's final message.
 
 ## Run all five pairs
 
-Run each directory under `evals/cases` once per mode, preserving every JSON output. Then pass the ten JSON files to `score_results.py`. The committed first pass can be rescored directly:
-
-```bash
-python3 evals/runner/score_results.py evals/results/0[1-5]-*.json
-```
+Run each directory under `evals/cases` once per mode, preserving every JSON output. Then pass the ten new JSON files to `score_results.py`.
 
 The recorded valid runs took about 35 minutes sequentially and reported 5,527,378 total input-plus-output tokens across both modes. Dollar cost is not claimed because the authenticated CLI did not emit price data; use the executing account's billing or quota telemetry.
 
-The scorer reproduces the `primary_metric` and `by_mode` sections of
-`evals/results/summary.json`. The committed summary is intentionally not a
-byte-for-byte scorer artifact: it adds evaluation design, caveat, comparison,
-and status metadata and omits the scorer's per-case rows, which remain in the
-ten result files.
+The committed first-pass files under `evals/results` predate exact mutation-scope scoring. They are retained without alteration as historical evidence and are intentionally rejected by the current fail-closed scorer. Do not combine them with new-fingerprint runs.
 
 ## Inspecting evidence safely
 
