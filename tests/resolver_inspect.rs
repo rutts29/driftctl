@@ -614,6 +614,13 @@ fn failed_child_turn_never_reports_a_successful_continuation() {
         serde_json::from_slice(&continued.stdout).expect("failed continuation JSON");
     assert_eq!(document["status"], "invalid_continuation");
     assert_eq!(document["turn_status"], "failed");
+    assert_eq!(document["changed_paths"], json!([]));
+    assert_eq!(document["evidence"], json!([]));
+    assert_eq!(document["blockers"][0]["kind"], "child_turn_failed");
+    assert_eq!(
+        document["blockers"][1]["kind"],
+        "external_verification_required"
+    );
     assert_eq!(document["parent_unchanged"], true);
     assert_eq!(document["source_unchanged"], true);
     assert_eq!(document["adoption"], "none");
@@ -926,6 +933,12 @@ fn continue_requires_operator_authority_then_migrates_only_an_isolated_child() {
     assert_eq!(approved_document["status"], "started");
     assert_eq!(approved_document["child_thread_id"], "continued-child");
     assert_eq!(approved_document["turn_status"], "completed");
+    assert_eq!(approved_document["changed_paths"], json!([]));
+    assert_eq!(approved_document["evidence"], json!([]));
+    assert_eq!(
+        approved_document["blockers"][0]["kind"],
+        "external_verification_required"
+    );
     assert_eq!(approved_document["parent_unchanged"], true);
     assert_eq!(approved_document["source_unchanged"], true);
     assert_eq!(approved_document["adoption"], "manual");

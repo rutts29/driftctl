@@ -926,6 +926,21 @@ fn continue_codex(root: &Path, arguments: &[String]) -> CliOutput {
     }
 
     let continuation_completed = turn.completed();
+    let candidate_diff = match crate::workspace::candidate_diff(migration.child_cwd()) {
+        Ok(diff) => diff,
+        Err(error) => return CliOutput::error(error.to_string()),
+    };
+    let mut blockers = Vec::new();
+    if !continuation_completed {
+        blockers.push(json!({
+            "kind":"child_turn_failed",
+            "reason":"the provider child did not complete successfully",
+        }));
+    }
+    blockers.push(json!({
+        "kind":"external_verification_required",
+        "reason":"no requirement-specific external verifier has run; use driftctl verify before manual adoption",
+    }));
     let output = json!({
         "schema_version":1,
         "status":if continuation_completed { "started" } else { "invalid_continuation" },
@@ -935,6 +950,9 @@ fn continue_codex(root: &Path, arguments: &[String]) -> CliOutput {
         "goal":approved_goal,
         "turn_id":turn.turn_id(),
         "turn_status":format!("{:?}", turn.status()).to_ascii_lowercase(),
+        "changed_paths":candidate_diff.changed_paths(),
+        "evidence":[],
+        "blockers":blockers,
         "parent_unchanged":true,
         "source_unchanged":true,
         "adoption":if continuation_completed { "manual" } else { "none" },
@@ -957,8 +975,13 @@ fn continue_codex(root: &Path, arguments: &[String]) -> CliOutput {
             Err(_) => CliOutput::error("could not serialize continuation result"),
         }
     } else if continuation_completed {
+        let changed_paths = if candidate_diff.changed_paths().is_empty() {
+            "none".to_owned()
+        } else {
+            candidate_diff.changed_paths().join(", ")
+        };
         CliOutput::success(format!(
-            "started child {} in {}\nparent and source unchanged; adoption remains manual\n{}",
+            "started child {} in {}\nchanged paths: {changed_paths}\nevidence: none; external verification required before manual adoption\nparent and source unchanged; adoption remains manual\n{}",
             migration.child_id(),
             migration.child_cwd().display(),
             CONTAINMENT_NOTICE,
