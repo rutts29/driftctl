@@ -9,7 +9,7 @@ use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 static ARTIFACT_SEQUENCE: AtomicU64 = AtomicU64::new(1);
@@ -57,7 +57,7 @@ impl VerificationRequest {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum VerificationStatus {
     Passed,
@@ -78,7 +78,7 @@ impl VerificationStatus {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct VerificationResult {
     pub schema_version: u32,
     pub requirement_id: String,
@@ -121,7 +121,7 @@ pub fn verify(request: &VerificationRequest) -> Result<VerificationResult, Verif
     let candidate_after = candidate_digest(&request.candidate)?;
     let stdout_digest = digest_bytes(&output.stdout);
     let stderr_digest = digest_bytes(&output.stderr);
-    let command_digest = digest_command(&request.command);
+    let command_digest = command_digest(&request.command);
     let artifact_id = format!(
         "verification-{}-{}-{}",
         std::process::id(),
@@ -276,7 +276,7 @@ pub(crate) fn candidate_digest(candidate: &Path) -> Result<String, VerificationE
     Ok(format!("sha256:{:x}", hasher.finalize()))
 }
 
-fn digest_command(command: &[OsString]) -> String {
+pub(crate) fn command_digest(command: &[OsString]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(b"driftctl.command.v1\0");
     for argument in command {

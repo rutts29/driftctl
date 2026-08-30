@@ -1,4 +1,5 @@
 use std::collections::BTreeSet;
+use std::ffi::OsString;
 use std::fs;
 use std::io::{IsTerminal as _, Read as _, Write as _};
 use std::path::{Path, PathBuf};
@@ -41,6 +42,8 @@ Usage:\n\
   driftctl inspect codex (--last | --session <id> [--allow-ancestor-cwd]) [--json] [--compactor luna|terra|sol] [--reasoning high|medium]\n\
   driftctl inspect bundle (--file <path> | --stdin) [--json] [--compactor luna|terra|sol] [--reasoning high|medium]\n\
   driftctl bundle --run <run-id> --json\n\
+  driftctl ab prepare codex (--last | --session <id> [--allow-ancestor-cwd]) [--json]\n\
+  driftctl ab report --run <ab-run-id> [--json] -- <program> [args...]\n\
   driftctl compare codex (--last | --session <id> [--allow-ancestor-cwd]) [--arm-order baseline-first|workflow-first] [--json]\n\
   driftctl continue codex (--last | --session <id> [--allow-ancestor-cwd]) [--resolve-conflict <conflict-id> <alternative-id> | --approve-goal | --edit-goal <text> | --retain-goal | --cancel] [--json]\n\
   driftctl verify (--run <run-id> | --candidate <path>) (--requirement <id> | --gate regression|integration|protected_scope|review) [--json] -- <program> [args...]\n\
@@ -121,6 +124,7 @@ pub fn execute(root: &Path, arguments: impl IntoIterator<Item = String>) -> CliO
         "detach" => return detach_codex(root, &arguments),
         "inspect" => return inspect(root, &arguments),
         "bundle" => return bundle(root, &arguments),
+        "ab" => return ab_command(root, &arguments),
         "compare" => return compare_codex(root, &arguments),
         "continue" => return continue_codex(root, &arguments),
         "verify" => return verify_requirement(root, &arguments),
@@ -133,6 +137,69 @@ pub fn execute(root: &Path, arguments: impl IntoIterator<Item = String>) -> CliO
     match result {
         Ok(output) => CliOutput::success(output),
         Err(message) => CliOutput::error(message),
+    }
+}
+
+fn ab_command(root: &Path, arguments: &[String]) -> CliOutput {
+    match arguments.first().map(String::as_str) {
+        Some("prepare") => ab_prepare(root, arguments),
+        Some("report") => ab_report(arguments),
+        _ => CliOutput::error("ab requires prepare or report"),
+    }
+}
+
+fn ab_report(arguments: &[String]) -> CliOutput {
+    let options = match parse_ab_report_arguments(arguments) {
+        Ok(options) => options,
+        Err(error) => return CliOutput::error(error),
+    };
+    let output = match crate::ab::report(&options.run_id, options.command) {
+        Ok(output) => output,
+        Err(error) if error.is_blocked() => return CliOutput::blocked(error.message()),
+        Err(error) => return CliOutput::error(error.message()),
+    };
+    if options.json {
+        match serde_json::to_string(&output.document) {
+            Ok(document) => CliOutput::success(document),
+            Err(error) => CliOutput::error(format!("could not encode A/B report: {error}")),
+        }
+    } else {
+        CliOutput::success(output.text)
+    }
+}
+
+fn ab_prepare(root: &Path, arguments: &[String]) -> CliOutput {
+    let options = match parse_ab_prepare_arguments(arguments) {
+        Ok(options) => options,
+        Err(error) => return CliOutput::error(error),
+    };
+    let inspection = inspect(root, &options.inspect_arguments());
+    if inspection.exit_code != 0 {
+        return inspection;
+    }
+    let document: Value = match serde_json::from_str(&inspection.stdout) {
+        Ok(document) => document,
+        Err(_) => return CliOutput::error("could not read resolved source checkpoint"),
+    };
+    let Some(inspect_run_id) = document["run_id"].as_str() else {
+        return CliOutput::error("resolved source checkpoint has no run ID");
+    };
+    let output = match crate::ab::prepare(
+        root,
+        options.selection.as_borrowed(options.allow_ancestor_cwd),
+        inspect_run_id,
+    ) {
+        Ok(output) => output,
+        Err(error) if error.is_blocked() => return CliOutput::blocked(error.message()),
+        Err(error) => return CliOutput::error(error.message()),
+    };
+    if options.json {
+        match serde_json::to_string(&output.document) {
+            Ok(document) => CliOutput::success(document),
+            Err(error) => CliOutput::error(format!("could not encode A/B prepare result: {error}")),
+        }
+    } else {
+        CliOutput::success(output.text)
     }
 }
 
@@ -297,6 +364,11 @@ fn inspect_codex(root: &Path, arguments: &[String]) -> CliOutput {
                 if let Err(error) = codex_source::verify_unchanged(root, &imported) {
                     return CliOutput::error(error.to_string());
                 }
+                if let Err(error) =
+                    crate::keeper_metrics::record(&existing.store, &resolution.metadata)
+                {
+                    return CliOutput::error(error);
+                }
                 let accepted_events = existing.recovered.history.records().len();
                 for record in &resolution.history.records()[accepted_events..] {
                     if let Err(error) = existing.store.append_pending(record.clone()) {
@@ -352,8 +424,12 @@ fn inspect_codex(root: &Path, arguments: &[String]) -> CliOutput {
             if let Err(error) = codex_source::verify_unchanged(root, &imported) {
                 return CliOutput::error(error.to_string());
             }
-            if let Err(error) = source.create(root, &resolution.history, &resolution.projection) {
-                return CliOutput::error(error.to_string());
+            let store = match source.create(root, &resolution.history, &resolution.projection) {
+                Ok(store) => store,
+                Err(error) => return CliOutput::error(error.to_string()),
+            };
+            if let Err(error) = crate::keeper_metrics::record(&store, &resolution.metadata) {
+                return CliOutput::error(error);
             }
             inspect_output(
                 &resolution,
@@ -1987,6 +2063,121 @@ enum ContinueAction {
 enum OwnedSessionSelection {
     Last,
     Session(String),
+}
+
+struct AbPrepareOptions {
+    selection: OwnedSessionSelection,
+    allow_ancestor_cwd: bool,
+    json: bool,
+}
+
+impl AbPrepareOptions {
+    fn inspect_arguments(&self) -> Vec<String> {
+        let mut arguments = vec!["codex".to_owned()];
+        match &self.selection {
+            OwnedSessionSelection::Last => arguments.push("--last".to_owned()),
+            OwnedSessionSelection::Session(id) => {
+                arguments.push("--session".to_owned());
+                arguments.push(id.clone());
+            }
+        }
+        if self.allow_ancestor_cwd {
+            arguments.push("--allow-ancestor-cwd".to_owned());
+        }
+        arguments.push("--json".to_owned());
+        arguments
+    }
+}
+
+fn parse_ab_prepare_arguments(arguments: &[String]) -> Result<AbPrepareOptions, String> {
+    if arguments.get(1).map(String::as_str) != Some("codex") {
+        return Err("ab prepare requires provider codex".to_owned());
+    }
+    let mut selection = None;
+    let mut allow_ancestor_cwd = false;
+    let mut json = false;
+    let mut index = 2;
+    while index < arguments.len() {
+        match arguments[index].as_str() {
+            "--last" if selection.is_none() => selection = Some(OwnedSessionSelection::Last),
+            "--session" if selection.is_none() => {
+                index += 1;
+                let id = arguments
+                    .get(index)
+                    .filter(|id| !id.is_empty())
+                    .ok_or_else(|| "--session requires an ID".to_owned())?;
+                selection = Some(OwnedSessionSelection::Session(id.clone()));
+            }
+            "--allow-ancestor-cwd" if !allow_ancestor_cwd => allow_ancestor_cwd = true,
+            "--json" if !json => json = true,
+            option => {
+                return Err(format!(
+                    "unsupported or repeated ab prepare option: {option}"
+                ));
+            }
+        }
+        index += 1;
+    }
+    let selection =
+        selection.ok_or_else(|| "ab prepare requires --last or --session <id>".to_owned())?;
+    if allow_ancestor_cwd && matches!(selection, OwnedSessionSelection::Last) {
+        return Err("--allow-ancestor-cwd requires an explicit --session <id>".to_owned());
+    }
+    Ok(AbPrepareOptions {
+        selection,
+        allow_ancestor_cwd,
+        json,
+    })
+}
+
+struct AbReportOptions {
+    run_id: String,
+    json: bool,
+    command: Vec<OsString>,
+}
+
+fn parse_ab_report_arguments(arguments: &[String]) -> Result<AbReportOptions, String> {
+    let separator = arguments
+        .iter()
+        .position(|argument| argument == "--")
+        .ok_or_else(|| "ab report requires -- before the verifier command".to_owned())?;
+    if arguments[separator + 1..].is_empty() {
+        return Err("ab report requires a verifier command after --".to_owned());
+    }
+    let mut run_id = None;
+    let mut json = false;
+    let mut index = 1;
+    while index < separator {
+        match arguments[index].as_str() {
+            "--run" if run_id.is_none() => {
+                index += 1;
+                run_id = Some(
+                    arguments
+                        .get(index)
+                        .filter(|value| !value.is_empty())
+                        .ok_or_else(|| "--run requires an A/B run ID".to_owned())?
+                        .clone(),
+                );
+            }
+            "--json" if !json => json = true,
+            option => {
+                return Err(format!(
+                    "unsupported or repeated ab report option: {option}"
+                ));
+            }
+        }
+        index += 1;
+    }
+    let run_id = run_id.ok_or_else(|| "ab report requires --run <ab-run-id>".to_owned())?;
+    let command = arguments[separator + 1..]
+        .iter()
+        .map(OsString::from)
+        .collect();
+    Ok(AbReportOptions {
+        run_id,
+        json,
+        command,
+    })
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

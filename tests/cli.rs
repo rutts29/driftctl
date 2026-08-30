@@ -33,6 +33,42 @@ fn assert_success(output: &Output) {
 }
 
 #[test]
+fn ab_cli_rejects_ambiguous_or_incomplete_arguments_before_provider_work() {
+    let root = temporary_directory("ab-cli-arguments");
+    let repeated_source = run(
+        &root,
+        &[
+            "ab",
+            "prepare",
+            "codex",
+            "--last",
+            "--session",
+            "other-session",
+        ],
+    );
+    assert_eq!(repeated_source.status.code(), Some(1));
+    assert!(
+        String::from_utf8_lossy(&repeated_source.stderr)
+            .contains("unsupported or repeated ab prepare option")
+    );
+
+    let missing_separator = run(&root, &["ab", "report", "--run", "ab-valid"]);
+    assert_eq!(missing_separator.status.code(), Some(1));
+    assert!(
+        String::from_utf8_lossy(&missing_separator.stderr)
+            .contains("requires -- before the verifier")
+    );
+
+    let unsafe_run_id = run(
+        &root,
+        &["ab", "report", "--run", "../escape", "--", "/bin/true"],
+    );
+    assert_eq!(unsafe_run_id.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&unsafe_run_id.stderr).contains("invalid A/B run ID"));
+    fs::remove_dir_all(root).expect("remove isolated test directory");
+}
+
+#[test]
 fn cli_resumes_steering_and_leaves_agent_instructions_unchanged() {
     let root = temporary_directory("cli-resume");
     let agents = root.join("AGENTS.md");
