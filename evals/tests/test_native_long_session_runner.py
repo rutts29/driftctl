@@ -125,6 +125,10 @@ class NativeLongSessionRunnerTests(unittest.TestCase):
             self.assertEqual(stat.S_IMODE(private_run.stat().st_mode), 0o700)
             self.assertTrue((private_run / "source-workspace").is_dir())
             self.assertTrue((private_run / "state").is_dir())
+            self.assertEqual(stat.S_IMODE((private_run / "tmp").stat().st_mode), 0o700)
+            self.assertTrue(
+                all(item["tmpdir"] == str(private_run / "tmp") for item in commands)
+            )
 
     def test_continues_when_context_injection_is_not_supported(self) -> None:
         with temporary_fixture() as fixture:
@@ -257,7 +261,7 @@ import sys
 
 arguments = sys.argv[1:]
 with open(os.environ["FAKE_DRIFTCTL_REQUESTS"], "a", encoding="utf-8") as output:
-    output.write(json.dumps({"arguments": arguments}) + "\\n")
+    output.write(json.dumps({"arguments": arguments, "tmpdir": os.environ.get("TMPDIR")}) + "\\n")
 if arguments[0] == "compare":
     result = {
         "baseline": {"child_thread_id": "baseline-child", "child_cwd": os.environ["FAKE_BASELINE_CANDIDATE"], "turn_status": "completed", "changed_paths": ["service_client.py"]},
