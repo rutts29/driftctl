@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import shutil
 import stat
 import subprocess
 import sys
@@ -37,6 +38,14 @@ class NativeLongSessionRunnerTests(unittest.TestCase):
                 self.assertTrue(arm["native_checkpoint"]["source_workspace_clean"])
                 self.assertTrue(arm["native_checkpoint"]["injection"]["accepted"])
                 self.assertEqual(arm["native_checkpoint"]["source_user_turn_count"], 2)
+                self.assertEqual(
+                    arm["native_checkpoint"]["source_turn_labels"],
+                    ["initial", "steering-1"],
+                )
+                self.assertEqual(
+                    arm["native_checkpoint"]["injection"]["position"],
+                    "after_last_user_turn",
+                )
                 self.assertEqual(
                     arm["worker_policy"],
                     {
@@ -90,11 +99,11 @@ class NativeLongSessionRunnerTests(unittest.TestCase):
                     "thread/read",
                     "turn/interrupt",
                     "thread/read",
-                    "thread/inject_items",
                     "turn/start",
                     "thread/read",
                     "turn/interrupt",
                     "thread/read",
+                    "thread/inject_items",
                 ],
             )
             self.assertFalse(requests[0]["params"]["capabilities"]["experimentalApi"])
@@ -102,7 +111,16 @@ class NativeLongSessionRunnerTests(unittest.TestCase):
             self.assertNotIn(
                 "Do not edit files", requests[3]["params"]["input"][0]["text"]
             )
-            self.assertIn("Late steering", requests[8]["params"]["input"][0]["text"])
+            self.assertIn("Late steering", requests[7]["params"]["input"][0]["text"])
+            self.assertEqual(requests[-1]["method"], "thread/inject_items")
+            self.assertEqual(len(requests[-1]["params"]["items"]), 4)
+            self.assertEqual(
+                sum(
+                    len(item["content"][0]["text"])
+                    for item in requests[-1]["params"]["items"]
+                ),
+                64,
+            )
             self.assertNotIn("collaborationMode", requests[3]["params"])
             self.assertNotIn("collaborationMode", requests[8]["params"])
             self.assertEqual(requests[2]["params"]["model"], "gpt-5.6-luna")
@@ -145,6 +163,43 @@ class NativeLongSessionRunnerTests(unittest.TestCase):
             self.assertTrue(injection["attempted"])
             self.assertFalse(injection["accepted"])
             self.assertEqual(injection["reason"], "unsupported_or_rejected")
+
+    def test_records_each_steering_update_as_an_ordered_native_turn(self) -> None:
+        with temporary_fixture() as fixture:
+            case = fixture / "case"
+            shutil.copytree(CASE, case)
+            case_path = case / "case.json"
+            definition = json.loads(case_path.read_text(encoding="utf-8"))
+            definition["steering"].append(
+                {
+                    "requirement": (
+                        "Final correction: preserve the legacy token while applying "
+                        "the authentication retry restriction."
+                    )
+                }
+            )
+            case_path.write_text(json.dumps(definition), encoding="utf-8")
+
+            _, outputs = run_fixture(fixture, case=case)
+
+            baseline = json.loads(outputs["baseline"].read_text(encoding="utf-8"))
+            self.assertEqual(
+                baseline["native_checkpoint"]["source_turn_labels"],
+                ["initial", "steering-1", "steering-2"],
+            )
+            self.assertEqual(
+                baseline["native_checkpoint"]["source_user_turn_count"], 3
+            )
+            requests = read_json_lines(fixture / "codex-requests.jsonl")
+            turn_text = [
+                request["params"]["input"][0]["text"]
+                for request in requests
+                if request.get("method") == "turn/start"
+            ]
+            self.assertEqual(len(turn_text), 3)
+            self.assertIn("Late steering 1", turn_text[1])
+            self.assertIn("Late steering 2", turn_text[2])
+            self.assertEqual(requests[-1]["method"], "thread/inject_items")
 
     def test_scope_violation_blocks_verified_completion(self) -> None:
         with temporary_fixture() as fixture:
@@ -202,7 +257,9 @@ class temporary_fixture:
 
 
 def run_fixture(
-    root: Path, extra: dict[str, str] | None = None
+    root: Path,
+    extra: dict[str, str] | None = None,
+    case: Path = CASE,
 ) -> tuple[dict[str, object], dict[str, Path]]:
     results = root / "results"
     environment = os.environ | {
@@ -218,7 +275,7 @@ def run_fixture(
             sys.executable,
             str(RUNNER),
             "--case",
-            str(CASE),
+            str(case),
             "--results-dir",
             str(results),
             "--driftctl-bin",
