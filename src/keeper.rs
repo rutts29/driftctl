@@ -239,6 +239,7 @@ fn commit_resolution(
     resolution: InspectResolution,
     cursor: &SourceCursor,
 ) -> Result<(), String> {
+    crate::keeper_metrics::record(&state.store, &resolution.metadata)?;
     let accepted_events = state.recovered.history.records().len();
     for record in &resolution.history.records()[accepted_events..] {
         state

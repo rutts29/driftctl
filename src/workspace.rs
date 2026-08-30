@@ -54,6 +54,13 @@ pub struct SourceAttestation {
     digest: String,
 }
 
+impl SourceAttestation {
+    #[must_use]
+    pub fn digest(&self) -> &str {
+        &self.digest
+    }
+}
+
 /// One selected file or symlink in a [`WorkspaceManifest`].
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ManifestEntry {
@@ -362,6 +369,13 @@ pub fn verify_source_attestation(
     } else {
         Err(WorkspaceError::SourceChanged)
     }
+}
+
+/// Recompute the opaque source-boundary digest without exposing protected paths.
+pub(crate) fn source_attestation_digest(
+    source: impl AsRef<Path>,
+) -> Result<String, WorkspaceError> {
+    Ok(capture(source.as_ref())?.source_attestation.digest)
 }
 
 struct CapturedWorkspace {

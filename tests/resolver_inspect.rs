@@ -96,7 +96,7 @@ if "app-server" in sys.argv and "--stdio" in sys.argv:
             if thread_id.startswith("continued-child"):
                 with open(rpc_capture + ".children", encoding="utf-8") as child_file:
                     children = json.load(child_file)
-                result = {"thread": children[thread_id] | {"turns": []}}
+                result = {"thread": children[thread_id]}
             else:
                 sequence = json.loads(os.environ.get("DRIFTCTL_FAKE_READ_SEQUENCE", "[]"))
                 if sequence:
@@ -126,8 +126,12 @@ if "app-server" in sys.argv and "--stdio" in sys.argv:
                     children = json.load(child_file)
             except FileNotFoundError:
                 children = {}
+            if os.environ.get("DRIFTCTL_FAKE_FAIL_SECOND_FORK") == "1" and children:
+                print(json.dumps({"id":request["id"],"error":{"code":-32000,"message":"injected second-fork failure"}}), flush=True)
+                continue
             child_id = "continued-child" if not children else "continued-child-" + str(len(children) + 1)
-            result = {"thread":{"id":child_id,"cwd":request["params"]["cwd"],"ephemeral":False}}
+            source_thread = json.loads(os.environ["DRIFTCTL_FAKE_READ"])["thread"]
+            result = {"thread":source_thread | {"id":child_id,"cwd":request["params"]["cwd"],"ephemeral":False,"forkedFromId":request["params"]["threadId"]}}
             children[child_id] = result["thread"]
             with open(children_path, "w", encoding="utf-8") as child_file:
                 json.dump(children, child_file)
@@ -314,6 +318,7 @@ fn base_proposal() -> Value {
 
 struct Fixture {
     root: PathBuf,
+    fake_root: PathBuf,
     environment: BTreeMap<&'static str, String>,
     capture: PathBuf,
     rpc_capture: PathBuf,
@@ -359,6 +364,7 @@ impl Fixture {
         );
         Self {
             root,
+            fake_root,
             environment,
             capture,
             rpc_capture,
@@ -451,6 +457,102 @@ impl Fixture {
         command.output().expect("run driftctl compare")
     }
 
+    fn run_ab_prepare(&self) -> Output {
+        let mut command = Command::new(driftctl_bin());
+        command.current_dir(&self.root).args([
+            "ab",
+            "prepare",
+            "codex",
+            "--session",
+            &self.session_id,
+            "--json",
+        ]);
+        for (name, value) in &self.environment {
+            command.env(name, value);
+        }
+        command.output().expect("run driftctl ab prepare")
+    }
+
+    fn run_ab_report(&self, run_id: &str, verifier: &Path) -> Output {
+        let mut command = Command::new(driftctl_bin());
+        command.current_dir(&self.root).args([
+            "ab",
+            "report",
+            "--run",
+            run_id,
+            "--json",
+            "--",
+            verifier.to_str().expect("UTF-8 verifier path"),
+        ]);
+        for (name, value) in &self.environment {
+            command.env(name, value);
+        }
+        command.output().expect("run driftctl ab report")
+    }
+
+    fn run_hook(&self, cwd: &Path, session_id: &str, turn_id: &str, prompt: &str) -> Output {
+        let mut command = Command::new(driftctl_bin());
+        command
+            .current_dir(cwd)
+            .args(["hook", "codex"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        for (name, value) in &self.environment {
+            command.env(name, value);
+        }
+        let mut child = command.spawn().expect("spawn driftctl hook");
+        let event = json!({
+            "session_id":session_id,
+            "transcript_path":null,
+            "cwd":cwd,
+            "hook_event_name":"UserPromptSubmit",
+            "model":"gpt-5.6-luna",
+            "permission_mode":"default",
+            "turn_id":turn_id,
+            "prompt":prompt,
+        });
+        child
+            .stdin
+            .take()
+            .expect("hook stdin")
+            .write_all(event.to_string().as_bytes())
+            .expect("write hook event");
+        child.wait_with_output().expect("wait for driftctl hook")
+    }
+
+    fn append_child_items(&self, child_id: &str, items: Vec<Value>) {
+        let path = PathBuf::from(format!("{}.children", self.rpc_capture.display()));
+        let mut children: Value =
+            serde_json::from_slice(&fs::read(&path).expect("read fake child sessions"))
+                .expect("child session JSON");
+        children[child_id]["turns"]
+            .as_array_mut()
+            .expect("child turns")
+            .push(json!({"items":items}));
+        fs::write(
+            path,
+            serde_json::to_vec(&children).expect("encode child sessions"),
+        )
+        .expect("persist fake child sessions");
+    }
+
+    fn verifier(&self, name: &str) -> PathBuf {
+        let path = self.fake_root.join(name);
+        fs::write(
+            &path,
+            "#!/bin/sh\nset -eu\ngrep -q 'A/B candidate complete' README.md\n",
+        )
+        .expect("write A/B verifier");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o755))
+                .expect("make A/B verifier executable");
+        }
+        path
+    }
+
     fn run_bound_verify(&self, run_id: &str, requirement: &str, verifier: &str) -> Output {
         let mut command = Command::new(driftctl_bin());
         command.current_dir(&self.root).args([
@@ -529,6 +631,246 @@ impl Fixture {
         }
         panic!("state file {name} was not found")
     }
+}
+
+impl Drop for Fixture {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.root);
+        let _ = fs::remove_dir_all(&self.fake_root);
+    }
+}
+
+#[test]
+fn prospective_ab_cli_prepares_idle_forks_then_reports_the_explicitly_managed_arm() {
+    let fixture = Fixture::new(vec![base_proposal(), base_proposal()]);
+
+    let prepared = fixture.run_ab_prepare();
+    assert_eq!(prepared.status.code(), Some(0), "{prepared:?}");
+    let prepared: Value = serde_json::from_slice(&prepared.stdout).expect("prepared A/B JSON");
+    assert_eq!(prepared["experiment_kind"], "prospective_paired");
+    assert_eq!(prepared["status"], "ready");
+    assert_eq!(
+        prepared["fairness"]["starting_candidate_digest_equal"],
+        true
+    );
+    assert_eq!(prepared["fairness"]["inherited_goal_equal"], true);
+    assert_eq!(prepared["fairness"]["worker_policy_equal"], true);
+    let run_id = prepared["run_id"].as_str().expect("A/B run ID");
+    let baseline_id = prepared["baseline"]["session_id"]
+        .as_str()
+        .expect("baseline child ID");
+    let workflow_id = prepared["workflow"]["session_id"]
+        .as_str()
+        .expect("workflow child ID");
+    let baseline_cwd = PathBuf::from(prepared["baseline"]["cwd"].as_str().expect("baseline cwd"));
+    let workflow_cwd = PathBuf::from(prepared["workflow"]["cwd"].as_str().expect("workflow cwd"));
+    assert_ne!(baseline_id, workflow_id);
+    assert_ne!(baseline_cwd, workflow_cwd);
+    assert!(baseline_cwd.is_dir());
+    assert!(workflow_cwd.is_dir());
+    assert!(
+        fixture
+            .rpc_calls()
+            .iter()
+            .filter(|request| request["method"] == "thread/fork")
+            .count()
+            == 2
+    );
+    assert!(!fixture.rpc_calls().iter().any(|request| matches!(
+        request["method"].as_str(),
+        Some("turn/start") | Some("thread/goal/clear") | Some("thread/goal/set")
+    )));
+
+    let experiment_directory = fixture.state_home.join("driftctl/ab").join(run_id);
+    let experiment_file = experiment_directory.join("experiment.json");
+    let private_state = fs::read_to_string(&experiment_file).expect("read private A/B state");
+    assert!(!private_state.contains("private raw goal"));
+    assert!(!private_state.contains("private additive steering"));
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        assert_eq!(
+            fs::metadata(&experiment_directory)
+                .expect("A/B directory metadata")
+                .permissions()
+                .mode()
+                & 0o077,
+            0
+        );
+        assert_eq!(
+            fs::metadata(&experiment_file)
+                .expect("A/B state metadata")
+                .permissions()
+                .mode()
+                & 0o077,
+            0
+        );
+    }
+
+    let verifier = fixture.verifier("verify-ab.sh");
+    let premature = fixture.run_ab_report(run_id, &verifier);
+    assert_eq!(premature.status.code(), Some(2), "{premature:?}");
+    assert!(String::from_utf8_lossy(&premature.stderr).contains("$driftctl on"));
+
+    let activated = fixture.run_hook(&workflow_cwd, workflow_id, "workflow-on", "$driftctl on");
+    assert_eq!(activated.status.code(), Some(0), "{activated:?}");
+    let activated: Value =
+        serde_json::from_slice(&activated.stdout).expect("workflow activation JSON");
+    assert!(
+        activated["hookSpecificOutput"]["additionalContext"]
+            .as_str()
+            .expect("active projection")
+            .contains("DRIFTCTL ACTIVE INTENT")
+    );
+
+    fs::write(baseline_cwd.join("README.md"), "A/B candidate complete\n")
+        .expect("complete baseline candidate");
+    fs::write(workflow_cwd.join("README.md"), "A/B candidate complete\n")
+        .expect("complete workflow candidate");
+    fixture.append_child_items(
+        baseline_id,
+        vec![json!({"type":"userMessage","id":"baseline-u4","content":[{"type":"text","text":"Finish the checkpoint task"}]})],
+    );
+    fixture.append_child_items(
+        workflow_id,
+        vec![
+            json!({"type":"userMessage","id":"workflow-on","content":[{"type":"text","text":"$driftctl on"}]}),
+            json!({"type":"userMessage","id":"workflow-u4","content":[{"type":"text","text":"Finish the checkpoint task"}]}),
+        ],
+    );
+
+    let reported = fixture.run_ab_report(run_id, &verifier);
+    assert_eq!(reported.status.code(), Some(0), "{reported:?}");
+    let reported: Value = serde_json::from_slice(&reported.stdout).expect("A/B report JSON");
+    assert_eq!(reported["experiment_kind"], "prospective_paired");
+    assert_eq!(reported["status"], "evaluated");
+    assert_eq!(reported["source_unchanged"], true);
+    assert_eq!(reported["enrollment"]["baseline"], "detached");
+    assert_eq!(reported["enrollment"]["workflow"], "attached_exact");
+    assert_eq!(reported["baseline"]["verified_completion"], true);
+    assert_eq!(reported["workflow"]["verified_completion"], true);
+    assert_eq!(reported["baseline"]["post_checkpoint_user_prompts"], 1);
+    assert_eq!(reported["workflow"]["post_checkpoint_user_prompts"], 1);
+    assert_eq!(reported["baseline"]["post_checkpoint_records"], 1);
+    assert_eq!(reported["workflow"]["post_checkpoint_records"], 2);
+    assert_eq!(
+        reported["workflow"]["keeper_overhead"]["status"],
+        "measured"
+    );
+    assert_eq!(reported["workflow"]["keeper_overhead"]["invocations"], 1);
+    assert_eq!(reported["workflow"]["keeper_overhead"]["calls"], 1);
+    assert_eq!(
+        reported["workflow"]["keeper_overhead"]["tokens"]["input"],
+        101
+    );
+    assert_eq!(reported["cached"], false);
+
+    let cached = fixture.run_ab_report(run_id, &verifier);
+    assert_eq!(cached.status.code(), Some(0), "{cached:?}");
+    let cached: Value = serde_json::from_slice(&cached.stdout).expect("cached A/B report JSON");
+    assert_eq!(cached["cached"], true);
+    assert_eq!(
+        cached["baseline"]["artifact_id"],
+        reported["baseline"]["artifact_id"]
+    );
+    assert_eq!(
+        cached["workflow"]["artifact_id"],
+        reported["workflow"]["artifact_id"]
+    );
+
+    let other_verifier = fixture.verifier("verify-ab-other.sh");
+    let replacement = fixture.run_ab_report(run_id, &other_verifier);
+    assert_eq!(replacement.status.code(), Some(2), "{replacement:?}");
+    assert!(String::from_utf8_lossy(&replacement.stderr).contains("different verifier"));
+
+    let detached = fixture.run_hook(&workflow_cwd, workflow_id, "workflow-off", "$driftctl off");
+    assert_eq!(detached.status.code(), Some(0), "{detached:?}");
+    fixture.assert_unchanged();
+}
+
+#[test]
+fn prospective_ab_prepare_retains_an_explicit_blocked_partial_run() {
+    let mut fixture = Fixture::new(vec![base_proposal()]);
+    fixture
+        .environment
+        .insert("DRIFTCTL_FAKE_FAIL_SECOND_FORK", "1".to_owned());
+
+    let prepared = fixture.run_ab_prepare();
+    assert_eq!(prepared.status.code(), Some(2), "{prepared:?}");
+    assert!(String::from_utf8_lossy(&prepared.stderr).contains("second-fork failure"));
+    let state: Value = serde_json::from_slice(
+        &fs::read(fixture.state_file("experiment.json")).expect("read blocked A/B state"),
+    )
+    .expect("blocked A/B state JSON");
+    assert_eq!(state["status"], "blocked");
+    assert!(state["baseline"].is_object());
+    assert!(state["workflow"].is_null());
+    assert!(
+        state["failure"]
+            .as_str()
+            .expect("blocked failure")
+            .contains("second-fork failure")
+    );
+    assert_eq!(
+        fixture
+            .rpc_calls()
+            .iter()
+            .filter(|request| request["method"] == "thread/fork")
+            .count(),
+        2
+    );
+    assert!(
+        !fixture
+            .rpc_calls()
+            .iter()
+            .any(|request| request["method"] == "turn/start")
+    );
+    fixture.assert_unchanged();
+}
+
+#[test]
+fn prospective_ab_report_keeps_failed_baseline_evidence_and_reports_workflow_only() {
+    let fixture = Fixture::new(vec![base_proposal(), base_proposal()]);
+    let prepared = fixture.run_ab_prepare();
+    assert_eq!(prepared.status.code(), Some(0), "{prepared:?}");
+    let prepared: Value = serde_json::from_slice(&prepared.stdout).expect("prepared A/B JSON");
+    let run_id = prepared["run_id"].as_str().expect("A/B run ID");
+    let baseline_id = prepared["baseline"]["session_id"]
+        .as_str()
+        .expect("baseline child ID");
+    let workflow_id = prepared["workflow"]["session_id"]
+        .as_str()
+        .expect("workflow child ID");
+    let workflow_cwd = PathBuf::from(prepared["workflow"]["cwd"].as_str().expect("workflow cwd"));
+    let activated = fixture.run_hook(&workflow_cwd, workflow_id, "workflow-on", "$driftctl on");
+    assert_eq!(activated.status.code(), Some(0), "{activated:?}");
+    fs::write(workflow_cwd.join("README.md"), "A/B candidate complete\n")
+        .expect("complete workflow only");
+    fixture.append_child_items(
+        baseline_id,
+        vec![json!({"type":"userMessage","id":"baseline-u4","content":[{"type":"text","text":"Finish the checkpoint task"}]})],
+    );
+    fixture.append_child_items(
+        workflow_id,
+        vec![
+            json!({"type":"userMessage","id":"workflow-on","content":[{"type":"text","text":"$driftctl on"}]}),
+            json!({"type":"userMessage","id":"workflow-u4","content":[{"type":"text","text":"Finish the checkpoint task"}]}),
+        ],
+    );
+
+    let reported = fixture.run_ab_report(run_id, &fixture.verifier("verify-workflow-only.sh"));
+    assert_eq!(reported.status.code(), Some(0), "{reported:?}");
+    let reported: Value = serde_json::from_slice(&reported.stdout).expect("A/B report JSON");
+    assert_eq!(reported["baseline"]["verified_completion"], false);
+    assert_eq!(reported["baseline"]["verification_status"], "failed");
+    assert_eq!(reported["workflow"]["verified_completion"], true);
+    assert_eq!(reported["comparison"]["outcome"], "workflow_only");
+    assert!(reported["baseline"]["artifact_id"].is_string());
+    assert!(reported["workflow"]["artifact_id"].is_string());
+
+    let detached = fixture.run_hook(&workflow_cwd, workflow_id, "workflow-off", "$driftctl off");
+    assert_eq!(detached.status.code(), Some(0), "{detached:?}");
+    fixture.assert_unchanged();
 }
 
 fn prepare_pending_goal_change(fixture: &mut Fixture, proposed_goal: &str) -> Value {

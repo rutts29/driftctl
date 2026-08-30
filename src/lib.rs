@@ -1,5 +1,6 @@
 //! Durable continuity for long-running coding-agent tasks.
 
+mod ab;
 mod agent;
 pub mod cli;
 pub mod codex_child;
@@ -12,6 +13,7 @@ mod hook_event_store;
 mod inspect_state;
 pub mod intent_history;
 mod keeper;
+mod keeper_metrics;
 mod ledger;
 mod plugin_control;
 pub mod projection;
