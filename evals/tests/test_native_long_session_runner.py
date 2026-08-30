@@ -61,7 +61,7 @@ class NativeLongSessionRunnerTests(unittest.TestCase):
             )
             fidelity = result["projection_fidelity"]
             self.assertEqual(
-                fidelity["method"], "structural_provenance_fidelity_v2"
+                fidelity["method"], "structural_provenance_fidelity_v3"
             )
             self.assertEqual(fidelity["status"], "passed")
             self.assertTrue(fidelity["overall_pass"])
@@ -337,6 +337,24 @@ class NativeLongSessionRunnerTests(unittest.TestCase):
             self.assertFalse(injection["accepted"])
             self.assertEqual(injection["reason"], "unsupported_or_rejected")
 
+    def test_source_linked_conflict_returns_safety_block_without_coding_arms(
+        self,
+    ) -> None:
+        with temporary_fixture() as fixture:
+            completed = invoke_fixture(fixture, {"FAKE_INSPECT_BLOCKED": "1"})
+
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            manifest = json.loads(completed.stdout)
+            self.assertEqual(manifest["status"], "safety_blocked")
+            self.assertEqual(manifest["result_files"], {})
+            self.assertFalse(manifest["safety_block"]["coding_arms_started"])
+            self.assertTrue(manifest["safety_block"]["source_linked"])
+            self.assertEqual(manifest["safety_block"]["conflict_count"], 1)
+            calls = read_json_lines(fixture / "driftctl-requests.jsonl")
+            self.assertEqual([call["arguments"][0] for call in calls], ["inspect"])
+            review_root = next((fixture / "artifacts").iterdir()) / "reviews"
+            self.assertEqual(list(review_root.iterdir()), [])
+
     def test_records_each_steering_update_as_an_ordered_native_turn(self) -> None:
         with temporary_fixture() as fixture:
             case = fixture / "case"
@@ -571,6 +589,70 @@ class NativeLongSessionRunnerTests(unittest.TestCase):
         self.assertTrue(fidelity["overall_pass"])
         self.assertEqual(fidelity["requirements"]["text_exact_count"], 0)
 
+    def test_projection_fidelity_accepts_one_requirement_split_into_clauses(self) -> None:
+        case = ROOT / "evals/cases/03-steering-atomic-import"
+        gold = json.loads(
+            (case / "calibration/gold/active_projection.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        observed = {
+            "schema_version": 1,
+            "goal": {
+                "text": "Import users atomically from CSV.",
+                "source_record_ids": ["item-1:0", "item-2:0"],
+            },
+            "preserve": [],
+            "frontier": [
+                {
+                    "id": "valid",
+                    "kind": "outcome",
+                    "text": "Import valid CSV users and return the count.",
+                    "source_record_ids": ["item-1:0"],
+                },
+                {
+                    "id": "scope",
+                    "kind": "scope",
+                    "text": "Modify only the declared implementation and test files.",
+                    "source_record_ids": ["item-1:0"],
+                },
+                {
+                    "id": "prevalidate",
+                    "kind": "invariant",
+                    "text": "Validate every row before changing the store.",
+                    "source_record_ids": ["item-2:0"],
+                },
+                {
+                    "id": "reject",
+                    "kind": "validation",
+                    "text": "Reject malformed rows and duplicate emails.",
+                    "source_record_ids": ["item-2:0"],
+                },
+                {
+                    "id": "rollback",
+                    "kind": "invariant",
+                    "text": "Leave existing users unchanged after any invalid row.",
+                    "source_record_ids": ["item-2:0"],
+                },
+            ],
+            "validation": [],
+        }
+
+        fidelity = score_projection_fidelity(
+            observed,
+            gold,
+            "sha256:gold",
+            ["item-1:0", "item-2:0"],
+        )
+
+        self.assertEqual(fidelity["status"], "passed")
+        self.assertEqual(fidelity["requirements"]["matched_count"], 3)
+        self.assertEqual(
+            fidelity["requirements"]["expanded_requirement_ids"],
+            ["03.atomic-rollback"],
+        )
+        self.assertEqual(fidelity["requirements"]["matched_native_item_count"], 5)
+
     def test_accepts_a_source_turn_that_finished_before_interrupt(self) -> None:
         with temporary_fixture() as fixture:
             result, outputs = run_fixture(fixture, {"FAKE_NO_ACTIVE_TURN": "1"})
@@ -624,6 +706,24 @@ def run_fixture(
     case: Path = CASE,
     plain_summary_file: Path | None = None,
 ) -> tuple[dict[str, object], dict[str, Path]]:
+    completed = invoke_fixture(root, extra, case, plain_summary_file)
+    results = root / "results"
+    if completed.returncode != 0:
+        raise AssertionError(
+            f"stdout:\n{completed.stdout}\nstderr:\n{completed.stderr}"
+        )
+    manifest = json.loads(completed.stdout)
+    return manifest, {
+        mode: results / filename for mode, filename in manifest["result_files"].items()
+    }
+
+
+def invoke_fixture(
+    root: Path,
+    extra: dict[str, str] | None = None,
+    case: Path = CASE,
+    plain_summary_file: Path | None = None,
+) -> subprocess.CompletedProcess[str]:
     results = root / "results"
     environment = os.environ | {
         "FAKE_CODEX_REQUESTS": str(root / "codex-requests.jsonl"),
@@ -653,7 +753,7 @@ def run_fixture(
         ]
     if plain_summary_file is not None:
         arguments.extend(["--plain-summary-file", str(plain_summary_file)])
-    completed = subprocess.run(
+    return subprocess.run(
         arguments,
         cwd=ROOT,
         env=environment,
@@ -661,14 +761,6 @@ def run_fixture(
         text=True,
         check=False,
     )
-    if completed.returncode != 0:
-        raise AssertionError(
-            f"stdout:\n{completed.stdout}\nstderr:\n{completed.stderr}"
-        )
-    manifest = json.loads(completed.stdout)
-    return manifest, {
-        mode: results / filename for mode, filename in manifest["result_files"].items()
-    }
 
 
 def read_json_lines(path: Path) -> list[dict[str, object]]:
@@ -807,8 +899,8 @@ arguments = sys.argv[1:]
 with open(os.environ["FAKE_DRIFTCTL_REQUESTS"], "a", encoding="utf-8") as output:
     output.write(json.dumps({"arguments": arguments, "tmpdir": os.environ.get("TMPDIR")}) + "\\n")
 if arguments[0] == "inspect":
-    print(json.dumps({
-        "status": "usable",
+    document = {
+        "status": "blocked" if os.environ.get("FAKE_INSPECT_BLOCKED") else "usable",
         "projection": {
             "schema_version": 1,
             "goal": {
@@ -822,6 +914,15 @@ if arguments[0] == "inspect":
                 {"id": "native-auth", "kind": "invariant", "text": "Do not retry 401 or 403 authentication failures because a checkout operation must never be replayed after an authorization rejection.", "source_record_ids": ["item-2:0"]},
             ],
             "validation": [],
+            "conflicts": [{
+                "id": "conflict-1",
+                "intent_ids": ["native-auth"],
+                "source_record_ids": ["item-2:0"],
+                "alternatives": [
+                    {"id": "a", "text": "Option A", "source_record_ids": ["item-2:0"]},
+                    {"id": "b", "text": "Option B", "source_record_ids": ["item-2:0"]},
+                ],
+            }] if os.environ.get("FAKE_INSPECT_BLOCKED") else [],
         },
         "resolver": {
             "calls": 1,
@@ -834,8 +935,16 @@ if arguments[0] == "inspect":
                 "reasoning_output_tokens": 2,
             },
         },
-    }))
-    raise SystemExit(0)
+    }
+    if os.environ.get("FAKE_INSPECT_BLOCKED"):
+        document["blockers"] = [{
+            "id": "conflict-1",
+            "kind": "conflict",
+            "reason": "unresolved semantic conflict blocks continuation",
+            "source_record_ids": ["item-2:0"],
+        }]
+    print(json.dumps(document))
+    raise SystemExit(2 if os.environ.get("FAKE_INSPECT_BLOCKED") else 0)
 if arguments[0] == "compare":
     changed_paths = ["service_client.py"]
     if os.environ.get("FAKE_EXTRA_CHANGED_PATH"):

@@ -62,7 +62,7 @@ class NativeSuiteRunnerTests(unittest.TestCase):
             )
             self.assertEqual(len(invocations), 5)
             for invocation in invocations:
-                self.assertEqual(invocation["context_bytes"], "32768")
+                self.assertEqual(invocation["context_bytes"], "131072")
                 self.assertEqual(invocation["worker_model"], "gpt-5.6-luna")
                 self.assertEqual(invocation["worker_effort"], "max")
                 if Path(invocation["case"]).name == "02-steering-pagination":
@@ -95,6 +95,20 @@ class NativeSuiteRunnerTests(unittest.TestCase):
                 ],
                 [case["case_id"] for case in status["cases"]],
             )
+
+    def test_source_linked_safety_block_is_not_infrastructure_invalid(self) -> None:
+        with fake_runner(safety_case="05-rename-resume") as fixture:
+            completed = run_suite(fixture)
+
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            status = json.loads(completed.stdout)
+            self.assertEqual(status["status"], "completed_with_safety_blocks")
+            self.assertEqual(status["invalid_case_count"], 0)
+            self.assertEqual(status["safety_blocked_case_count"], 1)
+            blocked = status["cases"][-1]
+            self.assertEqual(blocked["status"], "safety-blocked")
+            self.assertEqual(blocked["result_files"], {})
+            self.assertEqual(blocked["runner_status"], "safety_blocked")
 
     def test_fingerprint_drift_blocks_all_native_invocations(self) -> None:
         with fake_runner() as fixture:
@@ -144,15 +158,18 @@ def run_suite(
 
 
 class fake_runner:
-    def __init__(self, failing_case: str | None = None) -> None:
+    def __init__(
+        self, failing_case: str | None = None, safety_case: str | None = None
+    ) -> None:
         self.failing_case = failing_case
+        self.safety_case = safety_case
 
     def __enter__(self) -> Path:
         self.temporary = tempfile.TemporaryDirectory(prefix="driftctl-suite-test-")
         root = Path(self.temporary.name)
         code = FAKE_NATIVE_RUNNER.replace(
             "__FAILING_CASE__", self.failing_case or ""
-        )
+        ).replace("__SAFETY_CASE__", self.safety_case or "")
         runner = root / "fake-native-runner.py"
         runner.write_text(textwrap.dedent(code), encoding="utf-8")
         runner.chmod(runner.stat().st_mode | stat.S_IXUSR)
@@ -192,6 +209,15 @@ if case.name == "__FAILING_CASE__":
     print("provider failure: /private/provider/session.json")
     print("stderr /private/provider/session.json", file=sys.stderr)
     raise SystemExit(17)
+
+if case.name == "__SAFETY_CASE__":
+    print(json.dumps({
+        "case_id": case.name,
+        "result_files": {},
+        "safety_block": {"kind": "unresolved_intent_conflict"},
+        "status": "safety_blocked",
+    }))
+    raise SystemExit(0)
 
 files = {
     "baseline": f"{case.name}-native-baseline.json",
