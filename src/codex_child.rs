@@ -23,6 +23,65 @@ pub enum GoalObservation {
     Known(String),
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ManualGoalState {
+    Absent,
+    Known(String),
+    Unknown,
+}
+
+impl From<GoalObservation> for ManualGoalState {
+    fn from(observation: GoalObservation) -> Self {
+        match observation {
+            GoalObservation::Absent => Self::Absent,
+            GoalObservation::Known(objective) => Self::Known(objective),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ManualGoalHandoff {
+    child_id: String,
+    child_cwd: PathBuf,
+    observed_goal: ManualGoalState,
+    intended_goal: String,
+    failure: String,
+}
+
+impl ManualGoalHandoff {
+    pub fn child_id(&self) -> &str {
+        &self.child_id
+    }
+
+    pub fn child_cwd(&self) -> &Path {
+        &self.child_cwd
+    }
+
+    pub fn observed_goal(&self) -> &ManualGoalState {
+        &self.observed_goal
+    }
+
+    pub fn intended_goal(&self) -> &str {
+        &self.intended_goal
+    }
+
+    pub fn failure(&self) -> &str {
+        &self.failure
+    }
+
+    pub fn requires_new_approval(&self) -> bool {
+        true
+    }
+
+    pub fn resume_argv(&self) -> [&str; 3] {
+        ["codex", "resume", &self.child_id]
+    }
+
+    pub fn slash_commands(&self) -> [&str; 2] {
+        ["/goal clear", "/goal"]
+    }
+}
+
 impl GoalObservation {
     pub fn objective(&self) -> Option<&str> {
         match self {
@@ -232,11 +291,19 @@ impl ChildTurnStart {
 }
 
 #[derive(Debug)]
-pub struct ChildAdapterError(String);
+pub struct ChildAdapterError {
+    message: String,
+    capability_unavailable: bool,
+    manual_handoff: Option<Box<ManualGoalHandoff>>,
+}
 
 impl ChildAdapterError {
     fn protocol(message: impl Into<String>) -> Self {
-        Self(message.into())
+        Self {
+            message: message.into(),
+            capability_unavailable: false,
+            manual_handoff: None,
+        }
     }
 
     fn capability(method: &str, error: &Value) -> Self {
@@ -250,15 +317,28 @@ impl ChildAdapterError {
             || message.to_owned(),
             |code| format!("{message} (code {code})"),
         );
-        Self(format!(
-            "Codex App Server capability unavailable: {method}: {detail}; child remains blocked and no interactive fallback was executed"
-        ))
+        Self {
+            message: format!(
+                "Codex App Server capability unavailable: {method}: {detail}; child remains blocked and no interactive fallback was executed"
+            ),
+            capability_unavailable: true,
+            manual_handoff: None,
+        }
+    }
+
+    fn with_manual_handoff(mut self, handoff: ManualGoalHandoff) -> Self {
+        self.manual_handoff = Some(Box::new(handoff));
+        self
+    }
+
+    pub fn manual_handoff(&self) -> Option<&ManualGoalHandoff> {
+        self.manual_handoff.as_deref()
     }
 }
 
 impl fmt::Display for ChildAdapterError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(&self.0)
+        formatter.write_str(&self.message)
     }
 }
 
@@ -293,15 +373,65 @@ impl CodexChildAdapter {
             let parent_goal = server.get_goal(&request.parent_thread_id)?;
             let child = server.fork_persisted(&request)?;
             server.set_worker_policy(&child.id, &child.cwd, &request.worker_policy)?;
-            let initial_child_goal = server.get_goal(&child.id)?;
-            if initial_child_goal != GoalObservation::Absent {
-                server.clear_goal(&child.id)?;
+            let initial_child_goal = match server.get_goal(&child.id) {
+                Ok(goal) => goal,
+                Err(error) if error.capability_unavailable => {
+                    return Err(manual_goal_handoff_error(
+                        &mut server,
+                        error,
+                        &request,
+                        &parent_goal,
+                        &child,
+                        ManualGoalState::Unknown,
+                    ));
+                }
+                Err(error) => return Err(error),
+            };
+            if initial_child_goal != GoalObservation::Absent
+                && let Err(error) = server.clear_goal(&child.id)
+            {
+                return Err(manual_goal_handoff_error(
+                    &mut server,
+                    error,
+                    &request,
+                    &parent_goal,
+                    &child,
+                    ManualGoalState::Unknown,
+                ));
             }
-            server.set_goal(&child.id, &request.approved_objective)?;
-            let child_goal = server.get_goal(&child.id)?;
+            if let Err(error) = server.set_goal(&child.id, &request.approved_objective) {
+                return Err(manual_goal_handoff_error(
+                    &mut server,
+                    error,
+                    &request,
+                    &parent_goal,
+                    &child,
+                    ManualGoalState::Unknown,
+                ));
+            }
+            let child_goal = match server.get_goal(&child.id) {
+                Ok(goal) => goal,
+                Err(error) => {
+                    return Err(manual_goal_handoff_error(
+                        &mut server,
+                        error,
+                        &request,
+                        &parent_goal,
+                        &child,
+                        ManualGoalState::Unknown,
+                    ));
+                }
+            };
             if child_goal.objective() != Some(request.approved_objective.as_str()) {
-                return Err(ChildAdapterError::protocol(
-                    "child goal read-back does not exactly match the approved objective",
+                return Err(manual_goal_handoff_error(
+                    &mut server,
+                    ChildAdapterError::protocol(
+                        "child goal read-back does not exactly match the approved objective",
+                    ),
+                    &request,
+                    &parent_goal,
+                    &child,
+                    child_goal.into(),
                 ));
             }
             let parent_goal_after = server.get_goal(&request.parent_thread_id)?;
@@ -338,6 +468,34 @@ impl CodexChildAdapter {
         })();
         server.stop();
         result
+    }
+}
+
+fn manual_goal_handoff_error(
+    server: &mut AppServer,
+    failure: ChildAdapterError,
+    request: &ChildForkRequest,
+    parent_goal: &GoalObservation,
+    child: &ForkedChild,
+    observed_goal: ManualGoalState,
+) -> ChildAdapterError {
+    match server.get_goal(&request.parent_thread_id) {
+        Ok(parent_goal_after) if &parent_goal_after == parent_goal => {
+            let message = failure.to_string();
+            failure.with_manual_handoff(ManualGoalHandoff {
+                child_id: child.id.clone(),
+                child_cwd: child.cwd.clone(),
+                observed_goal,
+                intended_goal: request.approved_objective.clone(),
+                failure: message,
+            })
+        }
+        Ok(_) => ChildAdapterError::protocol(
+            "parent goal changed during a failed isolated-child goal migration",
+        ),
+        Err(error) => ChildAdapterError::protocol(format!(
+            "could not verify the parent goal after a failed isolated-child goal migration: {error}"
+        )),
     }
 }
 

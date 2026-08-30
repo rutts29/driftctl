@@ -149,6 +149,9 @@ if "app-server" in sys.argv and "--stdio" in sys.argv:
             child_goal = None
             result = {"cleared":True}
         elif method == "thread/goal/set":
+            if os.environ.get("DRIFTCTL_FAKE_GOAL_SET_UNAVAILABLE") == "1":
+                print(json.dumps({"id":request["id"],"error":{"code":-32601,"message":"unsupported goal set"}}), flush=True)
+                continue
             child_goal = request["params"]["objective"]
             result = {"goal":{"threadId":request["params"]["threadId"],"objective":child_goal}}
         elif method == "turn/start":
@@ -878,6 +881,43 @@ fn run_bound_verification_attaches_evidence_and_candidate_change_reopens_it() {
         reopened_document["projection"]["frontier"][0]["evidence_state"],
         "reopened"
     );
+    fixture.assert_unchanged();
+}
+
+#[test]
+fn continue_returns_a_child_only_manual_goal_handoff_when_migration_is_unavailable() {
+    let mut fixture = Fixture::new(vec![base_proposal()]);
+    fixture
+        .environment
+        .insert("DRIFTCTL_FAKE_GOAL_SET_UNAVAILABLE", "1".to_owned());
+
+    let continued = fixture.run_continue(&["--json"]);
+    assert_eq!(continued.status.code(), Some(2), "{continued:?}");
+    let document: Value = serde_json::from_slice(&continued.stdout).expect("manual handoff JSON");
+    assert_eq!(document["status"], "manual_goal_handoff_required");
+    assert_eq!(document["child_thread_id"], "continued-child");
+    assert_eq!(document["observed_goal"]["state"], "unknown");
+    assert_eq!(document["intended_goal"], "Ship a usable inspector");
+    assert_eq!(document["requires_new_approval"], true);
+    assert_eq!(
+        document["resume"]["argv"],
+        json!(["codex", "resume", "continued-child"])
+    );
+    assert_eq!(
+        document["slash_commands"],
+        json!([
+            {"command":"/goal clear"},
+            {"command":"/goal", "argument":"Ship a usable inspector"}
+        ])
+    );
+    assert_eq!(document["turn_started"], false);
+    assert_eq!(document["parent_unchanged"], true);
+    assert_eq!(document["source_unchanged"], true);
+    let rpc = fixture.rpc_calls();
+    assert!(rpc.iter().any(|request| {
+        request["method"] == "thread/goal/set" && request["params"]["threadId"] == "continued-child"
+    }));
+    assert!(!rpc.iter().any(|request| request["method"] == "turn/start"));
     fixture.assert_unchanged();
 }
 

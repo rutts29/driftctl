@@ -17,6 +17,8 @@ driftctl continue codex --last \
 
 An invalid conflict or alternative ID exits `1` without forking. A valid choice is source-linked in private state and continuation proceeds with the selected alternative.
 
+When native child goal mutation is missing or only partially confirmed, `continue --json` returns `manual_goal_handoff_required` and exits `2`. Its `resume.argv`, `resume.cwd`, and `slash_commands` fields identify the isolated child and exact manual sequence. No child turn starts; a new operator approval and goal verification are required before manual continuation.
+
 After `continue --json`, use its run ID to bind a check to the exact continued child:
 
 ```bash

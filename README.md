@@ -26,6 +26,8 @@ driftctl continue codex --last
 
 `compare` creates isolated, equal starting children and leaves adoption manual. `continue` creates one isolated child; ambiguous steering or native-goal changes require an explicit operator action, and no-TTY operation blocks rather than prompting. Existing `AGENTS.md`, `CLAUDE.md`, skills, hooks, permissions, and the user's harness configuration remain authoritative and unchanged.
 
+If the installed Codex App Server cannot complete a child goal clear/set/read-back, `continue --json` exits `2` without starting the child turn. It returns the child ID/CWD, observed and intended goal states, `codex resume <child-id>`, and separate `/goal clear` plus `/goal` instructions. The operator must grant new approval and verify the child goal manually; Driftctl never runs those interactive commands itself.
+
 For a blocked semantic conflict, copy the conflict and alternative IDs from `inspect --json`, then make the operator choice explicitly:
 
 ```bash
