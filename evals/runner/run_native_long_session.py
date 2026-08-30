@@ -226,8 +226,11 @@ def run_case(
         initialize_git_repository(workspace)
         state_directory = root / "state"
         state_directory.mkdir(mode=0o700)
+        temporary_directory = root / "tmp"
+        temporary_directory.mkdir(mode=0o700)
         environment = os.environ | {
             "DRIFTCTL_CODEX_BIN": codex_bin,
+            "TMPDIR": str(temporary_directory),
             "XDG_STATE_HOME": str(state_directory),
         }
         session_id, source_turns, injection = seed_native_session(
