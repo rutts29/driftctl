@@ -80,7 +80,7 @@
 
 - [ ] T18–T19 complete.
 - [ ] Clean install and reproduction pass.
-- [ ] Sanitized artifacts pass manual path/secret review.
+- [x] Sanitized artifacts pass manual path/secret review.
 - [ ] Every public claim points to submitted evidence.
 
 ## Parallel Waves
