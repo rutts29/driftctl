@@ -1,156 +1,56 @@
 # driftctl
 
-`driftctl` is a small, harness-independent continuity layer for long-running coding-agent tasks. It preserves the goal, requirements, later steering, evidence, and closure state in an append-only JSONL ledger so a fresh agent session can resume without reconstructing intent from memory.
+`driftctl` is a local Rust CLI for inspecting an existing Codex session, building a bounded active-intent projection, comparing isolated child continuations, and continuing an approved child. It is a continuity layer, not a replacement for Codex, repository instructions, skills, permissions, or a security sandbox.
 
-It is aimed at developers and maintainers who delegate multi-step changes to coding agents and need to recover after a transcript or session is lost. It does not replace `AGENTS.md`, `CLAUDE.md`, skills, hooks, permissions, or the harness itself.
+## Current local flow
 
-## What it ships
+Prerequisites: Git, Rust/Cargo 1.97.1, and an authenticated Codex CLI. Python 3.11+ is required only for evaluation and release tests.
 
-- A standalone Rust CLI with no service or database.
-- An append-only `.driftctl/ledger.jsonl` stored inside the target repository.
-- A generic `resume --json` contract that any harness wrapper can consume.
-- One working convenience adapter for Codex CLI.
-- Five synthetic evaluation cases, external fingerprinted graders, baseline/workflow runners, recorded results, and sanitized trajectories.
-
-## Hackathon target
-
-- Current evidence: hard transcript-loss pilot.
-- Target problem: intent drift inside an intact long-running session.
-- Target intervention: native history plus a bounded, source-linked active-intent projection.
-- Target comparison: identical native child forks and workspace checkpoints, with and without the projection.
-- Target UX: inspect an existing local session, compare disposable children, adopt only an explicitly selected child.
-- Target safety boundary: Driftctl writes only local state and isolated children; host-wide provider YOLO permission remains outside its containment guarantee.
-- Product contract: [`SPEC.md`](SPEC.md).
-- Runtime design: [`ARCHITECTURE.md`](ARCHITECTURE.md).
-- Dependency-gated implementation: [`tasks/plan.md`](tasks/plan.md).
-
-This is a continuity adapter, not a security sandbox. The Codex adapter uses Codex's own documented `workspace-write` sandbox and verifies that root `AGENTS.md`, root `CLAUDE.md`, and the drift ledger remain unchanged during an agent run.
-
-## Quick start
-
-Prerequisites are Git and Rust 1.97.1. Python 3.11 or newer is needed only for the included evaluation cases.
+Build and install from source:
 
 ```bash
-git clone <repository-url> driftctl
-cd driftctl
 cargo build --release --locked
 cargo install --path . --locked
 ```
 
-Inside the repository where an agent will work:
+From the source repository associated with an existing Codex session:
 
 ```bash
-driftctl start \
-  --goal "Add retry support" \
-  --requirement "Retry transient failures once"
-
-driftctl steer \
-  --requirement "Never retry 401 or 403 responses"
-
-driftctl resume
+driftctl inspect codex --last
+driftctl bundle --run <run-id> --json
+driftctl compare codex --last
+driftctl continue codex --last
 ```
 
-`resume` returns the complete durable task, including satisfied constraints that later sessions must preserve:
+`inspect` reads the selected Codex session and source repository, then stores immutable history, projection, proposals, and private artifacts under `${XDG_STATE_HOME:-$HOME/.local/state}/driftctl`. It does not use a repository ledger for this flow. `bundle` exports a versioned, sanitized projection and blocker bundle that another harness wrapper can attach as context. The implemented native adapter is Codex CLI only.
 
-```text
-goal: Add retry support
-unresolved: R1, R2
-requirements:
-- R1 [unresolved]: Retry transient failures once
-- R2 [unresolved]: Never retry 401 or 403 responses
-closed: false
-```
+`compare` creates isolated, equal starting children and leaves adoption manual. `continue` creates one isolated child; ambiguous steering or native-goal changes require an explicit operator action, and no-TTY operation blocks rather than prompting. Existing `AGENTS.md`, `CLAUDE.md`, skills, hooks, permissions, and the user's harness configuration remain authoritative and unchanged.
 
-After an external check establishes evidence:
+Driftctl has no service and no telemetry. Provider calls use the user's existing Codex authentication and usage allowance. Source session, source worktree, and parent native goal are read-only; candidate edits occur in an isolated workspace. Isolation is workspace-only: inherited host-wide or YOLO permissions remain outside Driftctl's containment guarantee.
 
-```bash
-driftctl satisfy --id R1 --evidence "retry unit tests passed"
-driftctl satisfy --id R2 --evidence "authorization integration tests passed"
-driftctl close
-```
+Older `start`, `steer`, `resume`, `verify`, and `close` commands remain available for the legacy local-ledger workflow; they are not the current native-session flow above.
 
-`close` exits with code `2` while any requirement is unresolved and prints `verified` only after evidence exists for every requirement.
+## Evidence and limits
 
-## Harness integration
+The archived five-case result is hard-transcript-loss fault-injection evidence only: the workflow verified 5/5 cases and the worktree-only baseline 3/5. It does not measure intact native-session continuation, ordinary compaction, or a statistically significant effect; the archived files predate the current exact mutation-scope scorer and are retained rather than rescored as current native evidence.
 
-The stable integration boundary is:
+The eligible native evidence is one case-02 pair at 800 KiB of post-steering context. Both arms recorded native compaction, passed the external and exact-scope checks, and completed in 528.933 seconds. This is compaction-boundary parity/no-harm evidence only. It does not prove an intact-session efficacy improvement, and there are not five intact native pairs.
 
-```bash
-driftctl resume --json
-```
+One separate no-TTY conflict safety case passed: `continue` exited blocked before child creation and preserved the source session and workspace. That single case demonstrates fail-closed handling of its unresolved conflict, not coding-quality improvement or significance. See [`evals/results/conflict-gate.json`](evals/results/conflict-gate.json), [`IMPROVEMENT-CHANGELOG.md`](IMPROVEMENT-CHANGELOG.md), and [`REPRODUCING.md`](REPRODUCING.md).
 
-Its existing `goal`, `unresolved`, and `closed` fields are joined by an additive `requirements` array:
+The native runner uses `gpt-5.6-luna` at `max` reasoning by default. Recorded environment versions include Rust/Cargo 1.97.1, Python 3.14.4 (3.11+ required), Git 2.53.0, and `codex-cli 0.150.1`; live behavior, timing, and usage depend on the executing user's Codex account and configuration.
 
-```json
-{
-  "goal": "Add retry support",
-  "unresolved": ["R2"],
-  "requirements": [
-    {
-      "id": "R1",
-      "text": "Retry transient failures once",
-      "satisfied": true,
-      "evidence": "retry unit tests passed"
-    },
-    {
-      "id": "R2",
-      "text": "Never retry 401 or 403 responses",
-      "satisfied": false,
-      "evidence": null
-    }
-  ],
-  "closed": false
-}
-```
-
-A Claude Code wrapper, editor extension, shell integration, or another harness can read this JSON and attach it as task context when starting a fresh session. The user's existing harness instructions remain authoritative and unchanged. This repository currently includes one automated process adapter:
-
-```bash
-driftctl run codex
-```
-
-It launches `codex exec --json --ephemeral --sandbox workspace-write` with the durable goal and requirements, then stores the provider trajectory under `.driftctl/trajectories/`. Other harnesses use the JSON contract until a dedicated adapter is added; portability beyond Codex is a tested interface property, not a claim that every provider adapter already ships.
-
-## Archived first-pass evaluation
-
-The current primary metric is verified completion: the agent process must finish, every case-owned external grader must pass, every changed path must be inside the case's exact declared mutation scope, and the workflow must close without unresolved requirements.
-
-The table below predates the mutation-scope gate and is retained as historical hard-loss evidence. It must not be presented as the final long-session result. The current case fingerprints differ, and the current scorer intentionally rejects these archived results because they do not contain scope evidence.
-
-| Mode | Verified completion | Premature completion | Mean time | Total tokens |
-|---|---:|---:|---:|---:|
-| Worktree-only recovery baseline | 3/5 (60%) | 2 | 200.850 s | 2,589,433 |
-| `driftctl` workflow | 5/5 (100%) | 0 | 221.897 s | 2,937,945 |
-
-Under that archived metric, the workflow improved completion by 40 percentage points, while mean runtime increased 10.5% and total tokens increased 13.5%. Three cases were quality ties; the two separating cases were overlapping-page deduplication and a task-to-work-item API rename.
-
-This is deliberately a narrow result. The baseline models a hard transcript loss: a fresh Codex session gets the existing worktree but not the lost task record or late steering. It does not represent native Codex/Claude session resume or normal context compaction. Each case/mode was run once with `codex-cli 0.150.1`, `gpt-5.6-sol`, and `xhigh` reasoning, so cost and timing are descriptive rather than causal. Independent review and reruns are expected.
-
-Inspect the evidence directly:
-
-- Case contracts and grader tests: [`evals/cases`](evals/cases)
-- Baseline and workflow runners: [`evals/runner`](evals/runner)
-- Sanitized results: [`evals/results`](evals/results)
-- Evaluator tests: [`evals/tests`](evals/tests)
-- Sanitized representative trajectories: [`evals/trajectories`](evals/trajectories)
-
-Run the deterministic project checks:
+## Checks
 
 ```bash
 cargo fmt --check
 cargo clippy --locked --all-targets -- -D warnings
 cargo test --locked
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover \
+  -s evals/tests -p 'test_*.py' -v
+shellcheck scripts/package-release.sh scripts/install.sh
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest \
-  evals.tests.test_baseline_runner \
-  evals.tests.test_native_long_session_runner \
-  evals.tests.test_workflow_runner \
-  evals.tests.test_score_results -v
+  release.tests.test_installer -v
 ```
 
-Score the recorded five-case results:
-
-```bash
-python3 evals/runner/score_results.py evals/results/0[1-5]-*.json
-```
-
-Raw live trajectories are intentionally not committed because provider output can contain local paths or private context. The committed copies are generated specifically for the evaluation and sanitized before publication.
+The first unittest command runs all 19 deterministic evaluator tests. The release test builds an archive, installs the actual binary after SHA-256 verification, invokes `--help`, and rejects a corrupted archive. The public release URL and Homebrew formula are not live yet. See [`REPRODUCING.md`](REPRODUCING.md) for exact rehearsals and live native/conflict commands. Raw provider trajectories can include private context or local paths; keep them outside the repository and sanitize plus manually review anything selected for publication.
