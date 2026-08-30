@@ -57,7 +57,7 @@ import json
 import os
 import sys
 
-if sys.argv[1:3] == ["app-server", "--stdio"]:
+if "app-server" in sys.argv and "--stdio" in sys.argv:
     child_goal = None
     for raw in sys.stdin:
         request = json.loads(raw)
