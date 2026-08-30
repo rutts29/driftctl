@@ -23,7 +23,7 @@ PYTHONDONTWRITEBYTECODE=1 python3 -m unittest \
   release.tests.test_installer -v
 ```
 
-The evaluator command runs all 19 evaluator tests deterministically; it does not invoke Codex. The release test builds and installs the real binary locally and checks corrupted-archive rejection.
+The evaluator command runs the complete deterministic evaluator suite; it does not invoke Codex. The release test builds and installs the real binary locally and checks corrupted-archive rejection.
 
 ## Local install rehearsal
 
@@ -42,6 +42,23 @@ DRIFTCTL_BASE_URL="file://$DRIFTCTL_REHEARSAL/releases" \
 ```
 
 The installer requires an explicit version, verifies the archive SHA-256, rejects unexpected archive entries, stages the executable, and invokes `--help` before replacement. The default public release URL is not usable until the repository publishes matching release artifacts; Homebrew remains unverified and unshipped. The installed command uses the user's Codex authentication only when a live provider command runs.
+
+## Frozen five-case native suite
+
+This invokes Codex, consumes the executing user's allowance, and is nondeterministic in latency and model output. It runs cases 01–05 once in frozen order, adds the plain-summary control only to case 02, retains every outcome, and stores raw artifacts outside Git.
+
+```bash
+mkdir -p /tmp/driftctl-reproduction/suite-results \
+  /tmp/driftctl-reproduction/suite-artifacts
+PYTHONDONTWRITEBYTECODE=1 python3 evals/runner/run_native_suite.py \
+  --manifest evals/calibration/manifest.json \
+  --results-dir /tmp/driftctl-reproduction/suite-results \
+  --driftctl-bin "$DRIFTCTL_REHEARSAL/bin/driftctl" \
+  --codex-bin codex \
+  --artifacts /tmp/driftctl-reproduction/suite-artifacts
+```
+
+The recorded 2026-08-30 run used Luna Max, never-approve, workspace-write candidates, and 128 KiB of post-steering context. Four cases reached A/C comparison: baseline 3/4 and Driftctl 2/4. Case 02's B control also verified. Case 05 required operator clarification before coding and is excluded from completion denominators. Nine candidates passed process, fixed verifiers, and exact scope; independent review blocked three with Required findings. See [`evals/results/native-suite-20260830/summary.json`](evals/results/native-suite-20260830/summary.json). These are descriptive results without a significance claim.
 
 ## Native case-02 compaction-parity replay
 

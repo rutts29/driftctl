@@ -1,0 +1,171 @@
+{
+  "agent_succeeded": true,
+  "case_id": "03-steering-atomic-import",
+  "changed_paths": [
+    "import_users.py",
+    "tests/test_unit_import.py"
+  ],
+  "elapsed_scope": "paired_case_wall_time",
+  "elapsed_seconds": 801.861,
+  "evaluation_kind": "native_long_session",
+  "mode": "baseline",
+  "native_checkpoint": {
+    "injection": {
+      "accepted": true,
+      "attempted": true,
+      "bytes": 131072,
+      "chunks": 4,
+      "position": "after_last_user_turn"
+    },
+    "source_turn_labels": [
+      "initial",
+      "steering-1"
+    ],
+    "source_user_turn_count": 2,
+    "source_workspace_clean": true
+  },
+  "premature_completion": {
+    "available": true,
+    "detected": false,
+    "phase": "continuation"
+  },
+  "projection_generation": {
+    "cached_input_tokens": 0,
+    "calls": 1,
+    "effort": "max",
+    "elapsed_ms": 26395,
+    "input_tokens": 13678,
+    "model": "gpt-5.6-luna",
+    "output_tokens": 884,
+    "reasoning_output_tokens": 516
+  },
+  "recovery_context": "intact_native_session",
+  "requirement_evidence": [
+    {
+      "artifact_id": "verification-3869137-1788073644648-1",
+      "candidate_after_digest": "sha256:ad5f833f012724d6b584eab3cd3e3924207b28e268269cdbc721ef9f5d1cd28b",
+      "candidate_before_digest": "sha256:ad5f833f012724d6b584eab3cd3e3924207b28e268269cdbc721ef9f5d1cd28b",
+      "command_digest": "sha256:87b17b420377e1fe61bd1848a505b322c02a39f86b13709cc9fe1d90d40cd5a8",
+      "evidence_kind": "external_verifier",
+      "gold_requirement_id": "03.valid-import",
+      "passed": true,
+      "requirement_id": "03.valid-import",
+      "verifier_digest": "sha256:1d5ffabf67c321b37970ff47d9113978648b9b7ee54062b5c228240b530b11f5",
+      "verifier_name": "unit"
+    },
+    {
+      "allowed_changed_paths": [
+        "import_users.py",
+        "tests/test_unit_import.py"
+      ],
+      "artifact_id": null,
+      "evidence_kind": "mutation_scope",
+      "gold_requirement_id": "03.scope",
+      "passed": true,
+      "requirement_id": "03.scope",
+      "unexpected_changed_paths": [],
+      "verifier_name": null
+    },
+    {
+      "artifact_id": "verification-3869145-1788073644794-1",
+      "candidate_after_digest": "sha256:ad5f833f012724d6b584eab3cd3e3924207b28e268269cdbc721ef9f5d1cd28b",
+      "candidate_before_digest": "sha256:ad5f833f012724d6b584eab3cd3e3924207b28e268269cdbc721ef9f5d1cd28b",
+      "command_digest": "sha256:14f10fee124968b83cbdbf8f3dce7dbc833d523ab64ada583fe7f6033ee423e4",
+      "evidence_kind": "external_verifier",
+      "gold_requirement_id": "03.atomic-rollback",
+      "passed": true,
+      "requirement_id": "03.atomic-rollback",
+      "verifier_digest": "sha256:1ff013310d2de72459c884a17018a18185ef2943484fb28908c15d61b88c6468",
+      "verifier_name": "integration"
+    }
+  ],
+  "requirement_pass_rate": 1.0,
+  "review": {
+    "advisory_count": 0,
+    "attempt": 1,
+    "candidate_after_digest": "sha256:9fe32c4a2db68113dc433aa5ebb3e095f42dee1d4635ba8d741157aeb41b7bca",
+    "candidate_before_digest": "sha256:9fe32c4a2db68113dc433aa5ebb3e095f42dee1d4635ba8d741157aeb41b7bca",
+    "candidate_unchanged": true,
+    "coverage_complete": true,
+    "critical_count": 0,
+    "findings": [],
+    "prompt_sha256": "sha256:f92c02656a2829c446cc5726df3e307dbcc55a05154d06abe32f11c362bd1732",
+    "raw_private_retained": true,
+    "required_count": 0,
+    "requirements_sha256": "sha256:5b051a1bc3539900d1d5dde51b59c9651a0a5de02a3e118ccd320abe4c142b1a",
+    "review_passed": true,
+    "reviewer_policy": {
+      "approval_policy": "never",
+      "effort": "max",
+      "model": "gpt-5.6-luna",
+      "sandbox": "read-only"
+    },
+    "schema_version": 1,
+    "status": "completed"
+  },
+  "scope": {
+    "allowed_changed_paths": [
+      "import_users.py",
+      "tests/test_unit_import.py"
+    ],
+    "passed": true,
+    "unexpected_changed_paths": []
+  },
+  "statistical_claim": "descriptive_only_no_significance",
+  "status": "verified",
+  "title": "Import users atomically when validation fails",
+  "token_usage": {
+    "available": false,
+    "cached_input_tokens": 0,
+    "input_tokens": 0,
+    "output_tokens": 0,
+    "total_tokens": 0
+  },
+  "turn_status": "completed",
+  "verified_completion": true,
+  "verifier_fingerprint_sha256": "cd588b34c74d6970cc330942fdc3f8fa86c00cc6b6e7a4e853aae4b6fce707d8",
+  "verifiers": [
+    {
+      "artifact_id": "verification-3869137-1788073644648-1",
+      "candidate_after_digest": "sha256:ad5f833f012724d6b584eab3cd3e3924207b28e268269cdbc721ef9f5d1cd28b",
+      "candidate_before_digest": "sha256:ad5f833f012724d6b584eab3cd3e3924207b28e268269cdbc721ef9f5d1cd28b",
+      "command_digest": "sha256:87b17b420377e1fe61bd1848a505b322c02a39f86b13709cc9fe1d90d40cd5a8",
+      "elapsed_ms": 114,
+      "name": "unit",
+      "passed": true,
+      "requirement_id": "03-steering-atomic-import:unit",
+      "status": "passed",
+      "verifier_digest": "sha256:1d5ffabf67c321b37970ff47d9113978648b9b7ee54062b5c228240b530b11f5"
+    },
+    {
+      "artifact_id": "verification-3869145-1788073644794-1",
+      "candidate_after_digest": "sha256:ad5f833f012724d6b584eab3cd3e3924207b28e268269cdbc721ef9f5d1cd28b",
+      "candidate_before_digest": "sha256:ad5f833f012724d6b584eab3cd3e3924207b28e268269cdbc721ef9f5d1cd28b",
+      "command_digest": "sha256:14f10fee124968b83cbdbf8f3dce7dbc833d523ab64ada583fe7f6033ee423e4",
+      "elapsed_ms": 139,
+      "name": "integration",
+      "passed": true,
+      "requirement_id": "03-steering-atomic-import:integration",
+      "status": "passed",
+      "verifier_digest": "sha256:1ff013310d2de72459c884a17018a18185ef2943484fb28908c15d61b88c6468"
+    },
+    {
+      "artifact_id": "verification-3869153-1788073644954-1",
+      "candidate_after_digest": "sha256:ad5f833f012724d6b584eab3cd3e3924207b28e268269cdbc721ef9f5d1cd28b",
+      "candidate_before_digest": "sha256:ad5f833f012724d6b584eab3cd3e3924207b28e268269cdbc721ef9f5d1cd28b",
+      "command_digest": "sha256:ec3c262088ca829519ca9d5f965afd88cfe8844f0b7b033180957ab3abda83fb",
+      "elapsed_ms": 243,
+      "name": "all",
+      "passed": true,
+      "requirement_id": "03-steering-atomic-import:all",
+      "status": "passed",
+      "verifier_digest": "sha256:dedd2ae3370fd942c4a9612bbd1bc73d1265debc008b3fbd87e30e23d5a8b8cb"
+    }
+  ],
+  "worker_policy": {
+    "approval_policy": "never",
+    "effort": "max",
+    "model": "gpt-5.6-luna",
+    "sandbox": "workspace-write"
+  }
+}

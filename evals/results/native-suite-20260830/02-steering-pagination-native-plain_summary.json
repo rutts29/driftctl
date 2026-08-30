@@ -1,0 +1,176 @@
+{
+  "agent_succeeded": true,
+  "case_id": "02-steering-pagination",
+  "changed_paths": [
+    "catalog_service.py",
+    "tests/test_unit_catalog.py"
+  ],
+  "control_context": {
+    "kind": "flat_plain_summary",
+    "sha256": "sha256:c43c8ba69e35081607ba4b2dabf6a1c51b3427618091e3d71bf472806da4f742"
+  },
+  "elapsed_scope": "paired_case_wall_time",
+  "elapsed_seconds": 702.189,
+  "evaluation_kind": "native_long_session",
+  "mode": "plain_summary",
+  "native_checkpoint": {
+    "injection": {
+      "accepted": true,
+      "attempted": true,
+      "bytes": 131072,
+      "chunks": 4,
+      "position": "after_last_user_turn"
+    },
+    "source_turn_labels": [
+      "initial",
+      "steering-1",
+      "steering-2"
+    ],
+    "source_user_turn_count": 3,
+    "source_workspace_clean": true
+  },
+  "premature_completion": {
+    "available": true,
+    "detected": false,
+    "phase": "continuation"
+  },
+  "projection_generation": {
+    "cached_input_tokens": 0,
+    "calls": 1,
+    "effort": "max",
+    "elapsed_ms": 51273,
+    "input_tokens": 13755,
+    "model": "gpt-5.6-luna",
+    "output_tokens": 2598,
+    "reasoning_output_tokens": 2187
+  },
+  "recovery_context": "intact_native_session",
+  "requirement_evidence": [
+    {
+      "artifact_id": "verification-3863608-1788072984986-1",
+      "candidate_after_digest": "sha256:bc17aa4ca0e332617feca32b280c07b4808bc4e6ab12ed3a59f3cf0ec122d63c",
+      "candidate_before_digest": "sha256:bc17aa4ca0e332617feca32b280c07b4808bc4e6ab12ed3a59f3cf0ec122d63c",
+      "command_digest": "sha256:87b17b420377e1fe61bd1848a505b322c02a39f86b13709cc9fe1d90d40cd5a8",
+      "evidence_kind": "external_verifier",
+      "gold_requirement_id": "02.paginate",
+      "passed": true,
+      "requirement_id": "02.paginate",
+      "verifier_digest": "sha256:1d5ffabf67c321b37970ff47d9113978648b9b7ee54062b5c228240b530b11f5",
+      "verifier_name": "unit"
+    },
+    {
+      "allowed_changed_paths": [
+        "catalog_service.py",
+        "tests/test_unit_catalog.py"
+      ],
+      "artifact_id": null,
+      "evidence_kind": "mutation_scope",
+      "gold_requirement_id": "02.scope",
+      "passed": true,
+      "requirement_id": "02.scope",
+      "unexpected_changed_paths": [],
+      "verifier_name": null
+    },
+    {
+      "artifact_id": "verification-3863616-1788072985140-1",
+      "candidate_after_digest": "sha256:bc17aa4ca0e332617feca32b280c07b4808bc4e6ab12ed3a59f3cf0ec122d63c",
+      "candidate_before_digest": "sha256:bc17aa4ca0e332617feca32b280c07b4808bc4e6ab12ed3a59f3cf0ec122d63c",
+      "command_digest": "sha256:14f10fee124968b83cbdbf8f3dce7dbc833d523ab64ada583fe7f6033ee423e4",
+      "evidence_kind": "external_verifier",
+      "gold_requirement_id": "02.final-correction",
+      "passed": true,
+      "requirement_id": "02.final-correction",
+      "verifier_digest": "sha256:1ff013310d2de72459c884a17018a18185ef2943484fb28908c15d61b88c6468",
+      "verifier_name": "integration"
+    }
+  ],
+  "requirement_pass_rate": 1.0,
+  "review": {
+    "advisory_count": 0,
+    "attempt": 1,
+    "candidate_after_digest": "sha256:3c50ec5e6c73f2d31356f295af56d586a471c85d1683ce666648c6a80e3c4363",
+    "candidate_before_digest": "sha256:3c50ec5e6c73f2d31356f295af56d586a471c85d1683ce666648c6a80e3c4363",
+    "candidate_unchanged": true,
+    "coverage_complete": true,
+    "critical_count": 0,
+    "findings": [],
+    "prompt_sha256": "sha256:a232a0645f2fd6bc8505094936d95de8a8a30662537471317729342b3f409645",
+    "raw_private_retained": true,
+    "required_count": 0,
+    "requirements_sha256": "sha256:451068366c426139ebb735850caba43a508c145660c9b39b16b9f7d421dca8f1",
+    "review_passed": true,
+    "reviewer_policy": {
+      "approval_policy": "never",
+      "effort": "max",
+      "model": "gpt-5.6-luna",
+      "sandbox": "read-only"
+    },
+    "schema_version": 1,
+    "status": "completed"
+  },
+  "scope": {
+    "allowed_changed_paths": [
+      "catalog_service.py",
+      "tests/test_unit_catalog.py"
+    ],
+    "passed": true,
+    "unexpected_changed_paths": []
+  },
+  "statistical_claim": "descriptive_only_no_significance",
+  "status": "verified",
+  "title": "Paginate catalog results without duplicate items or mutating filters",
+  "token_usage": {
+    "available": false,
+    "cached_input_tokens": 0,
+    "input_tokens": 0,
+    "output_tokens": 0,
+    "total_tokens": 0
+  },
+  "turn_status": "completed",
+  "verified_completion": true,
+  "verifier_fingerprint_sha256": "1d827ff04462de2c2044561b777cbfee54a2281ad32c7820dec0cace5498abba",
+  "verifiers": [
+    {
+      "artifact_id": "verification-3863608-1788072984986-1",
+      "candidate_after_digest": "sha256:bc17aa4ca0e332617feca32b280c07b4808bc4e6ab12ed3a59f3cf0ec122d63c",
+      "candidate_before_digest": "sha256:bc17aa4ca0e332617feca32b280c07b4808bc4e6ab12ed3a59f3cf0ec122d63c",
+      "command_digest": "sha256:87b17b420377e1fe61bd1848a505b322c02a39f86b13709cc9fe1d90d40cd5a8",
+      "elapsed_ms": 129,
+      "name": "unit",
+      "passed": true,
+      "requirement_id": "02-steering-pagination:unit",
+      "status": "passed",
+      "verifier_digest": "sha256:1d5ffabf67c321b37970ff47d9113978648b9b7ee54062b5c228240b530b11f5"
+    },
+    {
+      "artifact_id": "verification-3863616-1788072985140-1",
+      "candidate_after_digest": "sha256:bc17aa4ca0e332617feca32b280c07b4808bc4e6ab12ed3a59f3cf0ec122d63c",
+      "candidate_before_digest": "sha256:bc17aa4ca0e332617feca32b280c07b4808bc4e6ab12ed3a59f3cf0ec122d63c",
+      "command_digest": "sha256:14f10fee124968b83cbdbf8f3dce7dbc833d523ab64ada583fe7f6033ee423e4",
+      "elapsed_ms": 128,
+      "name": "integration",
+      "passed": true,
+      "requirement_id": "02-steering-pagination:integration",
+      "status": "passed",
+      "verifier_digest": "sha256:1ff013310d2de72459c884a17018a18185ef2943484fb28908c15d61b88c6468"
+    },
+    {
+      "artifact_id": "verification-3863624-1788072985297-1",
+      "candidate_after_digest": "sha256:bc17aa4ca0e332617feca32b280c07b4808bc4e6ab12ed3a59f3cf0ec122d63c",
+      "candidate_before_digest": "sha256:bc17aa4ca0e332617feca32b280c07b4808bc4e6ab12ed3a59f3cf0ec122d63c",
+      "command_digest": "sha256:ec3c262088ca829519ca9d5f965afd88cfe8844f0b7b033180957ab3abda83fb",
+      "elapsed_ms": 243,
+      "name": "all",
+      "passed": true,
+      "requirement_id": "02-steering-pagination:all",
+      "status": "passed",
+      "verifier_digest": "sha256:dedd2ae3370fd942c4a9612bbd1bc73d1265debc008b3fbd87e30e23d5a8b8cb"
+    }
+  ],
+  "worker_policy": {
+    "approval_policy": "never",
+    "effort": "max",
+    "model": "gpt-5.6-luna",
+    "sandbox": "workspace-write"
+  }
+}

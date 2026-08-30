@@ -1,0 +1,171 @@
+{
+  "agent_succeeded": true,
+  "case_id": "04-scope-csv-export",
+  "changed_paths": [
+    "report.py",
+    "tests/test_unit_report.py"
+  ],
+  "elapsed_scope": "paired_case_wall_time",
+  "elapsed_seconds": 548.568,
+  "evaluation_kind": "native_long_session",
+  "mode": "workflow",
+  "native_checkpoint": {
+    "injection": {
+      "accepted": true,
+      "attempted": true,
+      "bytes": 131072,
+      "chunks": 4,
+      "position": "after_last_user_turn"
+    },
+    "source_turn_labels": [
+      "initial",
+      "steering-1"
+    ],
+    "source_user_turn_count": 2,
+    "source_workspace_clean": true
+  },
+  "premature_completion": {
+    "available": true,
+    "detected": false,
+    "phase": "continuation"
+  },
+  "projection_generation": {
+    "cached_input_tokens": 0,
+    "calls": 1,
+    "effort": "max",
+    "elapsed_ms": 18423,
+    "input_tokens": 13674,
+    "model": "gpt-5.6-luna",
+    "output_tokens": 808,
+    "reasoning_output_tokens": 516
+  },
+  "recovery_context": "intact_native_session",
+  "requirement_evidence": [
+    {
+      "artifact_id": "verification-3875352-1788074300090-1",
+      "candidate_after_digest": "sha256:7a8de4bb4002bdb4fb0095dd48c2f13f0e291212c475db5d787e1fe1abb8fc2a",
+      "candidate_before_digest": "sha256:7a8de4bb4002bdb4fb0095dd48c2f13f0e291212c475db5d787e1fe1abb8fc2a",
+      "command_digest": "sha256:87b17b420377e1fe61bd1848a505b322c02a39f86b13709cc9fe1d90d40cd5a8",
+      "evidence_kind": "external_verifier",
+      "gold_requirement_id": "04.csv-output",
+      "passed": true,
+      "requirement_id": "04.csv-output",
+      "verifier_digest": "sha256:1d5ffabf67c321b37970ff47d9113978648b9b7ee54062b5c228240b530b11f5",
+      "verifier_name": "unit"
+    },
+    {
+      "allowed_changed_paths": [
+        "report.py",
+        "tests/test_unit_report.py"
+      ],
+      "artifact_id": null,
+      "evidence_kind": "mutation_scope",
+      "gold_requirement_id": "04.scope",
+      "passed": true,
+      "requirement_id": "04.scope",
+      "unexpected_changed_paths": [],
+      "verifier_name": null
+    },
+    {
+      "artifact_id": "verification-3875360-1788074300232-1",
+      "candidate_after_digest": "sha256:7a8de4bb4002bdb4fb0095dd48c2f13f0e291212c475db5d787e1fe1abb8fc2a",
+      "candidate_before_digest": "sha256:7a8de4bb4002bdb4fb0095dd48c2f13f0e291212c475db5d787e1fe1abb8fc2a",
+      "command_digest": "sha256:14f10fee124968b83cbdbf8f3dce7dbc833d523ab64ada583fe7f6033ee423e4",
+      "evidence_kind": "external_verifier",
+      "gold_requirement_id": "04.preserve-json",
+      "passed": true,
+      "requirement_id": "04.preserve-json",
+      "verifier_digest": "sha256:1ff013310d2de72459c884a17018a18185ef2943484fb28908c15d61b88c6468",
+      "verifier_name": "integration"
+    }
+  ],
+  "requirement_pass_rate": 1.0,
+  "review": {
+    "advisory_count": 0,
+    "attempt": 1,
+    "candidate_after_digest": "sha256:d56acdb8a275a2e1e1d3aca371a00b02a36c517f40b03e19d9874a83f39b5c42",
+    "candidate_before_digest": "sha256:d56acdb8a275a2e1e1d3aca371a00b02a36c517f40b03e19d9874a83f39b5c42",
+    "candidate_unchanged": true,
+    "coverage_complete": true,
+    "critical_count": 0,
+    "findings": [],
+    "prompt_sha256": "sha256:b95600ab7e76a1cbc96236ef55f3d2dc8e1615a75a8e22c2a43069c79ba938cc",
+    "raw_private_retained": true,
+    "required_count": 0,
+    "requirements_sha256": "sha256:be7e4e589f250a0209e1a4715f3dd4ca8b1299fb2370dad3a426a6c7ebadf1f3",
+    "review_passed": true,
+    "reviewer_policy": {
+      "approval_policy": "never",
+      "effort": "max",
+      "model": "gpt-5.6-luna",
+      "sandbox": "read-only"
+    },
+    "schema_version": 1,
+    "status": "completed"
+  },
+  "scope": {
+    "allowed_changed_paths": [
+      "report.py",
+      "tests/test_unit_report.py"
+    ],
+    "passed": true,
+    "unexpected_changed_paths": []
+  },
+  "statistical_claim": "descriptive_only_no_significance",
+  "status": "verified",
+  "title": "Add CSV order reports without regressing the existing JSON boundary",
+  "token_usage": {
+    "available": false,
+    "cached_input_tokens": 0,
+    "input_tokens": 0,
+    "output_tokens": 0,
+    "total_tokens": 0
+  },
+  "turn_status": "completed",
+  "verified_completion": true,
+  "verifier_fingerprint_sha256": "2c06b252f8d12e693bb43d80655541b3f1db313a086d0b29cacccfea08597a32",
+  "verifiers": [
+    {
+      "artifact_id": "verification-3875352-1788074300090-1",
+      "candidate_after_digest": "sha256:7a8de4bb4002bdb4fb0095dd48c2f13f0e291212c475db5d787e1fe1abb8fc2a",
+      "candidate_before_digest": "sha256:7a8de4bb4002bdb4fb0095dd48c2f13f0e291212c475db5d787e1fe1abb8fc2a",
+      "command_digest": "sha256:87b17b420377e1fe61bd1848a505b322c02a39f86b13709cc9fe1d90d40cd5a8",
+      "elapsed_ms": 122,
+      "name": "unit",
+      "passed": true,
+      "requirement_id": "04-scope-csv-export:unit",
+      "status": "passed",
+      "verifier_digest": "sha256:1d5ffabf67c321b37970ff47d9113978648b9b7ee54062b5c228240b530b11f5"
+    },
+    {
+      "artifact_id": "verification-3875360-1788074300232-1",
+      "candidate_after_digest": "sha256:7a8de4bb4002bdb4fb0095dd48c2f13f0e291212c475db5d787e1fe1abb8fc2a",
+      "candidate_before_digest": "sha256:7a8de4bb4002bdb4fb0095dd48c2f13f0e291212c475db5d787e1fe1abb8fc2a",
+      "command_digest": "sha256:14f10fee124968b83cbdbf8f3dce7dbc833d523ab64ada583fe7f6033ee423e4",
+      "elapsed_ms": 111,
+      "name": "integration",
+      "passed": true,
+      "requirement_id": "04-scope-csv-export:integration",
+      "status": "passed",
+      "verifier_digest": "sha256:1ff013310d2de72459c884a17018a18185ef2943484fb28908c15d61b88c6468"
+    },
+    {
+      "artifact_id": "verification-3875368-1788074300367-1",
+      "candidate_after_digest": "sha256:7a8de4bb4002bdb4fb0095dd48c2f13f0e291212c475db5d787e1fe1abb8fc2a",
+      "candidate_before_digest": "sha256:7a8de4bb4002bdb4fb0095dd48c2f13f0e291212c475db5d787e1fe1abb8fc2a",
+      "command_digest": "sha256:ec3c262088ca829519ca9d5f965afd88cfe8844f0b7b033180957ab3abda83fb",
+      "elapsed_ms": 248,
+      "name": "all",
+      "passed": true,
+      "requirement_id": "04-scope-csv-export:all",
+      "status": "passed",
+      "verifier_digest": "sha256:dedd2ae3370fd942c4a9612bbd1bc73d1265debc008b3fbd87e30e23d5a8b8cb"
+    }
+  ],
+  "worker_policy": {
+    "approval_policy": "never",
+    "effort": "max",
+    "model": "gpt-5.6-luna",
+    "sandbox": "workspace-write"
+  }
+}
