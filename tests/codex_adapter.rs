@@ -135,6 +135,20 @@ fn codex_run_receives_the_current_frontier_and_captures_jsonl() {
     assert_eq!(events[0]["type"], "thread.started");
     assert_eq!(events[1]["type"], "turn.started");
     assert_eq!(events[2]["type"], "turn.completed");
+    assert_eq!(
+        fs::symlink_metadata(root.join(".driftctl/trajectories"))
+            .expect("trajectory directory metadata")
+            .permissions()
+            .mode()
+            & 0o077,
+        0
+    );
+    let trajectory_metadata =
+        fs::symlink_metadata(root.join(".driftctl/trajectories/run-0001.jsonl"))
+            .expect("trajectory metadata");
+    assert!(trajectory_metadata.is_file());
+    assert!(!trajectory_metadata.file_type().is_symlink());
+    assert_eq!(trajectory_metadata.permissions().mode() & 0o077, 0);
 
     assert_eq!(
         fs::read_to_string(agents).expect("read AGENTS fixture"),
@@ -146,6 +160,52 @@ fn codex_run_receives_the_current_frontier_and_captures_jsonl() {
     );
 
     fs::remove_dir_all(root).expect("remove isolated test directory");
+}
+
+#[test]
+fn codex_run_refuses_a_symlinked_trajectory_directory() {
+    use std::os::unix::fs::symlink;
+
+    let root = temporary_directory("codex-trajectory-symlink");
+    let outside = temporary_directory("codex-trajectory-outside");
+    let fake_codex = root.join("fake-codex");
+    write_executable(
+        &fake_codex,
+        "#!/bin/sh\nprintf '%s\\n' '{\"type\":\"thread.started\",\"thread_id\":\"fixture-thread\"}'\nprintf '%s\\n' '{\"type\":\"turn.started\"}'\nprintf '%s\\n' '{\"type\":\"turn.completed\",\"usage\":{\"input_tokens\":10,\"output_tokens\":2}}'\n",
+    );
+
+    assert_success(&run(
+        &root,
+        &[
+            "start",
+            "--goal",
+            "Keep trajectories private",
+            "--requirement",
+            "Reject redirected trajectory storage",
+        ],
+        &[],
+    ));
+    symlink(&outside, root.join(".driftctl/trajectories"))
+        .expect("place symlinked trajectory directory");
+
+    let output = run(
+        &root,
+        &["run", "codex"],
+        &[("DRIFTCTL_CODEX_BIN", &fake_codex)],
+    );
+
+    assert_eq!(output.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("trajectory directory"));
+    assert!(
+        fs::read_dir(&outside)
+            .expect("read outside directory")
+            .next()
+            .is_none(),
+        "raw provider output must not follow the repository symlink"
+    );
+
+    fs::remove_dir_all(root).expect("remove isolated test directory");
+    fs::remove_dir_all(outside).expect("remove outside test directory");
 }
 
 #[test]
