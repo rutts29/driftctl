@@ -205,6 +205,12 @@ impl CodexChildAdapter {
                     "child goal read-back does not exactly match the approved objective",
                 ));
             }
+            let parent_goal_after = server.get_goal(&request.parent_thread_id)?;
+            if parent_goal_after != parent_goal {
+                return Err(ChildAdapterError::protocol(
+                    "parent goal changed while migrating the isolated child",
+                ));
+            }
             Ok(ChildMigration {
                 parent_goal,
                 child_id: child.id,
