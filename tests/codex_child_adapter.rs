@@ -5,7 +5,9 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use driftctl::codex_child::{ChildForkRequest, ChildTurnRequest, CodexChildAdapter};
+use driftctl::codex_child::{
+    ChildForkRequest, ChildTurnRequest, CodexChildAdapter, ManualGoalState,
+};
 use serde_json::{Value, json};
 
 fn temporary_directory(case: &str) -> PathBuf {
@@ -49,6 +51,9 @@ for raw in sys.stdin:
         continue
     if method == "thread/fork" and scenario == "capability-unavailable":
         print(json.dumps({"id": request["id"], "error": {"code": -32601, "message": "unsupported"}}), flush=True)
+        continue
+    if method == "thread/goal/set" and scenario == "goal-set-capability-unavailable":
+        print(json.dumps({"id": request["id"], "error": {"code": -32601, "message": "unsupported goal set"}}), flush=True)
         continue
     if method == "initialize":
         result = {"userAgent":"fake", "codexHome":"/not-used", "platformFamily":"unix", "platformOs":"linux"}
@@ -394,6 +399,49 @@ fn reports_missing_app_server_capabilities_without_interactive_fallback() {
             Some("thread/goal/get"),
             Some("thread/fork"),
         ]
+    );
+    fs::remove_dir_all(root).expect("remove test directory");
+}
+
+#[test]
+fn returns_an_exact_manual_child_handoff_after_goal_capability_failure() {
+    let root = temporary_directory("child-goal-manual-handoff");
+    let child_cwd = root.join("isolated-child");
+    fs::create_dir(&child_cwd).expect("create child fixture");
+    let objective = "Approved objective";
+    let adapter = configure_fake(
+        &root,
+        "goal-set-capability-unavailable",
+        &child_cwd,
+        objective,
+    );
+
+    let error = adapter
+        .fork_and_migrate(request(&child_cwd, objective))
+        .expect_err("unsupported goal set must block");
+    let handoff = error
+        .manual_handoff()
+        .expect("created child must have a manual handoff");
+    assert_eq!(handoff.child_id(), "child-thread");
+    assert_eq!(
+        handoff.child_cwd(),
+        child_cwd.canonicalize().expect("canonical child cwd")
+    );
+    assert_eq!(handoff.observed_goal(), &ManualGoalState::Unknown);
+    assert_eq!(handoff.intended_goal(), objective);
+    assert!(handoff.requires_new_approval());
+    assert_eq!(handoff.resume_argv(), ["codex", "resume", "child-thread"]);
+    assert_eq!(handoff.slash_commands(), ["/goal clear", "/goal"]);
+    let requests = captured_requests(&root);
+    assert_eq!(requests.last().unwrap()["method"], "thread/goal/get");
+    assert_eq!(
+        requests.last().unwrap()["params"]["threadId"],
+        "parent-thread"
+    );
+    assert!(
+        !requests
+            .iter()
+            .any(|request| request["method"] == "turn/start")
     );
     fs::remove_dir_all(root).expect("remove test directory");
 }

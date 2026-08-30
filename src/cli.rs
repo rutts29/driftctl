@@ -1267,7 +1267,20 @@ fn continue_codex(root: &Path, arguments: &[String]) -> CliOutput {
     };
     let migration = match adapter.fork_and_migrate(request) {
         Ok(migration) => migration,
-        Err(error) => return CliOutput::blocked(error.to_string()),
+        Err(error) => {
+            let Some(handoff) = error.manual_handoff() else {
+                return CliOutput::blocked(error.to_string());
+            };
+            if let Err(source_error) = codex_source::verify_unchanged(root, &imported) {
+                return CliOutput::blocked(source_error.to_string());
+            }
+            if let Err(source_error) =
+                crate::workspace::verify_source_unchanged(root, pair.source_pre_manifest())
+            {
+                return CliOutput::blocked(source_error.to_string());
+            }
+            return manual_goal_handoff_output(run_id, handoff, &error.to_string(), options.json);
+        }
     };
     if let Err(error) = codex_source::verify_unchanged(root, &imported) {
         return CliOutput::blocked(error.to_string());
@@ -1399,6 +1412,65 @@ fn continue_codex(root: &Path, arguments: &[String]) -> CliOutput {
             turn.status(),
             migration.child_cwd().display(),
             CONTAINMENT_NOTICE,
+        ))
+    }
+}
+
+fn manual_goal_handoff_output(
+    run_id: &str,
+    handoff: &crate::codex_child::ManualGoalHandoff,
+    failure: &str,
+    json_output: bool,
+) -> CliOutput {
+    let observed_goal = match handoff.observed_goal() {
+        crate::codex_child::ManualGoalState::Absent => json!({"state":"absent"}),
+        crate::codex_child::ManualGoalState::Known(objective) => {
+            json!({"state":"known", "text":objective})
+        }
+        crate::codex_child::ManualGoalState::Unknown => json!({"state":"unknown"}),
+    };
+    let document = json!({
+        "schema_version":1,
+        "status":"manual_goal_handoff_required",
+        "run_id":run_id,
+        "child_thread_id":handoff.child_id(),
+        "child_cwd":handoff.child_cwd(),
+        "observed_goal":observed_goal,
+        "intended_goal":handoff.intended_goal(),
+        "failure":failure,
+        "requires_new_approval":handoff.requires_new_approval(),
+        "resume":{
+            "cwd":handoff.child_cwd(),
+            "argv":handoff.resume_argv(),
+        },
+        "slash_commands":[
+            {"command":"/goal clear"},
+            {"command":"/goal", "argument":handoff.intended_goal()},
+        ],
+        "turn_started":false,
+        "parent_unchanged":true,
+        "source_unchanged":true,
+        "adoption":"none",
+        "containment":CONTAINMENT_NOTICE,
+    });
+    if json_output {
+        match serde_json::to_string(&document) {
+            Ok(stdout) => CliOutput {
+                exit_code: 2,
+                stdout,
+                stderr: String::new(),
+            },
+            Err(_) => CliOutput::error("could not serialize manual child goal handoff"),
+        }
+    } else {
+        CliOutput::blocked(format!(
+            "child {} is blocked in {}\nobserved child goal: {:?}\nintended child goal: {}\nresume with: codex resume {}\nthen, after new approval, run `/goal clear` followed by `/goal <intended goal>` and verify the child goal before continuing\nparent and source unchanged\nfailure: {}",
+            handoff.child_id(),
+            handoff.child_cwd().display(),
+            handoff.observed_goal(),
+            handoff.intended_goal(),
+            handoff.child_id(),
+            handoff.failure(),
         ))
     }
 }
