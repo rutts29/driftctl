@@ -20,6 +20,7 @@ try:
     from .run_baseline import (
         CaseDefinition,
         RunnerError,
+        changed_paths_since,
         contained_path,
         evaluation_fingerprint,
         initialize_git_repository,
@@ -31,6 +32,7 @@ except ImportError:
     from run_baseline import (
         CaseDefinition,
         RunnerError,
+        changed_paths_since,
         contained_path,
         evaluation_fingerprint,
         initialize_git_repository,
@@ -47,6 +49,11 @@ DURABLE_READ_ATTEMPTS = 100
 DURABLE_READ_INTERVAL_SECONDS = 0.05
 CONTEXT_CHUNK_COUNT = 4
 MAX_CONTEXT_BYTES = 1024 * 1024
+MAX_PLAIN_SUMMARY_BYTES = 64 * 1024
+NEUTRAL_CONTINUATION_PROMPT = (
+    "Continue the task from this checkpoint. Preserve existing behavior and complete "
+    "the remaining work. Do not claim completion without running relevant validation."
+)
 
 
 class AppServerRequestError(RunnerError):
@@ -78,18 +85,22 @@ class AppServer:
         self.input = self.process.stdin
         self.output = self.process.stdout
         self.next_id = 1
+        self.notifications: list[Mapping[str, Any]] = []
 
     def close(self) -> None:
         if self.process.poll() is None:
             self.process.kill()
         self.process.wait()
 
-    def initialize(self) -> None:
+    def initialize(self, experimental: bool = False) -> None:
         self.request(
             "initialize",
             {
                 "clientInfo": {"name": "driftctl-native-eval", "version": "1"},
-                "capabilities": {"experimentalApi": False, "requestAttestation": False},
+                "capabilities": {
+                    "experimentalApi": experimental,
+                    "requestAttestation": False,
+                },
             },
         )
         self.notify("initialized", {})
@@ -101,6 +112,7 @@ class AppServer:
         while True:
             response = self._read()
             if "method" in response and "id" not in response:
+                self.notifications.append(response)
                 continue
             if response.get("id") != request_id:
                 raise RunnerError(
@@ -119,6 +131,141 @@ class AppServer:
             if not isinstance(result, Mapping):
                 raise RunnerError(f"App Server {method} response has no object result")
             return result
+
+    def run_control_turn(
+        self,
+        parent_thread_id: str,
+        candidate: Path,
+        goal: str,
+        summary: str,
+        worker_policy: Mapping[str, str],
+        expected_source_messages: int,
+    ) -> dict[str, Any]:
+        fork = self.request(
+            "thread/fork",
+            {
+                "threadId": parent_thread_id,
+                "cwd": str(candidate),
+                "ephemeral": False,
+                "model": worker_policy["model"],
+                "sandbox": "workspace-write",
+                "approvalPolicy": "never",
+            },
+        )
+        thread = fork.get("thread")
+        if not isinstance(thread, Mapping):
+            raise RunnerError("plain-summary thread/fork has no child thread")
+        child_id = thread.get("id")
+        if (
+            not isinstance(child_id, str)
+            or not child_id
+            or child_id == parent_thread_id
+            or thread.get("cwd") != str(candidate)
+            or thread.get("ephemeral") is not False
+        ):
+            raise RunnerError("plain-summary thread/fork returned an invalid child")
+        self.migrate_child_goal(child_id, goal)
+        self.request(
+            "thread/settings/update",
+            {
+                "threadId": child_id,
+                "model": worker_policy["model"],
+                "effort": worker_policy["effort"],
+                "approvalPolicy": "never",
+                "sandboxPolicy": {"type": "workspaceWrite"},
+            },
+        )
+        resumed = self.request(
+            "thread/resume",
+            {
+                "threadId": child_id,
+                "model": worker_policy["model"],
+                "sandbox": "workspace-write",
+                "approvalPolicy": "never",
+            },
+        )
+        resumed_thread = resumed.get("thread")
+        if (
+            not isinstance(resumed_thread, Mapping)
+            or resumed_thread.get("id") != child_id
+            or resumed_thread.get("cwd") != str(candidate)
+            or resumed_thread.get("ephemeral") is not False
+            or resumed.get("model") != worker_policy["model"]
+            or resumed.get("reasoningEffort") != worker_policy["effort"]
+            or resumed.get("approvalPolicy") != "never"
+            or not isinstance(resumed.get("sandbox"), Mapping)
+            or resumed["sandbox"].get("type") != "workspaceWrite"
+        ):
+            raise RunnerError("plain-summary child worker policy read-back failed")
+        prompt = f"{NEUTRAL_CONTINUATION_PROMPT}\n\nPlain summary:\n{summary}"
+        started = self.request(
+            "turn/start",
+            {
+                "threadId": child_id,
+                "input": [{"type": "text", "text": prompt}],
+                "model": worker_policy["model"],
+                "effort": worker_policy["effort"],
+                "approvalPolicy": "never",
+                "sandboxPolicy": {"type": "workspaceWrite"},
+            },
+        )
+        turn = started.get("turn")
+        if not isinstance(turn, Mapping):
+            raise RunnerError("plain-summary turn/start has no turn")
+        turn_id = turn.get("id")
+        status = turn.get("status")
+        if not isinstance(turn_id, str) or not turn_id:
+            raise RunnerError("plain-summary turn/start has no turn ID")
+        if status == "inProgress":
+            status = self.wait_for_terminal_turn(child_id, turn_id)
+        elif status not in {"completed", "failed", "interrupted"}:
+            raise RunnerError("plain-summary turn/start returned an invalid status")
+        self.require_user_message_count(parent_thread_id, expected_source_messages)
+        return {
+            "child_cwd": str(candidate),
+            "child_thread_id": child_id,
+            "turn_id": turn_id,
+            "turn_status": status,
+        }
+
+    def migrate_child_goal(self, child_id: str, goal: str) -> None:
+        before = self.request("thread/goal/get", {"threadId": child_id}).get("goal")
+        current = before.get("objective") if isinstance(before, Mapping) else None
+        if current != goal:
+            if current is not None:
+                cleared = self.request("thread/goal/clear", {"threadId": child_id})
+                if cleared.get("cleared") is not True:
+                    raise RunnerError("plain-summary child goal clear was not confirmed")
+            changed = self.request(
+                "thread/goal/set", {"threadId": child_id, "objective": goal}
+            ).get("goal")
+            if (
+                not isinstance(changed, Mapping)
+                or changed.get("threadId") != child_id
+                or changed.get("objective") != goal
+            ):
+                raise RunnerError("plain-summary child goal set was not confirmed")
+        after = self.request("thread/goal/get", {"threadId": child_id}).get("goal")
+        if (
+            not isinstance(after, Mapping)
+            or after.get("threadId") != child_id
+            or after.get("objective") != goal
+        ):
+            raise RunnerError("plain-summary child goal read-back failed")
+
+    def wait_for_terminal_turn(self, child_id: str, turn_id: str) -> str:
+        for notification in reversed(self.notifications):
+            status = terminal_turn_status(notification, child_id, turn_id)
+            if status is not None:
+                return status
+        while True:
+            message = self._read()
+            status = terminal_turn_status(message, child_id, turn_id)
+            if status is not None:
+                return status
+            if "method" in message and "id" not in message:
+                continue
+            raise RunnerError("App Server emitted an unexpected message during control turn")
 
     def notify(self, method: str, params: Mapping[str, Any]) -> None:
         self._write({"method": method, "params": params})
@@ -211,6 +358,7 @@ def main(arguments: Sequence[str]) -> int:
     parser.add_argument("--worker-model", default=DEFAULT_WORKER_MODEL)
     parser.add_argument("--worker-effort", default=DEFAULT_WORKER_EFFORT)
     parser.add_argument("--artifacts", type=Path)
+    parser.add_argument("--plain-summary-file", type=Path)
     namespace = parser.parse_args(arguments)
     try:
         manifest = run_case(
@@ -222,6 +370,7 @@ def main(arguments: Sequence[str]) -> int:
             namespace.artifacts,
             namespace.worker_model,
             namespace.worker_effort,
+            namespace.plain_summary_file,
         )
     except RunnerError as error:
         print(
@@ -241,6 +390,7 @@ def run_case(
     artifact_directory: Path | None = None,
     worker_model: str = DEFAULT_WORKER_MODEL,
     worker_effort: str = DEFAULT_WORKER_EFFORT,
+    plain_summary_file: Path | None = None,
 ) -> dict[str, Any]:
     if context_bytes < 0 or context_bytes > MAX_CONTEXT_BYTES:
         raise RunnerError(
@@ -257,6 +407,7 @@ def run_case(
     started = time.monotonic()
     case_directory = case_directory.resolve()
     definition = load_case(case_directory)
+    plain_summary = load_plain_summary(case_directory, plain_summary_file)
     fingerprint = evaluation_fingerprint(case_directory)
     source_workspace = contained_path(case_directory, definition.workspace, "workspace")
     if not source_workspace.is_dir():
@@ -322,6 +473,40 @@ def run_case(
             )
             for mode in ("baseline", "workflow")
         }
+        if plain_summary is not None:
+            control_summary, control_digest = plain_summary
+            candidate = root / "plain-summary-workspace"
+            shutil.copytree(workspace, candidate, symlinks=True)
+            initial_commit = git_head(candidate)
+            control = run_plain_summary_control(
+                codex_bin,
+                candidate,
+                session_id,
+                definition,
+                control_summary,
+                worker_policy,
+                len(source_turns),
+            )
+            control["changed_paths"] = changed_paths_since(candidate, initial_commit)
+            results["plain_summary"] = arm_result(
+                definition,
+                "plain_summary",
+                control,
+                driftctl_bin,
+                case_directory,
+                fingerprint,
+                environment,
+                source_turns,
+                injection,
+                source_clean,
+                session_id,
+                private_artifact,
+                worker_policy,
+            )
+            results["plain_summary"]["control_context"] = {
+                "kind": "flat_plain_summary",
+                "sha256": control_digest,
+            }
         pair_elapsed = round(time.monotonic() - started, 3)
         for result in results.values():
             result["elapsed_seconds"] = pair_elapsed
@@ -381,6 +566,64 @@ def seed_native_session(
         return thread_id, source_turns, injection
     finally:
         server.close()
+
+
+def load_plain_summary(
+    case_directory: Path, summary_file: Path | None
+) -> tuple[str, str] | None:
+    if summary_file is None:
+        return None
+    resolved = summary_file.resolve()
+    try:
+        resolved.relative_to(case_directory)
+    except ValueError as error:
+        raise RunnerError("plain summary must be inside the frozen case directory") from error
+    try:
+        data = resolved.read_bytes()
+    except OSError as error:
+        raise RunnerError(f"could not read plain summary: {error}") from error
+    if not data or len(data) > MAX_PLAIN_SUMMARY_BYTES or b"\0" in data:
+        raise RunnerError("plain summary must be nonempty, bounded UTF-8 text")
+    try:
+        summary = data.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise RunnerError("plain summary must be nonempty, bounded UTF-8 text") from error
+    if not summary.strip():
+        raise RunnerError("plain summary must be nonempty, bounded UTF-8 text")
+    return summary, "sha256:" + hashlib.sha256(data).hexdigest()
+
+
+def run_plain_summary_control(
+    codex_bin: str,
+    candidate: Path,
+    parent_thread_id: str,
+    definition: CaseDefinition,
+    summary: str,
+    worker_policy: Mapping[str, str],
+    expected_source_messages: int,
+) -> dict[str, Any]:
+    server = AppServer(codex_bin)
+    try:
+        server.initialize(experimental=True)
+        return server.run_control_turn(
+            parent_thread_id,
+            candidate,
+            definition.goal,
+            summary,
+            worker_policy,
+            expected_source_messages,
+        )
+    finally:
+        server.close()
+
+
+def git_head(workspace: Path) -> str:
+    completed = invoke(
+        ["git", "rev-parse", "HEAD"], workspace, os.environ, "read candidate checkpoint"
+    )
+    if completed.returncode != 0 or not completed.stdout.strip():
+        raise RunnerError("plain-summary candidate has no frozen Git checkpoint")
+    return completed.stdout.strip()
 
 
 def initial_source_prompt(definition: CaseDefinition) -> str:
@@ -459,6 +702,21 @@ def synthetic_context_payloads(context_bytes: int) -> list[str]:
             line_index += 1
         payloads.append("".join(lines)[:size])
     return payloads
+
+
+def terminal_turn_status(
+    notification: Mapping[str, Any], child_id: str, turn_id: str
+) -> str | None:
+    if notification.get("method") != "turn/completed":
+        return None
+    params = notification.get("params")
+    if not isinstance(params, Mapping) or params.get("threadId") != child_id:
+        return None
+    turn = params.get("turn")
+    if not isinstance(turn, Mapping) or turn.get("id") != turn_id:
+        return None
+    status = turn.get("status")
+    return status if status in {"completed", "failed", "interrupted"} else None
 
 
 def invoke_compare(
