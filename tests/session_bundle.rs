@@ -1,5 +1,7 @@
 use driftctl::intent_history::{SourceProvider, SourceRole};
-use driftctl::session_bundle::{BundleRecord, NeutralSessionBundle, SessionBundleError};
+use driftctl::session_bundle::{
+    BundleRecord, NativeGoal, NeutralSessionBundle, SessionBundleError,
+};
 
 fn record(id: &str, role: SourceRole, content: &str) -> BundleRecord {
     BundleRecord::new(id, role, content).expect("valid bundle record")
@@ -48,6 +50,7 @@ fn round_trips_a_versioned_bundle_without_reordering_records_or_losing_source_re
     assert_eq!(reparsed.source_refs()[2].role, SourceRole::User);
     assert!(reparsed.source().digest().starts_with("sha256:"));
     assert_eq!(reparsed.source().head(), "turn-3:0");
+    assert_eq!(reparsed.native_goal(), &NativeGoal::Unknown);
 }
 
 #[test]
@@ -127,4 +130,61 @@ fn debug_and_sanitized_summary_never_render_private_locator_or_raw_text() {
     assert!(!source_refs_debug.contains("private-session-do-not-render"));
     assert!(!summary.contains("private-session-do-not-render"));
     assert!(!summary.contains("private user text must not render"));
+}
+
+#[test]
+fn round_trips_native_goal_states_and_rejects_invalid_state_text_combinations() {
+    let known = NeutralSessionBundle::from_records_with_native_goal(
+        SourceProvider::Codex,
+        "private-session",
+        "sha256:8d3bb5c6a01d8fa89d979122c3c7f1c7f771b24827b8bc6886b9b7fc059f1f37",
+        NativeGoal::known("Keep the migration reversible.").expect("valid known goal"),
+        vec![record("message-1", SourceRole::User, "Continue the work")],
+    )
+    .expect("construct known-goal bundle");
+    let known_json = known.to_json().expect("serialize known goal");
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&known_json).expect("JSON")["native_goal"],
+        serde_json::json!({"state": "known", "text": "Keep the migration reversible."})
+    );
+    assert_eq!(
+        NeutralSessionBundle::from_json(&known_json).expect("parse known goal"),
+        known
+    );
+    assert!(!format!("{known:?}").contains("Keep the migration reversible."));
+
+    for goal in [NativeGoal::Absent, NativeGoal::Unknown] {
+        let bundle = NeutralSessionBundle::from_records_with_native_goal(
+            SourceProvider::Codex,
+            "private-session",
+            "sha256:8d3bb5c6a01d8fa89d979122c3c7f1c7f771b24827b8bc6886b9b7fc059f1f37",
+            goal,
+            vec![record("message-1", SourceRole::User, "Continue the work")],
+        )
+        .expect("construct goal-state bundle");
+        assert_eq!(
+            NeutralSessionBundle::from_json(&bundle.to_json().expect("serialize bundle"))
+                .expect("parse goal-state bundle"),
+            bundle
+        );
+    }
+
+    let valid: serde_json::Value = serde_json::from_str(&known_json).expect("known JSON");
+    for invalid in [
+        json_with(&valid, |value| {
+            value["native_goal"] = serde_json::json!({"state": "known"})
+        }),
+        json_with(&valid, |value| {
+            value["native_goal"] = serde_json::json!({"state": "absent", "text": "must not appear"})
+        }),
+        json_with(&valid, |value| {
+            value["native_goal"] =
+                serde_json::json!({"state": "unknown", "text": "must not appear"})
+        }),
+        json_with(&valid, |value| {
+            value["native_goal"] = serde_json::json!({"state": "unsupported"})
+        }),
+    ] {
+        assert!(NeutralSessionBundle::from_json(&invalid.to_string()).is_err());
+    }
 }
