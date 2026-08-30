@@ -29,7 +29,7 @@ P0 contract/tests
 | P2 | `integrate`, `attach`, `status`, `detach`; exact-session enrollment | P1 | two same-repo sessions plus unenrolled session remain isolated |
 | P3 | Reconcile → keeper proposal → validate → commit → inject/block | P2 | additive, supersession, conflict, invalid-output process tests |
 | P4 | `Stop`, `PreCompact`, `SessionStart`; recovery/idempotence | P3 | restart, missed records, worker kill, native compaction E2E |
-| P5 | Operator conflict and native-goal resolution | P4 | exact-session clear/set/read-back; wrong/stale approval cannot mutate |
+| P5 | Operator conflict and native-goal resolution | P4 | operator-executed same-session goal handoff; Driftctl read-only verification; wrong/stale approval cannot mutate |
 | P6 | Installed real-session acceptance and private package | P5 | full attached lifecycle passes; one Daybreak release-blocker review |
 
 ## Checkpoints
@@ -51,7 +51,7 @@ P0 contract/tests
 - P4–P5 pass through installed binary.
 - Resume and compact inject the same effective projection.
 - Keeper death loses no accepted ledger state.
-- Goal mutation requires exact operator approval and read-back.
+- Native-goal mutation remains inside the exact operator-controlled Codex session; Driftctl requires exact read-back.
 
 ### C4 — MVP
 

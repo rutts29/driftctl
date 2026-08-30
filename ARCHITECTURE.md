@@ -23,7 +23,7 @@ install isolated hooks
 |---|---|---|
 | Codex plugin | Lifecycle hook declarations | Semantic state or authority |
 | Hook controller | Enrollment check, locking, orchestration, hook output | Intent invention |
-| App Server adapter | Thread read, native goal get/clear/set/read-back | Semantic decisions |
+| App Server adapter | Thread read and same-session native-goal read-back | Same-session goal mutation or semantic decisions |
 | Source cursor | Ordered provider record identity and replay position | Projection content |
 | Keeper worker | Structured proposal from projection plus delta | Ledger writes, goal mutation, approval |
 | Proposal validator | Source accounting, lifecycle legality, bounds, stale checks | Provider execution |
@@ -73,7 +73,7 @@ detached
             ├─ accepted steering ─► attached
             ├─ ambiguity/goal mismatch ─► blocked
             │    ├─ reject/edit ─► blocked
-            │    └─ approved + verified ─► attached
+            │    └─ operator goal update + verified approval ─► attached
             ├─ worker/durability failure ─► blocked
             ├─ restart/compact ─► recovering ─► attached|blocked
             └─ detach exact ID ─► detached

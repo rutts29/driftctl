@@ -2701,41 +2701,27 @@ fn approve_same_session_goal(
         return CliOutput::blocked(error);
     }
     let adapter = CodexChildAdapter::from_environment();
-    let transition =
-        match adapter.replace_exact_goal(enrollment.session_id(), pending.proposed_goal()) {
-            Ok(transition) => transition,
-            Err(error) => return CliOutput::blocked(error.to_string()),
-        };
+    let observed = match adapter.observe_persisted_goal(enrollment.session_id()) {
+        Ok(observed) => observed,
+        Err(error) => return CliOutput::blocked(error.to_string()),
+    };
+    if observed.objective() != Some(pending.proposed_goal()) {
+        let session = crate::enrollment::redacted_session(enrollment.session_id());
+        return CliOutput::blocked(format!(
+            "native goal does not match the pending approved proposal; Driftctl did not mutate it. In the exact attached session ({session}), run:\n  /goal clear\n  /goal {}\nThen rerun the same driftctl resolve command to verify and commit it",
+            pending.proposed_goal()
+        ));
+    }
     if let Err(error) = verify_enrolled_source(enrollment, recovered, Some(pending.proposed_goal()))
     {
-        return match adapter.restore_exact_goal(
-            enrollment.session_id(),
-            transition.current(),
-            transition.previous(),
-        ) {
-            Ok(()) => CliOutput::blocked(format!(
-                "approved native goal was restored because source verification failed: {error}"
-            )),
-            Err(rollback) => CliOutput::blocked(format!(
-                "source verification failed and native-goal rollback could not be verified: {error}; {rollback}"
-            )),
-        };
+        return CliOutput::blocked(format!(
+            "native goal confirmation failed without mutation: {error}"
+        ));
     }
     let final_recovered = match apply_approved_goal(store, recovered, pending) {
         Ok(recovered) => recovered,
         Err(error) => {
-            return match adapter.restore_exact_goal(
-                enrollment.session_id(),
-                transition.current(),
-                transition.previous(),
-            ) {
-                Ok(()) => CliOutput::blocked(format!(
-                    "approved goal was not committed and the native goal was restored: {error}"
-                )),
-                Err(rollback) => CliOutput::blocked(format!(
-                    "approved goal commit failed and native-goal rollback could not be verified: {error}; {rollback}"
-                )),
-            };
+            return CliOutput::blocked(format!("approved goal was not committed: {error}"));
         }
     };
     if let Err(error) = proposal_store.mark_applied(pending) {
