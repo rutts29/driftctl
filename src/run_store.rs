@@ -605,6 +605,12 @@ pub struct RunStore {
     _lock: File,
 }
 
+impl Drop for RunStore {
+    fn drop(&mut self) {
+        let _ = FileExt::unlock(&self._lock);
+    }
+}
+
 impl RunStore {
     /// Return `${XDG_STATE_HOME:-$HOME/.local/state}/driftctl`.
     pub fn default_state_root() -> Result<PathBuf, RunStoreError> {
