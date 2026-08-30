@@ -184,7 +184,7 @@ Expected:
 
 Resume the baseline from `baseline.cwd` and continue normally. Resume the workflow from `workflow.cwd`, invoke `$driftctl on`, then provide the same continuation task. Do not enroll the baseline or source session.
 
-Create one executable verifier that exits zero only when the user-visible task is complete. Run it before detaching the workflow:
+Create one executable verifier outside both candidate workspaces that exits zero only when the user-visible task is complete. Run it before detaching the workflow. Driftctl resolves a relative program from this invocation directory, canonicalizes it before changing into either candidate, and pins its content digest:
 
 ```bash
 cd <source-repository>
@@ -195,6 +195,7 @@ Expected:
 
 - Baseline `detached`; workflow `attached_exact`; source unchanged.
 - The same verifier command executes once in each candidate.
+- Candidate-local verifier programs or inputs are rejected before execution.
 - Per-arm exit status, candidate/verifier digests, timing, post-checkpoint records/prompts, and workflow keeper overhead.
 - A repeated identical report returns `cached: true`; a different verifier is rejected.
 
@@ -208,14 +209,14 @@ Use a disposable path; do not overwrite the normal installed binary:
 
 ```bash
 export DRIFTCTL_REHEARSAL=/tmp/driftctl-reproduction
-mkdir -p "$DRIFTCTL_REHEARSAL/releases/v0.4.0" \
+mkdir -p "$DRIFTCTL_REHEARSAL/releases/v0.4.1" \
   "$DRIFTCTL_REHEARSAL/bin"
 
 sh scripts/package-release.sh \
-  --out "$DRIFTCTL_REHEARSAL/releases/v0.4.0"
+  --out "$DRIFTCTL_REHEARSAL/releases/v0.4.1"
 
 DRIFTCTL_BASE_URL="file://$DRIFTCTL_REHEARSAL/releases" \
-  sh scripts/install.sh --version v0.4.0 \
+  sh scripts/install.sh --version v0.4.1 \
     --bin-dir "$DRIFTCTL_REHEARSAL/bin"
 
 "$DRIFTCTL_REHEARSAL/bin/driftctl" --help

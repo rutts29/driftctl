@@ -46,7 +46,7 @@ The Codex hook event is read from stdin and validated before enrollment lookup.
 3. Prepare starts no agent turn, creates no enrollment, and leaves source session/worktree unchanged.
 4. Baseline continues normally. Workflow continues only after exact `$driftctl on` inside that fork.
 5. `ab report` requires baseline detached and workflow attached to its exact candidate repository.
-6. One verifier command runs independently against both candidates. Verifier mutation, candidate mutation, or nonzero exit fails that arm.
+6. One verifier command runs independently against both candidates. Its program is canonicalized from the report invocation directory, must be one regular file outside both candidates, and is content-pinned across arms. Candidate-resolved inputs, verifier mutation, candidate mutation, or nonzero exit fail closed.
 7. Repeating report with the same command returns stored evidence; a different command cannot replace it.
 8. Primary result: verified completion. Post-checkpoint prompts, verifier time, and keeper calls/tokens are secondary evidence only.
 9. Result label: `prospective_paired`. Retrospective session pairing is deferred.
