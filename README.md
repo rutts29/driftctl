@@ -26,6 +26,8 @@ driftctl continue codex --last
 
 For a first manual trial, use a separate terminal and target an inactive old session; do not invoke Driftctl from inside the parent session being inspected because that conversation would change while its preservation is being attested. Run `inspect --json` into a private local directory, review any conflicts, then run `continue` only after the ledger is acceptable:
 
+For a historical midpoint backtest, first create a normal persisted Codex fork through the desired completed turn and leave that fork inactive. Use the fork's session ID with Driftctl. The original long session remains the untouched control; Driftctl reads the midpoint fork, then `continue` creates a separate projected child from it.
+
 ```bash
 mkdir -p /tmp/driftctl-manual-private
 chmod 700 /tmp/driftctl-manual-private
