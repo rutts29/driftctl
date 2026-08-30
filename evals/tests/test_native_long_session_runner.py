@@ -12,7 +12,6 @@ import tempfile
 import textwrap
 import unittest
 
-
 ROOT = Path(__file__).resolve().parents[2]
 RUNNER = ROOT / "evals" / "runner" / "run_native_long_session.py"
 CASE = ROOT / "evals" / "cases" / "01-steering-retry"
@@ -24,7 +23,9 @@ class NativeLongSessionRunnerTests(unittest.TestCase):
         with temporary_fixture() as fixture:
             result, outputs = run_fixture(fixture)
             self.assertEqual(result["evaluation_kind"], "native_long_session")
-            self.assertEqual(result["statistical_claim"], "descriptive_only_no_significance")
+            self.assertEqual(
+                result["statistical_claim"], "descriptive_only_no_significance"
+            )
             baseline = json.loads(outputs["baseline"].read_text(encoding="utf-8"))
             workflow = json.loads(outputs["workflow"].read_text(encoding="utf-8"))
             for arm, mode in ((baseline, "baseline"), (workflow, "workflow")):
@@ -35,35 +36,69 @@ class NativeLongSessionRunnerTests(unittest.TestCase):
                 self.assertTrue(arm["native_checkpoint"]["injection"]["accepted"])
                 self.assertEqual(len(arm["verifiers"]), 3)
                 self.assertTrue(all(item["passed"] for item in arm["verifiers"]))
+                self.assertTrue(
+                    all(item["elapsed_ms"] == 1 for item in arm["verifiers"])
+                )
+                self.assertEqual(arm["elapsed_scope"], "paired_case_wall_time")
                 rendered = json.dumps(arm)
                 self.assertNotIn(str(fixture / "baseline-candidate"), rendered)
                 self.assertNotIn("source-thread", rendered)
-            self.assertEqual(baseline["source_session_sha256"], workflow["source_session_sha256"])
+            self.assertEqual(
+                baseline["source_session_sha256"], workflow["source_session_sha256"]
+            )
 
             score = subprocess.run(
-                [sys.executable, str(SCORER), str(outputs["baseline"]), str(outputs["workflow"])],
+                [
+                    sys.executable,
+                    str(SCORER),
+                    str(outputs["baseline"]),
+                    str(outputs["workflow"]),
+                ],
                 cwd=ROOT,
                 capture_output=True,
                 text=True,
                 check=False,
             )
             self.assertEqual(score.returncode, 0, score.stderr)
-            self.assertEqual(json.loads(score.stdout)["by_mode"]["workflow"]["verified_completion_count"], 1)
+            self.assertEqual(
+                json.loads(score.stdout)["by_mode"]["workflow"][
+                    "verified_completion_count"
+                ],
+                1,
+            )
 
             requests = read_json_lines(fixture / "codex-requests.jsonl")
             self.assertEqual(
                 [request.get("method") for request in requests],
-                ["initialize", "initialized", "thread/start", "turn/start", "thread/inject_items", "turn/start"],
+                [
+                    "initialize",
+                    "initialized",
+                    "thread/start",
+                    "turn/start",
+                    "thread/inject_items",
+                    "turn/start",
+                ],
             )
-            self.assertIn("Do not edit files", requests[3]["params"]["input"][0]["text"])
+            self.assertIn(
+                "Do not edit files", requests[3]["params"]["input"][0]["text"]
+            )
             self.assertIn("Late steering", requests[5]["params"]["input"][0]["text"])
             commands = read_json_lines(fixture / "driftctl-requests.jsonl")
-            self.assertEqual(commands[0]["arguments"][:4], ["compare", "codex", "--session", "source-thread"])
-            verify_calls = [item for item in commands if item["arguments"][0] == "verify"]
+            self.assertEqual(
+                commands[0]["arguments"][:4],
+                ["compare", "codex", "--session", "source-thread"],
+            )
+            verify_calls = [
+                item for item in commands if item["arguments"][0] == "verify"
+            ]
             self.assertEqual(len(verify_calls), 6)
             self.assertTrue(all("--" in item["arguments"] for item in verify_calls))
-            private = fixture / "artifacts" / "01-steering-retry-native-private.json"
+            private = next(
+                (fixture / "artifacts").glob("01-steering-retry-native-*.json")
+            )
             self.assertIn("source-thread", private.read_text(encoding="utf-8"))
+            self.assertEqual(stat.S_IMODE(private.parent.stat().st_mode), 0o700)
+            self.assertEqual(stat.S_IMODE(private.stat().st_mode), 0o600)
 
     def test_continues_when_context_injection_is_not_supported(self) -> None:
         with temporary_fixture() as fixture:
@@ -73,14 +108,19 @@ class NativeLongSessionRunnerTests(unittest.TestCase):
             injection = baseline["native_checkpoint"]["injection"]
             self.assertTrue(injection["attempted"])
             self.assertFalse(injection["accepted"])
-            self.assertIn("thread/inject_items", injection["error"])
+            self.assertEqual(injection["reason"], "unsupported_or_rejected")
 
 
 class temporary_fixture:
     def __enter__(self) -> Path:
-        self.temporary = tempfile.TemporaryDirectory(prefix="driftctl-native-eval-test-")
+        self.temporary = tempfile.TemporaryDirectory(
+            prefix="driftctl-native-eval-test-"
+        )
         root = Path(self.temporary.name)
-        for name, contents in {"fake-codex.py": FAKE_CODEX, "fake-driftctl.py": FAKE_DRIFTCTL}.items():
+        for name, contents in {
+            "fake-codex.py": FAKE_CODEX,
+            "fake-driftctl.py": FAKE_DRIFTCTL,
+        }.items():
             path = root / name
             path.write_text(textwrap.dedent(contents), encoding="utf-8")
             path.chmod(path.stat().st_mode | stat.S_IXUSR)
@@ -92,7 +132,9 @@ class temporary_fixture:
         self.temporary.cleanup()
 
 
-def run_fixture(root: Path, extra: dict[str, str] | None = None) -> tuple[dict[str, object], dict[str, Path]]:
+def run_fixture(
+    root: Path, extra: dict[str, str] | None = None
+) -> tuple[dict[str, object], dict[str, Path]]:
     results = root / "results"
     environment = os.environ | {
         "FAKE_CODEX_REQUESTS": str(root / "codex-requests.jsonl"),
@@ -104,9 +146,20 @@ def run_fixture(root: Path, extra: dict[str, str] | None = None) -> tuple[dict[s
         environment.update(extra)
     completed = subprocess.run(
         [
-            sys.executable, str(RUNNER), "--case", str(CASE), "--results-dir", str(results),
-            "--driftctl-bin", str(root / "fake-driftctl.py"), "--codex-bin", str(root / "fake-codex.py"),
-            "--context-bytes", "64", "--artifacts", str(root / "artifacts"),
+            sys.executable,
+            str(RUNNER),
+            "--case",
+            str(CASE),
+            "--results-dir",
+            str(results),
+            "--driftctl-bin",
+            str(root / "fake-driftctl.py"),
+            "--codex-bin",
+            str(root / "fake-codex.py"),
+            "--context-bytes",
+            "64",
+            "--artifacts",
+            str(root / "artifacts"),
         ],
         cwd=ROOT,
         env=environment,
@@ -115,9 +168,13 @@ def run_fixture(root: Path, extra: dict[str, str] | None = None) -> tuple[dict[s
         check=False,
     )
     if completed.returncode != 0:
-        raise AssertionError(f"stdout:\n{completed.stdout}\nstderr:\n{completed.stderr}")
+        raise AssertionError(
+            f"stdout:\n{completed.stdout}\nstderr:\n{completed.stderr}"
+        )
     manifest = json.loads(completed.stdout)
-    return manifest, {mode: results / filename for mode, filename in manifest["result_files"].items()}
+    return manifest, {
+        mode: results / filename for mode, filename in manifest["result_files"].items()
+    }
 
 
 def read_json_lines(path: Path) -> list[dict[str, object]]:
@@ -171,7 +228,7 @@ if arguments[0] == "compare":
     print(json.dumps(result))
     raise SystemExit(0)
 if arguments[0] == "verify":
-    print(json.dumps({"status": "passed", "artifact_id": "private", "command_digest": "sha256:command", "verifier_digest": "sha256:verifier", "candidate_before_digest": "sha256:before", "candidate_after_digest": "sha256:after", "elapsed_millis": 1}))
+    print(json.dumps({"status": "passed", "artifact_id": "private", "command_digest": "sha256:command", "verifier_digest": "sha256:verifier", "candidate_before_digest": "sha256:before", "candidate_after_digest": "sha256:after", "elapsed_ms": 1}))
     raise SystemExit(0)
 raise SystemExit(3)
 """
