@@ -9,5 +9,6 @@ pub mod projection;
 pub mod run_store;
 mod semantic_resolver;
 pub mod session_bundle;
+pub mod workspace;
 
 pub use ledger::{ClosureError, Ledger, LedgerError, RequirementStatus, Snapshot};
