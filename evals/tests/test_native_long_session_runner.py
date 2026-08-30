@@ -149,6 +149,11 @@ class NativeLongSessionRunnerTests(unittest.TestCase):
             baseline = json.loads(outputs["baseline"].read_text(encoding="utf-8"))
             self.assertEqual(baseline["native_checkpoint"]["source_user_turn_count"], 2)
 
+    def test_retries_a_private_native_read_rejection_without_exposing_it(self) -> None:
+        with temporary_fixture() as fixture:
+            result, _ = run_fixture(fixture, {"FAKE_FIRST_READ_REJECTED": "1"})
+            self.assertEqual(result["status"], "completed")
+
     def test_rejects_a_returned_turn_id_when_the_user_message_is_not_durable(
         self,
     ) -> None:
@@ -236,6 +241,7 @@ import os
 import sys
 
 turns = []
+read_count = 0
 for raw in sys.stdin:
     request = json.loads(raw)
     with open(os.environ["FAKE_CODEX_REQUESTS"], "a", encoding="utf-8") as output:
@@ -261,6 +267,10 @@ for raw in sys.stdin:
     elif method == "thread/inject_items":
         result = {"accepted": True}
     elif method == "thread/read":
+        read_count += 1
+        if os.environ.get("FAKE_FIRST_READ_REJECTED") and read_count == 1:
+            print(json.dumps({"id": request["id"], "error": {"message": "/private/session/path is empty"}}), flush=True)
+            continue
         retained = turns[:1] if os.environ.get("FAKE_MISSING_SECOND_USER") and len(turns) == 2 else turns
         result = {"thread": {"id": "source-thread", "turns": retained}}
     else:
