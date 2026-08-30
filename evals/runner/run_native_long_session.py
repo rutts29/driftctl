@@ -9,6 +9,8 @@ import hashlib
 import json
 import os
 from pathlib import Path
+from pathlib import PurePosixPath
+import re
 import shutil
 import subprocess
 import sys
@@ -51,10 +53,24 @@ DURABLE_READ_INTERVAL_SECONDS = 0.05
 CONTEXT_CHUNK_COUNT = 4
 MAX_CONTEXT_BYTES = 1024 * 1024
 MAX_PLAIN_SUMMARY_BYTES = 64 * 1024
+REVIEWER_TIMEOUT_SECONDS = 600
 NEUTRAL_CONTINUATION_PROMPT = (
     "Continue the task from this checkpoint. Preserve existing behavior and complete "
     "the remaining work. Do not claim completion without running relevant validation."
 )
+REVIEWER_SCHEMA_VERSION = 1
+REVIEWER_SEVERITIES = frozenset({"Critical", "Required", "Advisory"})
+REVIEWER_CATEGORIES = frozenset(
+    {"correctness", "regression", "scope", "security", "test_gap"}
+)
+
+
+class ReviewValidationError(RuntimeError):
+    """Report a strict reviewer-output failure without exposing raw output."""
+
+    def __init__(self, kind: str) -> None:
+        self.kind = kind
+        super().__init__(kind)
 
 
 class AppServerRequestError(RunnerError):
@@ -443,6 +459,8 @@ def run_case(
         state_directory.mkdir(mode=0o700)
         temporary_directory = root / "tmp"
         temporary_directory.mkdir(mode=0o700)
+        review_artifact_root = root / "reviews"
+        review_artifact_root.mkdir(mode=0o700)
         environment = os.environ | {
             "DRIFTCTL_CODEX_BIN": codex_bin,
             "TMPDIR": str(temporary_directory),
@@ -490,6 +508,8 @@ def run_case(
                 worker_policy,
                 projection_generation,
                 gold_projection,
+                codex_bin,
+                review_artifact_root,
             )
             for mode in ("baseline", "workflow")
         }
@@ -524,6 +544,8 @@ def run_case(
                 worker_policy,
                 projection_generation,
                 gold_projection,
+                codex_bin,
+                review_artifact_root,
             )
             results["plain_summary"]["control_context"] = {
                 "kind": "flat_plain_summary",
@@ -1045,6 +1067,8 @@ def arm_result(
     worker_policy: Mapping[str, str],
     projection_generation: Mapping[str, Any],
     gold_projection: Mapping[str, Any],
+    codex_bin: str,
+    review_artifact_root: Path,
 ) -> dict[str, Any]:
     candidate = Path(str(arm["child_cwd"]))
     if not candidate.is_dir():
@@ -1061,10 +1085,21 @@ def arm_result(
     )
     passed_requirements = sum(item["passed"] is True for item in requirement_evidence)
     requirement_pass_rate = passed_requirements / len(requirement_evidence)
+    review = review_candidate(
+        codex_bin,
+        candidate,
+        definition,
+        gold_projection,
+        changed_paths,
+        worker_policy,
+        base_environment,
+        review_artifact_root,
+    )
     verified = (
         agent_succeeded
         and all(item["passed"] for item in verifiers)
         and scope["passed"]
+        and review["review_passed"] is True
     )
     result: dict[str, Any] = {
         "agent_succeeded": agent_succeeded,
@@ -1090,10 +1125,7 @@ def arm_result(
         "projection_generation": dict(projection_generation),
         "requirement_evidence": requirement_evidence,
         "requirement_pass_rate": requirement_pass_rate,
-        "review": {
-            "status": "not_evaluated",
-            "unresolved_critical_or_required": None,
-        },
+        "review": review,
         "recovery_context": "intact_native_session",
         "source_session_sha256": digest_text(source_session_id),
         "scope": scope,
@@ -1120,6 +1152,361 @@ def arm_result(
     if private_artifact is not None:
         result["private_artifact"] = private_artifact
     return result
+
+
+def review_candidate(
+    codex_bin: str,
+    candidate: Path,
+    definition: CaseDefinition,
+    gold_projection: Mapping[str, Any],
+    changed_paths: Any,
+    worker_policy: Mapping[str, str],
+    base_environment: Mapping[str, str],
+    artifact_root: Path,
+) -> dict[str, Any]:
+    """Run one blind read-only acceptance review and retain only private raw output."""
+
+    try:
+        requirements = review_requirements(gold_projection)
+        prompt = review_prompt(definition, requirements, changed_paths)
+        before = candidate_tree_digest(candidate)
+    except (OSError, ReviewValidationError):
+        return invalid_review("schema", worker_policy, None, None, False)
+
+    environment = dict(base_environment)
+    environment.pop("DRIFTCTL_EVAL_CASE_DIR", None)
+    environment.pop("PYTHONPATH", None)
+    command = [
+        codex_bin,
+        "-c",
+        f"model_reasoning_effort={json.dumps(worker_policy['effort'])}",
+        "-c",
+        'approval_policy="never"',
+        "exec",
+        "--json",
+        "--model",
+        worker_policy["model"],
+        "--sandbox",
+        "read-only",
+        "--ephemeral",
+        prompt,
+    ]
+    try:
+        completed = subprocess.run(
+            command,
+            cwd=candidate,
+            env=environment,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=REVIEWER_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired as error:
+        raw_retained = retain_private_review_artifact(
+            artifact_root,
+            timeout_stream(error.stdout),
+            timeout_stream(error.stderr),
+        )
+        try:
+            after = candidate_tree_digest(candidate)
+        except OSError:
+            return invalid_review(
+                "candidate_digest", worker_policy, before, None, raw_retained
+            )
+        if before != after:
+            return invalid_review(
+                "candidate_mutated", worker_policy, before, after, raw_retained
+            )
+        return invalid_review("timeout", worker_policy, before, after, raw_retained)
+    except OSError:
+        return invalid_review("launch", worker_policy, before, before, False)
+
+    raw_retained = retain_private_review_artifact(
+        artifact_root, completed.stdout, completed.stderr
+    )
+    try:
+        after = candidate_tree_digest(candidate)
+    except OSError:
+        return invalid_review("candidate_digest", worker_policy, before, None, raw_retained)
+    if before != after:
+        return invalid_review("candidate_mutated", worker_policy, before, after, raw_retained)
+    if not raw_retained:
+        return invalid_review("private_artifact", worker_policy, before, after, False)
+    if completed.returncode != 0:
+        return invalid_review("provider", worker_policy, before, after, raw_retained)
+    try:
+        review = validate_review_response(
+            review_response_from_jsonl(completed.stdout), requirements, candidate
+        )
+    except ReviewValidationError as error:
+        return invalid_review(error.kind, worker_policy, before, after, raw_retained)
+    return {
+        "schema_version": REVIEWER_SCHEMA_VERSION,
+        "status": "completed",
+        "review_passed": review["verdict"] == "pass",
+        "attempt": 1,
+        "reviewer_policy": {
+            "model": worker_policy["model"],
+            "effort": worker_policy["effort"],
+            "sandbox": "read-only",
+            "approval_policy": "never",
+        },
+        "prompt_sha256": digest_text(prompt),
+        "requirements_sha256": digest_text(json.dumps(requirements, sort_keys=True)),
+        "candidate_before_digest": before,
+        "candidate_after_digest": after,
+        "candidate_unchanged": True,
+        "coverage_complete": True,
+        "critical_count": review["critical_count"],
+        "required_count": review["required_count"],
+        "advisory_count": review["advisory_count"],
+        "findings": review["findings"],
+        "raw_private_retained": raw_retained,
+    }
+
+
+def review_requirements(gold_projection: Mapping[str, Any]) -> list[dict[str, str]]:
+    requirements = gold_projection.get("requirements")
+    if not isinstance(requirements, list) or not requirements:
+        raise ReviewValidationError("schema")
+    normalized: list[dict[str, str]] = []
+    identifiers: set[str] = set()
+    for requirement in requirements:
+        if not isinstance(requirement, Mapping):
+            raise ReviewValidationError("schema")
+        identifier, text = requirement.get("id"), requirement.get("text")
+        if not isinstance(identifier, str) or not identifier or not isinstance(text, str) or not text:
+            raise ReviewValidationError("schema")
+        if identifier in identifiers:
+            raise ReviewValidationError("schema")
+        identifiers.add(identifier)
+        normalized.append({"id": identifier, "text": text})
+    return normalized
+
+
+def review_prompt(
+    definition: CaseDefinition, requirements: Sequence[Mapping[str, str]], changed_paths: Any
+) -> str:
+    if not isinstance(changed_paths, list) or any(not isinstance(path, str) for path in changed_paths):
+        raise ReviewValidationError("schema")
+    declared = "\n".join(
+        f"- [{requirement['id']}] {requirement['text']}" for requirement in requirements
+    )
+    allowed = "\n".join(f"- {path}" for path in definition.allowed_changed_paths)
+    changed = "\n".join(f"- {path}" for path in changed_paths) or "- (none)"
+    return (
+        "Independently review the current candidate in this working directory. Do not edit "
+        "files, run no commands that change state, and assess only the declared requirements. "
+        "Do not infer unstated tests or requirements. Return exactly one JSON object, without "
+        "Markdown, with schema_version=1, verdict=pass|fail, complete coverage entries, and "
+        "findings. Each finding must have id F-NNN, severity Critical|Required|Advisory, "
+        "requirement_ids, category correctness|regression|scope|security|test_gap, a portable "
+        "candidate-relative path, line, and concise rationale.\n\n"
+        "Coverage must be an array with exactly one object per declared requirement: "
+        '{"requirement_id":"declared-id","assessed":true}. '
+        "The root object and every coverage/finding object must contain only the stated "
+        "fields.\n\n"
+        f"Goal:\n{definition.goal}\n\nDeclared requirements:\n{declared}\n\n"
+        f"Allowed changed paths:\n{allowed}\n\nObserved changed paths:\n{changed}\n"
+    )
+
+
+def review_response_from_jsonl(stdout: str) -> Mapping[str, Any]:
+    final_text: str | None = None
+    for line in stdout.splitlines():
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError as error:
+            raise ReviewValidationError("schema") from error
+        item = event.get("item") if isinstance(event, Mapping) else None
+        if (
+            isinstance(item, Mapping)
+            and item.get("type") == "agent_message"
+            and isinstance(item.get("text"), str)
+        ):
+            final_text = item["text"]
+    if final_text is None:
+        raise ReviewValidationError("schema")
+    try:
+        value = json.loads(final_text)
+    except json.JSONDecodeError as error:
+        raise ReviewValidationError("schema") from error
+    if not isinstance(value, Mapping):
+        raise ReviewValidationError("schema")
+    return value
+
+
+def validate_review_response(
+    review: Mapping[str, Any], requirements: Sequence[Mapping[str, str]], candidate: Path
+) -> dict[str, Any]:
+    if set(review) != {"schema_version", "verdict", "coverage", "findings"}:
+        raise ReviewValidationError("schema")
+    if review.get("schema_version") != REVIEWER_SCHEMA_VERSION:
+        raise ReviewValidationError("schema")
+    known = {requirement["id"] for requirement in requirements}
+    coverage = review.get("coverage")
+    if not isinstance(coverage, list):
+        raise ReviewValidationError("coverage")
+    covered = [
+        item.get("requirement_id")
+        for item in coverage
+        if isinstance(item, Mapping)
+        and set(item) == {"requirement_id", "assessed"}
+        and item.get("assessed") is True
+    ]
+    if len(covered) != len(coverage) or set(covered) != known or len(set(covered)) != len(covered):
+        raise ReviewValidationError("coverage")
+    findings = review.get("findings")
+    if not isinstance(findings, list):
+        raise ReviewValidationError("schema")
+    sanitized = []
+    finding_ids: set[str] = set()
+    for finding in findings:
+        if not isinstance(finding, Mapping) or set(finding) != {
+            "id", "severity", "requirement_ids", "category", "path", "line", "rationale"
+        }:
+            raise ReviewValidationError("schema")
+        identifier = finding["id"]
+        severity = finding["severity"]
+        category = finding["category"]
+        requirement_ids = finding["requirement_ids"]
+        path = finding["path"]
+        line = finding["line"]
+        rationale = finding["rationale"]
+        if (
+            not isinstance(identifier, str)
+            or re.fullmatch(r"F-[0-9]{3}", identifier) is None
+            or identifier in finding_ids
+            or severity not in REVIEWER_SEVERITIES
+            or category not in REVIEWER_CATEGORIES
+            or not isinstance(requirement_ids, list)
+            or not requirement_ids
+            or any(not isinstance(value, str) or value not in known for value in requirement_ids)
+            or len(set(requirement_ids)) != len(requirement_ids)
+            or not isinstance(line, int)
+            or isinstance(line, bool)
+            or line < 1
+            or not isinstance(rationale, str)
+            or not rationale.strip()
+            or len(rationale) > 2000
+            or not portable_review_path(path, candidate)
+        ):
+            raise ReviewValidationError("schema")
+        finding_ids.add(identifier)
+        sanitized.append({
+            "id": identifier,
+            "severity": severity,
+            "requirement_ids": requirement_ids,
+            "category": category,
+            "path": path,
+            "line": line,
+            "finding_digest": digest_text(rationale),
+        })
+    critical = sum(item["severity"] == "Critical" for item in sanitized)
+    required = sum(item["severity"] == "Required" for item in sanitized)
+    verdict = "pass" if critical == 0 and required == 0 else "fail"
+    if review.get("verdict") != verdict:
+        raise ReviewValidationError("schema")
+    return {
+        "verdict": verdict,
+        "critical_count": critical,
+        "required_count": required,
+        "advisory_count": sum(item["severity"] == "Advisory" for item in sanitized),
+        "findings": sanitized,
+    }
+
+
+def portable_review_path(value: Any, candidate: Path) -> bool:
+    if not isinstance(value, str) or not value or "\\" in value:
+        return False
+    path = PurePosixPath(value)
+    if path.is_absolute() or not path.parts or any(part in {"", ".", ".."} for part in path.parts):
+        return False
+    return (candidate.joinpath(*path.parts)).is_file()
+
+
+def candidate_tree_digest(candidate: Path) -> str:
+    digest = hashlib.sha256()
+    for path in sorted(candidate.rglob("*")):
+        relative = path.relative_to(candidate)
+        if ".git" in relative.parts:
+            continue
+        name = relative.as_posix().encode("utf-8")
+        if path.is_symlink():
+            payload = os.readlink(path).encode("utf-8")
+            marker = b"L"
+        elif path.is_file():
+            payload = path.read_bytes()
+            marker = b"F"
+        elif path.is_dir():
+            payload = b""
+            marker = b"D"
+        else:
+            raise OSError("unsupported candidate entry")
+        digest.update(marker)
+        digest.update(len(name).to_bytes(8, "big"))
+        digest.update(name)
+        digest.update(len(payload).to_bytes(8, "big"))
+        digest.update(payload)
+    return "sha256:" + digest.hexdigest()
+
+
+def retain_private_review_artifact(root: Path, stdout: str, stderr: str) -> bool:
+    try:
+        root.mkdir(mode=0o700, exist_ok=True)
+        root.chmod(0o700)
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", dir=root, prefix="review-", suffix=".jsonl", delete=False
+        ) as output:
+            output.write(stdout)
+            if stderr:
+                output.write("\n")
+                output.write(stderr)
+        Path(output.name).chmod(0o600)
+        return True
+    except OSError:
+        return False
+
+
+def timeout_stream(value: str | bytes | None) -> str:
+    """Normalize partial subprocess output for private retention only."""
+
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return value
+
+
+def invalid_review(
+    kind: str,
+    worker_policy: Mapping[str, str],
+    before: str | None,
+    after: str | None,
+    raw_retained: bool,
+) -> dict[str, Any]:
+    return {
+        "schema_version": REVIEWER_SCHEMA_VERSION,
+        "status": "invalid",
+        "review_passed": False,
+        "attempt": 1,
+        "reviewer_policy": {
+            "model": worker_policy["model"],
+            "effort": worker_policy["effort"],
+            "sandbox": "read-only",
+            "approval_policy": "never",
+        },
+        "failure_kind": kind,
+        "candidate_before_digest": before,
+        "candidate_after_digest": after,
+        "candidate_unchanged": before is not None and before == after,
+        "coverage_complete": False,
+        "critical_count": None,
+        "required_count": None,
+        "advisory_count": None,
+        "findings": [],
+        "raw_private_retained": raw_retained,
+    }
 
 
 def map_requirement_evidence(
