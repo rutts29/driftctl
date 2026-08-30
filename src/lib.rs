@@ -13,6 +13,7 @@ mod inspect_state;
 pub mod intent_history;
 mod keeper;
 mod ledger;
+mod plugin_control;
 pub mod projection;
 pub mod run_store;
 mod semantic_resolver;

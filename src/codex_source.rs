@@ -588,10 +588,13 @@ fn parse_user_message(
         let part_location = format!("{item_location}.content[{content_index}]");
         let provider_type = required_string(part, "type", &part_location)?;
         let (role, content) = if provider_type == "text" {
-            (
-                SourceRole::User,
-                required_text(part, "text", &part_location)?,
-            )
+            let content = required_text(part, "text", &part_location)?;
+            let role = if crate::plugin_control::parse(&content).is_some() {
+                SourceRole::SystemObservation
+            } else {
+                SourceRole::User
+            };
+            (role, content)
         } else {
             validate_user_attachment(part, &provider_type, &part_location)?;
             (

@@ -5,6 +5,7 @@
   "author": {
     "name": "Driftctl"
   },
+  "skills": "./skills/",
   "interface": {
     "displayName": "Driftctl Codex",
     "shortDescription": "Keep attached long sessions aligned.",
@@ -12,6 +13,10 @@
     "developerName": "Driftctl",
     "category": "Productivity",
     "capabilities": [],
-    "defaultPrompt": "Show the Driftctl attachment status for this session."
+    "defaultPrompt": [
+      "Use $driftctl on for this session.",
+      "Use $driftctl status for this session.",
+      "Use $driftctl off for this session."
+    ]
   }
 }
