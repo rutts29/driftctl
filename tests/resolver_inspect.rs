@@ -103,7 +103,7 @@ if sys.argv[1:3] == ["app-server", "--stdio"]:
             child_goal = request["params"]["objective"]
             result = {"goal":{"threadId":request["params"]["threadId"],"objective":child_goal}}
         elif method == "turn/start":
-            result = {"turn":{"id":"continued-turn-" + request["params"]["threadId"],"items":[],"status":"completed"}}
+            result = {"turn":{"id":"continued-turn-" + request["params"]["threadId"],"items":[],"status":os.environ.get("DRIFTCTL_FAKE_TURN_STATUS", "completed")}}
         else:
             print(json.dumps({"id":request["id"],"error":{"code":-32601,"message":"unexpected"}}), flush=True)
             continue
@@ -537,6 +537,25 @@ fn compare_runs_equal_isolated_children_with_only_the_projection_added() {
         assert!(request["params"].get("sandbox").is_none());
     }
     assert_eq!(fixture.calls().len(), 1);
+    fixture.assert_unchanged();
+}
+
+#[test]
+fn failed_child_turn_never_reports_a_successful_continuation() {
+    let mut fixture = Fixture::new(vec![base_proposal()]);
+    fixture
+        .environment
+        .insert("DRIFTCTL_FAKE_TURN_STATUS", "failed".to_owned());
+
+    let continued = fixture.run_continue(&["--json"]);
+    assert_eq!(continued.status.code(), Some(2), "{continued:?}");
+    let document: Value =
+        serde_json::from_slice(&continued.stdout).expect("failed continuation JSON");
+    assert_eq!(document["status"], "invalid_continuation");
+    assert_eq!(document["turn_status"], "failed");
+    assert_eq!(document["parent_unchanged"], true);
+    assert_eq!(document["source_unchanged"], true);
+    assert_eq!(document["adoption"], "none");
     fixture.assert_unchanged();
 }
 
