@@ -1938,9 +1938,7 @@ fn validate_new_clause(operation: &OperationProposal) -> Result<(), ValidationFa
         OperationName::Add if operation.alternatives.is_empty() => Ok(()),
         OperationName::Add => Err(ValidationFailure::AddIrrelevantFields),
         OperationName::Supersede
-            if !operation.target_key.is_empty()
-                && operation.intent_keys.is_empty()
-                && operation.alternatives.is_empty() =>
+            if !operation.target_key.is_empty() && operation.alternatives.is_empty() =>
         {
             Ok(())
         }
@@ -2308,6 +2306,51 @@ mod incremental_tests {
                 .values()
                 .any(|intent| intent.text == "Retry a transient failure exactly once")
         );
+    }
+
+    #[test]
+    fn initial_supersede_ignores_intent_keys_that_have_no_supersede_semantics() {
+        let bundle = delta("item-1", "Use the final duplicate policy instead");
+        let proposal: ProjectionProposal = serde_json::from_value(json!({
+            "schema_version": 1,
+            "goal": {
+                "text": "Paginate catalog results",
+                "source_record_ids": ["item-1"]
+            },
+            "accounted_source_record_ids": ["item-1"],
+            "operations": [
+                {
+                    "operation": "add",
+                    "key": "duplicates.last_seen",
+                    "kind": "invariant",
+                    "text": "Keep the last duplicate",
+                    "target_key": "",
+                    "intent_keys": [],
+                    "source_record_ids": ["item-1"],
+                    "alternatives": []
+                },
+                {
+                    "operation": "supersede",
+                    "key": "duplicates.first_seen",
+                    "kind": "invariant",
+                    "text": "Keep the first duplicate",
+                    "target_key": "duplicates.last_seen",
+                    "intent_keys": ["duplicates.last_seen"],
+                    "source_record_ids": ["item-1"],
+                    "alternatives": []
+                }
+            ]
+        }))
+        .unwrap();
+
+        let history = validate_proposal(&bundle, proposal).unwrap();
+        assert!(history.intents().values().any(|intent| {
+            intent.text == "Keep the last duplicate"
+                && intent.lifecycle == IntentLifecycle::Superseded
+        }));
+        assert!(history.intents().values().any(|intent| {
+            intent.text == "Keep the first duplicate" && intent.lifecycle == IntentLifecycle::Active
+        }));
     }
 
     #[test]
