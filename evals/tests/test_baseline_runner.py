@@ -138,6 +138,10 @@ class BaselineRunnerTests(unittest.TestCase):
             self.assertNotIn("exec\nresume\n", captured)
             self.assertEqual(captured.splitlines().count("--ephemeral"), 2)
             self.assertIn("No durable task record is available", captured)
+            self.assertIn(
+                "Change only service_client.py and tests/test_unit_client.py",
+                captured,
+            )
             self.assertNotIn("Do not retry 401 or 403 authentication failures", captured)
             self.assertEqual(calls.read_text(encoding="utf-8").splitlines(), ["1", "2"])
             initial_events = [

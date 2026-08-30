@@ -4,7 +4,8 @@
   "workspace": "workspace",
   "goal": "Add CSV user import to the admin service.",
   "initial_requirements": [
-    "Import valid email and name CSV rows into UserStore and return the number of users imported."
+    "Import valid email and name CSV rows into UserStore and return the number of users imported.",
+    "Change only import_users.py and tests/test_unit_import.py; do not create or modify any other path."
   ],
   "steering": [
     {

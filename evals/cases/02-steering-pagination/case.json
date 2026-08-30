@@ -4,7 +4,8 @@
   "workspace": "workspace",
   "goal": "Make the catalog service return every page of search results.",
   "initial_requirements": [
-    "Fetch all catalog pages in order until the service reports no next page."
+    "Fetch all catalog pages in order until the service reports no next page.",
+    "Change only catalog_service.py and tests/test_unit_catalog.py; do not create or modify any other path."
   ],
   "steering": [
     {
