@@ -221,6 +221,20 @@ fn creates_and_recovers_a_private_source_cursor_without_transcript_content() {
     assert!(source.contains(&digest('a')));
     assert!(!source.contains("raw transcript content must not persist"));
     assert!(!source.contains("\"content\""));
+    let mut legacy_source = source_json.clone();
+    for record in legacy_source["accepted_records"]
+        .as_array_mut()
+        .expect("legacy records")
+    {
+        record
+            .as_object_mut()
+            .expect("legacy record")
+            .remove("role");
+    }
+    let legacy_cursor: SourceCursor =
+        serde_json::from_value(legacy_source).expect("read pre-role source cursor");
+    assert_eq!(legacy_cursor, cursor);
+    legacy_cursor.validate().expect("validate pre-role cursor");
     #[cfg(unix)]
     assert_eq!(
         std::os::unix::fs::PermissionsExt::mode(

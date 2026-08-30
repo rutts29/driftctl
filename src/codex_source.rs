@@ -1,7 +1,7 @@
 use std::collections::BTreeSet;
 use std::env;
 use std::fmt;
-use std::io::{BufReader, Read, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::path::Path;
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 
@@ -11,7 +11,7 @@ use sha2::{Digest, Sha256};
 use crate::intent_history::{SourceProvider, SourceRole};
 use crate::session_bundle::{BundleRecord, NativeGoal, NeutralSessionBundle};
 
-const MAX_PROTOCOL_LINE_BYTES: usize = 1024 * 1024;
+const MAX_PROTOCOL_LINE_BYTES: usize = 64 * 1024 * 1024;
 const MAX_THREAD_LIST_PAGES: usize = 100;
 const THREAD_SOURCE_KINDS: [&str; 10] = [
     "cli",
@@ -32,12 +32,15 @@ pub(crate) struct ImportedSession {
     repository_digest: String,
     native_goal: NativeGoal,
     thread_snapshot: Value,
-    user_records: Vec<ImportedUserRecord>,
+    records: Vec<ImportedRecord>,
 }
 
 impl ImportedSession {
     pub(crate) fn imported_user_record_count(&self) -> usize {
-        self.user_records.len()
+        self.records
+            .iter()
+            .filter(|record| matches!(record.role, SourceRole::User))
+            .count()
     }
 
     pub(crate) fn redacted_session(&self) -> String {
@@ -61,9 +64,9 @@ impl ImportedSession {
     /// records before any semantic resolver can inspect them.
     pub(crate) fn neutral_bundle(&self) -> Result<NeutralSessionBundle, SourceError> {
         let records = self
-            .user_records
+            .records
             .iter()
-            .map(|record| BundleRecord::new(&record.id, SourceRole::User, &record.text))
+            .map(|record| BundleRecord::new(&record.id, record.role.clone(), &record.content))
             .collect::<Result<Vec<_>, _>>()
             .map_err(|error| SourceError::new(format!("invalid imported Codex record: {error}")))?;
         NeutralSessionBundle::from_records_with_native_goal(
@@ -83,22 +86,25 @@ impl fmt::Debug for ImportedSession {
             .debug_struct("ImportedSession")
             .field("redacted_session", &self.redacted_session())
             .field("repository_digest", &self.repository_digest)
-            .field("user_record_count", &self.user_records.len())
+            .field("record_count", &self.records.len())
+            .field("user_record_count", &self.imported_user_record_count())
             .finish()
     }
 }
 
 #[derive(Clone, Eq, PartialEq)]
-struct ImportedUserRecord {
+struct ImportedRecord {
     id: String,
-    text: String,
+    role: SourceRole,
+    content: String,
 }
 
-impl fmt::Debug for ImportedUserRecord {
+impl fmt::Debug for ImportedRecord {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
-            .debug_struct("ImportedUserRecord")
+            .debug_struct("ImportedRecord")
             .field("id", &self.id)
+            .field("role", &self.role)
             .finish_non_exhaustive()
     }
 }
@@ -376,28 +382,25 @@ impl AppServer {
 
     fn read_json_line(&mut self) -> Result<Value, SourceError> {
         let mut line = Vec::new();
-        loop {
-            let mut byte = [0_u8; 1];
-            let read = self.stdout.read(&mut byte).map_err(|error| {
+        let read = (&mut self.stdout)
+            .take((MAX_PROTOCOL_LINE_BYTES + 1) as u64)
+            .read_until(b'\n', &mut line)
+            .map_err(|error| {
                 SourceError::new(format!("could not read Codex App Server response: {error}"))
             })?;
-            if read == 0 {
-                return Err(SourceError::new(if line.is_empty() {
-                    "Codex App Server closed before a response"
-                } else {
-                    "Codex App Server response is truncated"
-                }));
-            }
-            if byte[0] == b'\n' {
-                break;
-            }
-            if line.len() == MAX_PROTOCOL_LINE_BYTES {
-                return Err(SourceError::new(
-                    "Codex App Server response exceeds the size limit",
-                ));
-            }
-            line.push(byte[0]);
+        if read == 0 {
+            return Err(SourceError::new(
+                "Codex App Server closed before a response",
+            ));
         }
+        if line.last() != Some(&b'\n') {
+            return Err(SourceError::new(if line.len() > MAX_PROTOCOL_LINE_BYTES {
+                "Codex App Server response exceeds the 64 MiB size limit"
+            } else {
+                "Codex App Server response is truncated"
+            }));
+        }
+        line.pop();
         serde_json::from_slice(&line)
             .map_err(|_| SourceError::new("Codex App Server emitted malformed JSON"))
     }
@@ -475,28 +478,29 @@ fn parse_imported_session(
         ));
     }
     let turns = required_array(thread, "turns", "thread/read.result.thread")?;
-    let mut user_records = Vec::new();
+    let mut records = Vec::new();
     for (turn_index, turn) in turns.iter().enumerate() {
         let turn_location = format!("thread/read.result.thread.turns[{turn_index}]");
         let items = required_array(turn, "items", &turn_location)?;
         for (item_index, item) in items.iter().enumerate() {
             let item_location = format!("{turn_location}.items[{item_index}]");
-            if item.get("type").and_then(Value::as_str) != Some("userMessage") {
+            let provider_type = required_string(item, "type", &item_location)?;
+            if provider_type == "userMessage" {
+                parse_user_message(item, &item_location, &mut records)?;
                 continue;
             }
+            let role = provider_item_role(&provider_type).ok_or_else(|| {
+                SourceError::new(format!(
+                    "{item_location}.type is an unsupported Codex thread item"
+                ))
+            })?;
+            validate_provider_item(item, &provider_type, &item_location)?;
             let id = required_string(item, "id", &item_location)?;
-            let content = required_array(item, "content", &item_location)?;
-            for (content_index, part) in content.iter().enumerate() {
-                if part.get("type").and_then(Value::as_str) != Some("text") {
-                    continue;
-                }
-                let text_location = format!("{item_location}.content[{content_index}]");
-                let text = required_text(part, "text", &text_location)?;
-                user_records.push(ImportedUserRecord {
-                    id: format!("{id}:{content_index}"),
-                    text,
-                });
-            }
+            records.push(ImportedRecord {
+                id,
+                role,
+                content: opaque_provider_evidence(item, &provider_type)?,
+            });
         }
     }
     Ok(ImportedSession {
@@ -504,8 +508,168 @@ fn parse_imported_session(
         repository_digest: repository_digest(canonical_root),
         native_goal,
         thread_snapshot: thread.clone(),
-        user_records,
+        records,
     })
+}
+
+fn parse_user_message(
+    item: &Value,
+    item_location: &str,
+    records: &mut Vec<ImportedRecord>,
+) -> Result<(), SourceError> {
+    let id = required_string(item, "id", item_location)?;
+    let content = required_array(item, "content", item_location)?;
+    for (content_index, part) in content.iter().enumerate() {
+        let part_location = format!("{item_location}.content[{content_index}]");
+        let provider_type = required_string(part, "type", &part_location)?;
+        let (role, content) = if provider_type == "text" {
+            (
+                SourceRole::User,
+                required_text(part, "text", &part_location)?,
+            )
+        } else {
+            validate_user_attachment(part, &provider_type, &part_location)?;
+            (
+                SourceRole::SystemObservation,
+                opaque_provider_evidence(part, &format!("userInput.{provider_type}"))?,
+            )
+        };
+        records.push(ImportedRecord {
+            id: format!("{id}:{content_index}"),
+            role,
+            content,
+        });
+    }
+    Ok(())
+}
+
+fn provider_item_role(provider_type: &str) -> Option<SourceRole> {
+    match provider_type {
+        "agentMessage" | "plan" | "reasoning" => Some(SourceRole::Assistant),
+        "commandExecution"
+        | "fileChange"
+        | "mcpToolCall"
+        | "dynamicToolCall"
+        | "collabAgentToolCall"
+        | "webSearch"
+        | "imageView"
+        | "sleep"
+        | "imageGeneration" => Some(SourceRole::Tool),
+        "hookPrompt" | "subAgentActivity" | "enteredReviewMode" | "exitedReviewMode"
+        | "contextCompaction" => Some(SourceRole::SystemObservation),
+        _ => None,
+    }
+}
+
+fn validate_provider_item(
+    item: &Value,
+    provider_type: &str,
+    location: &str,
+) -> Result<(), SourceError> {
+    required_string(item, "id", location)?;
+    match provider_type {
+        "agentMessage" | "plan" => {
+            required_provider_text(item, "text", location)?;
+        }
+        "reasoning" | "contextCompaction" => {}
+        "hookPrompt" => {
+            required_array(item, "fragments", location)?;
+        }
+        "commandExecution" => {
+            required_provider_text(item, "command", location)?;
+            required_array(item, "commandActions", location)?;
+            required_string(item, "cwd", location)?;
+            required_string(item, "status", location)?;
+        }
+        "fileChange" => {
+            required_array(item, "changes", location)?;
+            required_string(item, "status", location)?;
+        }
+        "mcpToolCall" => {
+            required_field(item, "arguments", location)?;
+            required_string(item, "server", location)?;
+            required_string(item, "tool", location)?;
+            required_string(item, "status", location)?;
+        }
+        "dynamicToolCall" => {
+            required_field(item, "arguments", location)?;
+            required_string(item, "tool", location)?;
+            required_string(item, "status", location)?;
+        }
+        "collabAgentToolCall" => {
+            required_object(item, "agentsStates", location)?;
+            required_string_array(item, "receiverThreadIds", location)?;
+            required_string(item, "senderThreadId", location)?;
+            required_string(item, "status", location)?;
+            required_string(item, "tool", location)?;
+        }
+        "subAgentActivity" => {
+            required_string(item, "agentPath", location)?;
+            required_string(item, "agentThreadId", location)?;
+            required_string(item, "kind", location)?;
+        }
+        "webSearch" => {
+            required_provider_text(item, "query", location)?;
+        }
+        "imageView" => {
+            required_string(item, "path", location)?;
+        }
+        "sleep" => {
+            required_u64(item, "durationMs", location)?;
+        }
+        "imageGeneration" => {
+            required_provider_text(item, "result", location)?;
+            required_string(item, "status", location)?;
+        }
+        "enteredReviewMode" | "exitedReviewMode" => {
+            required_provider_text(item, "review", location)?;
+        }
+        _ => unreachable!("provider role validation precedes item validation"),
+    }
+    Ok(())
+}
+
+fn validate_user_attachment(
+    part: &Value,
+    provider_type: &str,
+    location: &str,
+) -> Result<(), SourceError> {
+    match provider_type {
+        "image" | "audio" => {
+            required_provider_text(part, "url", location)?;
+        }
+        "localImage" | "localAudio" => {
+            required_string(part, "path", location)?;
+        }
+        "skill" | "mention" => {
+            required_string(part, "name", location)?;
+            required_string(part, "path", location)?;
+        }
+        _ => {
+            return Err(SourceError::new(format!(
+                "{location}.type is an unsupported Codex user input"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn opaque_provider_evidence(item: &Value, provider_type: &str) -> Result<String, SourceError> {
+    let bytes = serde_json::to_vec(item)
+        .map_err(|_| SourceError::new("could not normalize a Codex provider item"))?;
+    let mut evidence = json!({
+        "provider_type": provider_type,
+        "item_bytes": bytes.len(),
+        "item_digest": format!("sha256:{:x}", Sha256::digest(&bytes)),
+    });
+    if provider_type == "contextCompaction" {
+        evidence
+            .as_object_mut()
+            .expect("constructed object")
+            .insert("compaction_boundary".to_owned(), Value::Bool(true));
+    }
+    serde_json::to_string(&evidence)
+        .map_err(|_| SourceError::new("could not normalize Codex provider evidence"))
 }
 
 fn parse_native_goal(response: Value, requested_id: &str) -> Result<NativeGoal, SourceError> {
@@ -543,6 +707,45 @@ fn required_array<'a>(
         .ok_or_else(|| SourceError::new(format!("{location}.{field} must be an array")))
 }
 
+fn required_object<'a>(
+    value: &'a Value,
+    field: &str,
+    location: &str,
+) -> Result<&'a serde_json::Map<String, Value>, SourceError> {
+    value
+        .get(field)
+        .and_then(Value::as_object)
+        .ok_or_else(|| SourceError::new(format!("{location}.{field} must be an object")))
+}
+
+fn required_field<'a>(
+    value: &'a Value,
+    field: &str,
+    location: &str,
+) -> Result<&'a Value, SourceError> {
+    value
+        .get(field)
+        .ok_or_else(|| SourceError::new(format!("{location}.{field} is missing")))
+}
+
+fn required_string_array(value: &Value, field: &str, location: &str) -> Result<(), SourceError> {
+    let values = required_array(value, field, location)?;
+    if values.iter().all(Value::is_string) {
+        Ok(())
+    } else {
+        Err(SourceError::new(format!(
+            "{location}.{field} must contain only strings"
+        )))
+    }
+}
+
+fn required_u64(value: &Value, field: &str, location: &str) -> Result<u64, SourceError> {
+    value
+        .get(field)
+        .and_then(Value::as_u64)
+        .ok_or_else(|| SourceError::new(format!("{location}.{field} must be an unsigned integer")))
+}
+
 fn required_string(value: &Value, field: &str, location: &str) -> Result<String, SourceError> {
     let result = value
         .get(field)
@@ -568,6 +771,19 @@ fn required_text(value: &Value, field: &str, location: &str) -> Result<String, S
                 "{location}.{field} must be a non-empty text string"
             ))
         })
+}
+
+fn required_provider_text(
+    value: &Value,
+    field: &str,
+    location: &str,
+) -> Result<String, SourceError> {
+    value
+        .get(field)
+        .and_then(Value::as_str)
+        .filter(|value| value.len() <= 1024 * 1024 && !value.contains('\0'))
+        .map(ToOwned::to_owned)
+        .ok_or_else(|| SourceError::new(format!("{location}.{field} must be a text string")))
 }
 
 fn optional_i64(value: &Value, field: &str, location: &str) -> Result<Option<i64>, SourceError> {

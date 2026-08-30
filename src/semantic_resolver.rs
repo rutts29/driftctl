@@ -419,11 +419,33 @@ fn initial_chunks(
     bundle
         .validate_for_projection()
         .map_err(|_| ValidationFailure::Source)?;
+    let semantic_records = semantic_records(bundle.records())?;
+    let mut units = Vec::<Vec<BundleRecord>>::new();
+    let mut pending = Vec::<BundleRecord>::new();
+    for record in semantic_records {
+        let authoritative = record.is_authoritative();
+        pending.push(record);
+        if authoritative {
+            units.push(std::mem::take(&mut pending));
+        }
+    }
+    if !pending.is_empty() {
+        units
+            .last_mut()
+            .ok_or(ValidationFailure::Source)?
+            .append(&mut pending);
+    }
     let mut chunks = Vec::<Vec<BundleRecord>>::new();
     let mut current = Vec::<BundleRecord>::new();
-    for record in bundle.records() {
+    for mut unit in units {
+        if initial_records_bytes(&unit)? > MAX_INCREMENTAL_DELTA_PROMPT_BYTES {
+            unit.retain(BundleRecord::is_authoritative);
+            if initial_records_bytes(&unit)? > MAX_INCREMENTAL_DELTA_PROMPT_BYTES {
+                return Err(ValidationFailure::DeltaBound);
+            }
+        }
         let mut candidate = current.clone();
-        candidate.push(record.clone());
+        candidate.extend(unit.iter().cloned());
         if initial_records_bytes(&candidate)? <= MAX_INCREMENTAL_DELTA_PROMPT_BYTES {
             current = candidate;
             continue;
@@ -432,10 +454,7 @@ fn initial_chunks(
             return Err(ValidationFailure::DeltaBound);
         }
         chunks.push(std::mem::take(&mut current));
-        current.push(record.clone());
-        if initial_records_bytes(&current)? > MAX_INCREMENTAL_DELTA_PROMPT_BYTES {
-            return Err(ValidationFailure::DeltaBound);
-        }
+        current.append(&mut unit);
     }
     if !current.is_empty() {
         chunks.push(current);
@@ -455,19 +474,100 @@ fn initial_chunks(
         .collect()
 }
 
+fn semantic_records(records: &[BundleRecord]) -> Result<Vec<BundleRecord>, ValidationFailure> {
+    let mut semantic = Vec::new();
+    let mut opaque = Vec::new();
+    for record in records {
+        if record.is_authoritative() {
+            flush_opaque_evidence(&mut opaque, &mut semantic)?;
+            semantic.push(record.clone());
+        } else {
+            opaque.push(record);
+        }
+    }
+    flush_opaque_evidence(&mut opaque, &mut semantic)?;
+    Ok(semantic)
+}
+
+fn flush_opaque_evidence(
+    opaque: &mut Vec<&BundleRecord>,
+    semantic: &mut Vec<BundleRecord>,
+) -> Result<(), ValidationFailure> {
+    if opaque.is_empty() {
+        return Ok(());
+    }
+    let mut digest = Sha256::new();
+    let mut assistant_records = 0_usize;
+    let mut tool_records = 0_usize;
+    let mut system_observation_records = 0_usize;
+    let mut compaction_boundaries = 0_usize;
+    for record in opaque.iter() {
+        digest.update(record.id().as_bytes());
+        digest.update([0]);
+        digest.update(record.content_digest().as_bytes());
+        digest.update([0]);
+        match record.role() {
+            crate::intent_history::SourceRole::Assistant => assistant_records += 1,
+            crate::intent_history::SourceRole::Tool => tool_records += 1,
+            crate::intent_history::SourceRole::SystemObservation => {
+                system_observation_records += 1;
+                if serde_json::from_str::<Value>(record.content())
+                    .ok()
+                    .and_then(|value| value.get("compaction_boundary").cloned())
+                    == Some(Value::Bool(true))
+                {
+                    compaction_boundaries += 1;
+                }
+            }
+            crate::intent_history::SourceRole::User => unreachable!("opaque batch is non-user"),
+        }
+    }
+    let digest = format!("{:x}", digest.finalize());
+    let id = format!("opaque-batch:{}", &digest[..24]);
+    let content = serde_json::to_string(&json!({
+        "provider_type":"opaqueEvidenceBatch",
+        "record_count":opaque.len(),
+        "assistant_records":assistant_records,
+        "tool_records":tool_records,
+        "system_observation_records":system_observation_records,
+        "compaction_boundaries":compaction_boundaries,
+        "records_digest":format!("sha256:{digest}"),
+    }))
+    .map_err(|_| ValidationFailure::Source)?;
+    semantic.push(
+        BundleRecord::new(
+            id,
+            crate::intent_history::SourceRole::SystemObservation,
+            content,
+        )
+        .map_err(|_| ValidationFailure::Source)?,
+    );
+    opaque.clear();
+    Ok(())
+}
+
 fn initial_records_bytes(records: &[BundleRecord]) -> Result<usize, ValidationFailure> {
-    let records = records
+    let delta_records = records
         .iter()
         .map(|record| {
             json!({
                 "id":record.id(),
                 "role":record.role(),
                 "content":record.content(),
+            })
+        })
+        .collect::<Vec<_>>();
+    let source_map = records
+        .iter()
+        .map(|record| {
+            json!({
+                "id":record.id(),
+                "role":record.role(),
                 "content_digest":record.content_digest(),
             })
         })
         .collect::<Vec<_>>();
-    serde_json::to_vec(&json!({"records":records}))
+    serde_json::to_vec(&json!({"delta_records":delta_records,"source_map":source_map}))
         .map(|value| value.len())
         .map_err(|_| ValidationFailure::DeltaBound)
 }
@@ -890,8 +990,8 @@ fn incremental_prompt(
     validate_incremental_base(history, projection, delta)?;
     let active_projection = serde_json::from_str::<Value>(&projection.rendered_prompt())
         .map_err(|_| ValidationFailure::Projection)?;
-    let delta_records = delta
-        .records()
+    let semantic_records = semantic_records(delta.records())?;
+    let delta_records = semantic_records
         .iter()
         .map(|record| {
             json!({
@@ -901,8 +1001,7 @@ fn incremental_prompt(
             })
         })
         .collect::<Vec<_>>();
-    let source_map = delta
-        .records()
+    let source_map = semantic_records
         .iter()
         .map(|record| {
             json!({

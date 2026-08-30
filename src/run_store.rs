@@ -108,6 +108,8 @@ impl fmt::Display for RunId {
 pub struct SourceRecordDigest {
     id: String,
     content_digest: String,
+    #[serde(default = "default_source_record_role")]
+    role: crate::intent_history::SourceRole,
 }
 
 impl SourceRecordDigest {
@@ -116,6 +118,20 @@ impl SourceRecordDigest {
         Self {
             id: id.into(),
             content_digest: content_digest.into(),
+            role: crate::intent_history::SourceRole::User,
+        }
+    }
+
+    #[must_use]
+    pub fn with_role(
+        id: impl Into<String>,
+        content_digest: impl Into<String>,
+        role: crate::intent_history::SourceRole,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            content_digest: content_digest.into(),
+            role,
         }
     }
 
@@ -128,6 +144,15 @@ impl SourceRecordDigest {
     pub fn content_digest(&self) -> &str {
         &self.content_digest
     }
+
+    #[must_use]
+    pub fn role(&self) -> &crate::intent_history::SourceRole {
+        &self.role
+    }
+}
+
+fn default_source_record_role() -> crate::intent_history::SourceRole {
+    crate::intent_history::SourceRole::User
 }
 
 /// Private, digest-only cursor for the source records accepted by a run.
