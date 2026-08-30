@@ -27,6 +27,8 @@ driftctl attach codex --session <exact-id>
 driftctl status codex --session <exact-id>
 driftctl resolve codex --session <exact-id> ...
 driftctl detach codex --session <exact-id>
+driftctl ab prepare codex (--last | --session <id> [--allow-ancestor-cwd]) [--json]
+driftctl ab report --run <ab-run-id> [--json] -- <program> [args...]
 ```
 
 Internal hook entrypoints:
@@ -36,6 +38,18 @@ driftctl hook codex
 ```
 
 The Codex hook event is read from stdin and validated before enrollment lookup.
+
+## Paired A/B Contract
+
+1. `ab prepare` resolves one persisted source checkpoint before creating either arm.
+2. It materializes equal baseline/workflow repositories and creates two distinct persisted Codex forks with the same inherited history, native goal, model, effort, sandbox, and approval policy.
+3. Prepare starts no agent turn, creates no enrollment, and leaves source session/worktree unchanged.
+4. Baseline continues normally. Workflow continues only after exact `$driftctl on` inside that fork.
+5. `ab report` requires baseline detached and workflow attached to its exact candidate repository.
+6. One verifier command runs independently against both candidates. Verifier mutation, candidate mutation, or nonzero exit fails that arm.
+7. Repeating report with the same command returns stored evidence; a different command cannot replace it.
+8. Primary result: verified completion. Post-checkpoint prompts, verifier time, and keeper calls/tokens are secondary evidence only.
+9. Result label: `prospective_paired`. Retrospective session pairing is deferred.
 
 ## Runtime Contract
 
@@ -157,3 +171,4 @@ pub fn handle(event: HookEvent, state: &mut SessionState) -> Result<HookOutput, 
 - Autonomous merge, push, or publication.
 - Claude native adapter in this MVP.
 - Statistical efficacy claim before real comparative evidence exists.
+- Arbitrary historical-turn slicing; select or create the persisted midpoint session first.
