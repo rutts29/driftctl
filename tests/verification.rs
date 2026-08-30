@@ -99,6 +99,17 @@ fn runs_one_external_requirement_check_and_keeps_raw_output_private() {
     let artifact = root
         .join("state/driftctl/verification-artifacts")
         .join(artifact_id);
+    for directory in [
+        root.join("state/driftctl"),
+        root.join("state/driftctl/verification-artifacts"),
+        artifact.clone(),
+    ] {
+        assert_eq!(
+            fs::metadata(directory).unwrap().permissions().mode() & 0o077,
+            0,
+            "every Driftctl-owned state directory must be private on first use"
+        );
+    }
     assert_eq!(
         fs::read(artifact.join("stdout.bin")).unwrap(),
         b"public-but-private-output"

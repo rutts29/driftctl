@@ -522,10 +522,14 @@ fn verify_requirement(arguments: &[String]) -> CliOutput {
     let Some(requirement) = requirement else {
         return CliOutput::error("verify requires exactly one --requirement <id>");
     };
-    let artifact_root = match RunStore::default_state_root() {
-        Ok(root) => root.join("verification-artifacts"),
+    let state_root = match RunStore::default_state_root() {
+        Ok(root) => root,
         Err(error) => return CliOutput::error(error.to_string()),
     };
+    if let Err(error) = crate::run_store::ensure_private_directory(&state_root) {
+        return CliOutput::error(error.to_string());
+    }
+    let artifact_root = state_root.join("verification-artifacts");
     let request = match crate::verification::VerificationRequest::new(
         candidate,
         requirement,
