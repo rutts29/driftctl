@@ -4,6 +4,7 @@ mod agent;
 pub mod cli;
 pub mod codex_child;
 mod codex_source;
+mod goal_change_store;
 mod inspect_state;
 pub mod intent_history;
 mod ledger;

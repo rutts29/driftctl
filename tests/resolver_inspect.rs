@@ -443,6 +443,104 @@ fn inspect_compacts_only_the_new_source_delta_and_reuses_the_updated_projection(
 }
 
 #[test]
+fn pending_goal_change_survives_cached_inspect_without_mutating_the_accepted_goal() {
+    let mut fixture = Fixture::new(vec![base_proposal()]);
+    let first = fixture.run(&["--json"]);
+    assert_eq!(first.status.code(), Some(0), "{first:?}");
+    let first_document: Value = serde_json::from_slice(&first.stdout).expect("first inspect JSON");
+    let accepted_goal = first_document["projection"]["goal"]["text"].clone();
+    let active_ids = first_document["projection"]["preserve"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .chain(
+            first_document["projection"]["frontier"]
+                .as_array()
+                .into_iter()
+                .flatten(),
+        )
+        .chain(
+            first_document["projection"]["validation"]
+                .as_array()
+                .into_iter()
+                .flatten(),
+        )
+        .map(|item| item["id"].clone())
+        .collect::<Vec<_>>();
+    let revision = first_document["projection"]["revision"].as_u64().unwrap();
+    let proposal = json!({
+        "schema_version":1,
+        "base_projection_revision":revision,
+        "base_event_sequence":revision,
+        "classification":"goal_change",
+        "accounted_active_intent_ids":active_ids,
+        "accounted_source_record_ids":["u4:0"],
+        "operations":[],
+        "proposed_goal":{
+            "text":"Ship the replacement objective",
+            "source_record_ids":["u4:0"]
+        }
+    });
+    let canonical = fixture.root.canonicalize().expect("canonical source");
+    fixture.environment.insert(
+        "DRIFTCTL_FAKE_READ",
+        session(
+            &fixture.session_id,
+            &canonical,
+            &[
+                ("u1", "private raw goal that public output must not echo"),
+                ("u2", "private additive steering"),
+                ("u3", "private explicit supersession"),
+                ("u4", "replace the overall goal with the new objective"),
+            ],
+        )
+        .to_string(),
+    );
+    fixture.environment.insert(
+        "DRIFTCTL_FAKE_PROPOSALS",
+        json!([base_proposal(), proposal]).to_string(),
+    );
+
+    let second = fixture.run(&["--json"]);
+    assert_eq!(second.status.code(), Some(2), "{second:?}");
+    let second_document: Value = serde_json::from_slice(&second.stdout).expect("proposal JSON");
+    assert_eq!(second_document["status"], "blocked");
+    assert_eq!(
+        second_document["goal_change"]["proposed_goal"],
+        "Ship the replacement objective"
+    );
+    assert_eq!(second_document["projection"]["goal"]["text"], accepted_goal);
+
+    let third = fixture.run(&["--json"]);
+    assert_eq!(third.status.code(), Some(2), "{third:?}");
+    let third_document: Value =
+        serde_json::from_slice(&third.stdout).expect("cached proposal JSON");
+    assert_eq!(
+        third_document["goal_change"],
+        second_document["goal_change"]
+    );
+    assert_eq!(third_document["projection"]["goal"]["text"], accepted_goal);
+    assert_eq!(fixture.calls().len(), 2);
+
+    let run_id = second_document["run_id"].as_str().expect("run id");
+    let bundle = fixture.run_bundle(run_id);
+    assert_eq!(bundle.status.code(), Some(0), "{bundle:?}");
+    let bundle_document: Value = serde_json::from_slice(&bundle.stdout).expect("bundle JSON");
+    assert_eq!(bundle_document["status"], "blocked");
+    assert!(
+        bundle_document["blockers"]
+            .as_array()
+            .is_some_and(|blockers| {
+                blockers
+                    .iter()
+                    .any(|blocker| blocker["kind"] == "goal_change_pending")
+            })
+    );
+    assert!(!bundle_document.to_string().contains(&fixture.session_id));
+    fixture.assert_unchanged();
+}
+
+#[test]
 fn initial_inspect_chunks_a_large_session_before_any_provider_call() {
     let mut fixture = Fixture::new(vec![base_proposal()]);
     let canonical = fixture.root.canonicalize().expect("canonical source");
@@ -620,6 +718,44 @@ fn inspect_invokes_luna_max_read_only_ephemeral_and_returns_a_sanitized_projecti
             );
         }
     }
+    fixture.assert_unchanged();
+}
+
+#[test]
+fn inspect_blocks_on_a_native_goal_mismatch_without_exposing_the_parent_goal() {
+    let mut fixture = Fixture::new(vec![base_proposal()]);
+    fixture.environment.insert(
+        "DRIFTCTL_FAKE_GOAL",
+        json!({
+            "goal":{
+                "threadId":fixture.session_id,
+                "objective":"PRIVATE_PARENT_NATIVE_GOAL",
+                "status":"active",
+                "tokenBudget":null,
+                "tokensUsed":0,
+                "timeUsedSeconds":0,
+                "createdAt":1,
+                "updatedAt":1
+            }
+        })
+        .to_string(),
+    );
+
+    let output = fixture.run(&["--json"]);
+
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    let document: Value = serde_json::from_slice(&output.stdout).expect("inspect JSON");
+    assert_eq!(document["status"], "blocked");
+    assert_eq!(document["native_goal"]["state"], "known");
+    assert_eq!(document["native_goal"]["conflicts_with_projection"], true);
+    assert!(
+        document["blockers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|blocker| { blocker["kind"] == "native_goal_conflict" })
+    );
+    assert!(!document.to_string().contains("PRIVATE_PARENT_NATIVE_GOAL"));
     fixture.assert_unchanged();
 }
 
