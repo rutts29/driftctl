@@ -6,13 +6,15 @@ Primary flow:
 
 ```text
 install plugin
-  → attach exact existing session
+  → plugin remains inert
+  → user invokes $driftctl on inside one existing session
+  → hook binds the exact session_id supplied by Codex
   → reconcile prompt
   → Luna proposes semantic change
   → deterministic validation commits or blocks
   → inject active intent into the same session
   → recover and inject again after resume or compaction
-  → detach to restore ordinary Codex behavior
+  → user invokes $driftctl off to restore ordinary Codex behavior
 ```
 
 The existing `inspect`, `continue`, `compare`, and evaluation commands remain available as recovery and research tools. They are not the same-session keeper.
@@ -40,7 +42,7 @@ driftctl integrate codex status
 The packaged Linux release is checksum-verified by `scripts/install.sh`:
 
 ```bash
-./scripts/install.sh --version v0.2.0
+./scripts/install.sh --version v0.3.0
 driftctl integrate codex install
 ```
 
@@ -48,7 +50,26 @@ The GitHub repository and release remain private until the operator publishes th
 
 Open Codex once after integration and approve the Driftctl hook source in the `/hooks` review UI. Normal interactive use does not require a trust-bypass flag.
 
-## Attach one existing session
+## Enable one existing session
+
+Inside the existing Codex session:
+
+```text
+$driftctl on
+```
+
+Installation alone never enrolls a session. The literal command is handled by `UserPromptSubmit`, which supplies the exact current session ID and working directory. Other sessions—including sessions in the same repository—remain strict no-ops.
+
+Check or disable that exact session without leaving Codex:
+
+```text
+$driftctl status
+$driftctl off
+```
+
+The controls are explicit-only. Near matches, ordinary prompts, startup, resume, and compaction cannot activate Driftctl. Control messages remain source-accounted but never become semantic task intent.
+
+The external CLI remains available for diagnostics and compatibility:
 
 Copy the persisted Codex session UUID, enter that session's repository, then run:
 
@@ -57,7 +78,7 @@ driftctl attach codex --session <exact-session-id>
 driftctl status codex --session <exact-session-id>
 ```
 
-Continue that same session normally. Only the exact attached session is active; other sessions in the same repository remain untouched.
+Continue that same session normally. Only the exact enabled session is active; other sessions in the same repository remain untouched.
 
 On every accepted prompt, Driftctl:
 
@@ -114,6 +135,8 @@ driftctl detach codex --session <exact-session-id>
 ## Verified behavior
 
 - Unenrolled sessions are strict no-ops.
+- Plugin installation never enrolls a session; activation requires exact `$driftctl on`.
+- `$driftctl status` is read-only and `$driftctl off` detaches only the invoking session.
 - Attach is exact and idempotent; unknown sessions create no enrollment.
 - Different hook and persisted provider IDs bind one-to-one without duplicate semantic calls.
 - Additive steering is committed before model execution.

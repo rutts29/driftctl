@@ -55,7 +55,21 @@ trust: approve Driftctl hooks with `/hooks` on first use
 
 ## Same-session acceptance
 
-Start with an existing persisted Codex session associated with a disposable Git repository. Copy its exact session UUID.
+Start with an existing persisted Codex session associated with a disposable Git repository. In that session invoke:
+
+```text
+$driftctl status
+$driftctl on
+```
+
+Expected:
+
+- Status initially reports off without creating state.
+- On bootstraps and injects the existing session's active projection.
+- No session ID or Codex-home path is required.
+- A second session in the same repository remains silent.
+
+The external CLI path remains available for diagnostics:
 
 From that repository:
 
@@ -159,14 +173,14 @@ Use a disposable path; do not overwrite the normal installed binary:
 
 ```bash
 export DRIFTCTL_REHEARSAL=/tmp/driftctl-reproduction
-mkdir -p "$DRIFTCTL_REHEARSAL/releases/v0.2.0" \
+mkdir -p "$DRIFTCTL_REHEARSAL/releases/v0.3.0" \
   "$DRIFTCTL_REHEARSAL/bin"
 
 sh scripts/package-release.sh \
-  --out "$DRIFTCTL_REHEARSAL/releases/v0.2.0"
+  --out "$DRIFTCTL_REHEARSAL/releases/v0.3.0"
 
 DRIFTCTL_BASE_URL="file://$DRIFTCTL_REHEARSAL/releases" \
-  sh scripts/install.sh --version v0.2.0 \
+  sh scripts/install.sh --version v0.3.0 \
     --bin-dir "$DRIFTCTL_REHEARSAL/bin"
 
 "$DRIFTCTL_REHEARSAL/bin/driftctl" --help

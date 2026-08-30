@@ -17,7 +17,7 @@
 
 ```text
 existing Codex session
-  → operator attaches exact session ID
+  → operator invokes exact `$driftctl on` inside the session
   → lifecycle hook receives prompt
   → reconcile missed persisted records
   → Luna proposes source-linked semantic delta
@@ -46,7 +46,7 @@ existing Codex session
 | Evidence | Result |
 |---|---:|
 | Hook process cases | 9/9 pass |
-| Exact real-session attach | pass |
+| Exact real-session attach and in-session activation process boundary | pass |
 | Steering committed before same-session model turn | pass |
 | Separate-process resume retained the constraint without repetition | pass |
 | Production-shaped `PreCompact → SessionStart(compact)` recovery | pass |
@@ -94,7 +94,7 @@ More context, reasoning, agents, or reviews do not automatically prevent drift. 
 | Time | Show |
 |---|---|
 | 0:00–0:35 | Long-session drift and ordinary-resume baseline |
-| 0:35–1:05 | Local install, hook trust, exact attach |
+| 0:35–1:05 | Local install remains inert; exact in-session activation |
 | 1:05–2:05 | New steering folded and injected into the same session |
 | 2:05–2:50 | Exit and resume; constraint survives without repetition |
 | 2:50–3:30 | Conflict or goal-change block and explicit operator decision |

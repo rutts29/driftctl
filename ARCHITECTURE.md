@@ -3,8 +3,10 @@
 ## Hard Boundary
 
 ```text
-install isolated hooks
-  → attach exact persisted session
+install explicit-only skill + isolated hooks (inert)
+  → exact $driftctl on at UserPromptSubmit
+  → bind Codex-supplied session_id + cwd
+  → bootstrap exact persisted session
   → bootstrap private ledger + bounded projection
   → UserPromptSubmit
       → unenrolled: no-op
@@ -14,14 +16,16 @@ install isolated hooks
   → Stop: record non-authoritative outcome + cursor
   → PreCompact: flush
   → SessionStart(resume|compact): recover → reconcile → inject
-  → detach exact session → no-op
+  → exact $driftctl status → read-only control result
+  → exact $driftctl off → detach invoking session → no-op
 ```
 
 ## Components
 
 | Component | Owns | Cannot own |
 |---|---|---|
-| Codex plugin | Lifecycle hook declarations | Semantic state or authority |
+| Codex plugin | Explicit-only skill and lifecycle declarations | Enrollment inference, semantic state, or authority |
+| Control parser | Exact `$driftctl on|off|status` grammar | Natural-language activation or semantic intent |
 | Hook controller | Enrollment check, locking, orchestration, hook output | Intent invention |
 | App Server adapter | Thread read and same-session native-goal read-back | Same-session goal mutation or semantic decisions |
 | Source cursor | Ordered provider record identity and replay position | Projection content |
@@ -67,7 +71,7 @@ ${XDG_STATE_HOME:-$HOME/.local/state}/driftctl/
 
 ```text
 detached
-  └─ attach exact ID ─► attaching
+  └─ exact $driftctl on or external attach ─► attaching
        ├─ bootstrap failure ─► detached
        └─ durable commit ─► attached
             ├─ accepted steering ─► attached
@@ -76,7 +80,7 @@ detached
             │    └─ operator goal update + verified approval ─► attached
             ├─ worker/durability failure ─► blocked
             ├─ restart/compact ─► recovering ─► attached|blocked
-            └─ detach exact ID ─► detached
+            └─ exact $driftctl off or external detach ─► detached
 ```
 
 ## Authority
