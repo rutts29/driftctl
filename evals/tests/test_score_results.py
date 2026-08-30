@@ -129,6 +129,36 @@ class ScoreResultsTests(unittest.TestCase):
             self.assertFalse(outcome["scope_passed"])
             self.assertFalse(outcome["verified_completion"])
 
+    def test_scores_the_plain_summary_control_as_a_distinct_arm(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="driftctl-score-test-") as temporary:
+            result_path = Path(temporary) / "plain-summary.json"
+            self._write(
+                result_path,
+                {
+                    "mode": "plain_summary",
+                    "case_id": "case-b",
+                    "status": "verified",
+                    "elapsed_seconds": 3,
+                    "scope": {"passed": True},
+                    "token_usage": {},
+                    "verified_completion": True,
+                    "verifiers": [{"name": "integration", "passed": True}],
+                },
+            )
+
+            completed = subprocess.run(
+                [sys.executable, str(SCORER), str(result_path)],
+                cwd=REPOSITORY_ROOT,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            scored = json.loads(completed.stdout)
+            self.assertEqual(scored["by_mode"]["plain_summary"]["case_count"], 1)
+            self.assertEqual(scored["cases"][0]["mode"], "plain_summary")
+
     def test_rejects_missing_or_malformed_scope(self) -> None:
         with tempfile.TemporaryDirectory(prefix="driftctl-score-test-") as temporary:
             directory = Path(temporary)

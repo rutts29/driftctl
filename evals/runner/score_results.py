@@ -12,7 +12,7 @@ import sys
 from typing import Any, Mapping, Sequence
 
 
-MODES = frozenset({"baseline", "workflow"})
+MODES = frozenset({"baseline", "plain_summary", "workflow"})
 SUCCESS_STATUSES = frozenset({"completed", "success", "succeeded", "ok", "verified"})
 
 
@@ -128,7 +128,9 @@ def result_mode(raw: Mapping[str, Any]) -> str:
 
     value = raw.get("mode", raw.get("runner", "baseline"))
     if not isinstance(value, str) or value not in MODES:
-        raise ScoreError("result field 'mode' must be 'baseline' or 'workflow'")
+        raise ScoreError(
+            "result field 'mode' must be 'baseline', 'plain_summary', or 'workflow'"
+        )
     return value
 
 

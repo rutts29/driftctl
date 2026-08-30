@@ -238,6 +238,13 @@ class NativeLongSessionRunnerTests(unittest.TestCase):
                 self.assertFalse(arm["verified_completion"])
                 self.assertEqual(arm["status"], "completed")
 
+    def test_rejects_comparison_that_does_not_prove_equal_starting_manifests(self) -> None:
+        with temporary_fixture() as fixture:
+            with self.assertRaisesRegex(
+                AssertionError, "starting manifests are not equal"
+            ):
+                run_fixture(fixture, {"FAKE_UNEQUAL_MANIFEST": "1"})
+
     def test_accepts_a_source_turn_that_finished_before_interrupt(self) -> None:
         with temporary_fixture() as fixture:
             result, outputs = run_fixture(fixture, {"FAKE_NO_ACTIVE_TURN": "1"})
@@ -391,6 +398,20 @@ if arguments[0] == "compare":
     if os.environ.get("FAKE_EXTRA_CHANGED_PATH"):
         changed_paths.append(os.environ["FAKE_EXTRA_CHANGED_PATH"])
     result = {
+        "fairness": {
+            "starting_manifest_equal": not bool(os.environ.get("FAKE_UNEQUAL_MANIFEST")),
+            "neutral_prompt_equal": True,
+            "worker_policy": {
+                "model": "gpt-5.6-luna",
+                "effort": "max",
+                "sandbox": "workspace-write",
+                "approval_policy": "never",
+                "verified_readback": True,
+            },
+            "only_intended_input_difference": "workflow receives the bounded active-intent projection",
+        },
+        "parent_unchanged": True,
+        "source_unchanged": True,
         "baseline": {"child_thread_id": "baseline-child", "child_cwd": os.environ["FAKE_BASELINE_CANDIDATE"], "turn_status": "completed", "changed_paths": changed_paths},
         "workflow": {"child_thread_id": "workflow-child", "child_cwd": os.environ["FAKE_WORKFLOW_CANDIDATE"], "turn_status": "completed", "changed_paths": changed_paths},
     }
