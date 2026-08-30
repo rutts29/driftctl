@@ -179,7 +179,7 @@ impl ActiveProjection {
 
     #[must_use]
     pub fn continuation_blocked(&self) -> bool {
-        self.closure.is_blocked()
+        !self.conflicts.is_empty() || self.overflow.is_overflow()
     }
 }
 

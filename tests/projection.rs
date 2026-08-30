@@ -315,3 +315,24 @@ fn rendered_budget_accepts_exact_boundary_and_reports_structured_overflow_withou
             .any(|blocker| blocker.kind == ClosureBlockerKind::ProjectionOverflow)
     );
 }
+
+#[test]
+fn unresolved_frontier_blocks_closure_but_allows_continuation() {
+    let history = history_with_items(vec![item(
+        "pending",
+        IntentKind::Outcome,
+        "finish the pending outcome",
+        "pending-source",
+    )]);
+    let projection = project(&history, 16 * 1024).expect("project pending outcome");
+
+    assert!(projection.closure.is_blocked());
+    assert!(
+        projection
+            .closure
+            .blockers
+            .iter()
+            .any(|blocker| blocker.kind == ClosureBlockerKind::UnresolvedRequirement)
+    );
+    assert!(!projection.continuation_blocked());
+}
