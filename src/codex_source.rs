@@ -8,6 +8,9 @@ use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
+use crate::intent_history::{SourceProvider, SourceRole};
+use crate::session_bundle::{BundleRecord, NeutralSessionBundle};
+
 const MAX_PROTOCOL_LINE_BYTES: usize = 1024 * 1024;
 const MAX_THREAD_LIST_PAGES: usize = 100;
 const THREAD_SOURCE_KINDS: [&str; 10] = [
@@ -23,9 +26,10 @@ const THREAD_SOURCE_KINDS: [&str; 10] = [
     "unknown",
 ];
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Eq, PartialEq)]
 pub(crate) struct ImportedSession {
     session_id: String,
+    repository_digest: String,
     user_records: Vec<ImportedUserRecord>,
 }
 
@@ -44,21 +48,56 @@ impl ImportedSession {
     }
 
     pub(crate) fn source_digest(&self) -> String {
-        let mut digest = Sha256::new();
-        for record in &self.user_records {
-            digest.update(record.id.as_bytes());
-            digest.update([0]);
-            digest.update(record.text.as_bytes());
-            digest.update([0]);
-        }
-        format!("sha256:{:x}", digest.finalize())
+        self.neutral_bundle()
+            .expect("parsed Codex user records must form a valid neutral bundle")
+            .source()
+            .digest()
+            .to_owned()
+    }
+
+    /// Converts the App Server's explicit user messages to strict neutral
+    /// records before any semantic resolver can inspect them.
+    pub(crate) fn neutral_bundle(&self) -> Result<NeutralSessionBundle, SourceError> {
+        let records = self
+            .user_records
+            .iter()
+            .map(|record| BundleRecord::new(&record.id, SourceRole::User, &record.text))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| SourceError::new(format!("invalid imported Codex record: {error}")))?;
+        NeutralSessionBundle::from_records(
+            SourceProvider::Codex,
+            &self.session_id,
+            &self.repository_digest,
+            records,
+        )
+        .map_err(|error| SourceError::new(format!("invalid imported Codex bundle: {error}")))
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+impl fmt::Debug for ImportedSession {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ImportedSession")
+            .field("redacted_session", &self.redacted_session())
+            .field("repository_digest", &self.repository_digest)
+            .field("user_record_count", &self.user_records.len())
+            .finish()
+    }
+}
+
+#[derive(Clone, Eq, PartialEq)]
 struct ImportedUserRecord {
     id: String,
     text: String,
+}
+
+impl fmt::Debug for ImportedUserRecord {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ImportedUserRecord")
+            .field("id", &self.id)
+            .finish_non_exhaustive()
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -102,7 +141,11 @@ pub(crate) fn inspect(
             SessionSelection::Explicit(id) => validate_explicit_session_id(id)?,
         };
         let thread = server.read_thread(&selected_id)?;
-        parse_imported_session(thread, canonical_root, &selected_id)
+        let imported = parse_imported_session(thread, canonical_root, &selected_id)?;
+        // Convert at the provider boundary. This validates the exact neutral
+        // handoff without classifying intent or changing public inspect output.
+        imported.neutral_bundle()?;
+        Ok(imported)
     })();
     server.stop();
     result
@@ -414,7 +457,7 @@ fn parse_imported_session(
                     continue;
                 }
                 let text_location = format!("{item_location}.content[{content_index}]");
-                let text = required_string(part, "text", &text_location)?;
+                let text = required_text(part, "text", &text_location)?;
                 user_records.push(ImportedUserRecord {
                     id: format!("{id}:{content_index}"),
                     text,
@@ -424,8 +467,14 @@ fn parse_imported_session(
     }
     Ok(ImportedSession {
         session_id: id,
+        repository_digest: repository_digest(canonical_root),
         user_records,
     })
+}
+
+fn repository_digest(canonical_root: &str) -> String {
+    let digest = Sha256::digest(canonical_root.as_bytes());
+    format!("sha256:{digest:x}")
 }
 
 fn required_array<'a>(
@@ -452,6 +501,19 @@ fn required_string(value: &Value, field: &str, location: &str) -> Result<String,
             SourceError::new(format!("{location}.{field} must be a non-empty string"))
         })?;
     Ok(result)
+}
+
+fn required_text(value: &Value, field: &str, location: &str) -> Result<String, SourceError> {
+    value
+        .get(field)
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty() && value.len() <= 1024 * 1024 && !value.contains('\0'))
+        .map(ToOwned::to_owned)
+        .ok_or_else(|| {
+            SourceError::new(format!(
+                "{location}.{field} must be a non-empty text string"
+            ))
+        })
 }
 
 fn optional_i64(value: &Value, field: &str, location: &str) -> Result<Option<i64>, SourceError> {
