@@ -46,6 +46,7 @@ DEFAULT_WORKER_EFFORT = "max"
 DURABLE_READ_ATTEMPTS = 100
 DURABLE_READ_INTERVAL_SECONDS = 0.05
 CONTEXT_CHUNK_COUNT = 4
+MAX_CONTEXT_BYTES = 1024 * 1024
 
 
 class AppServerRequestError(RunnerError):
@@ -241,8 +242,10 @@ def run_case(
     worker_model: str = DEFAULT_WORKER_MODEL,
     worker_effort: str = DEFAULT_WORKER_EFFORT,
 ) -> dict[str, Any]:
-    if context_bytes < 0 or context_bytes > 512 * 1024:
-        raise RunnerError("context bytes must be between 0 and 524288")
+    if context_bytes < 0 or context_bytes > MAX_CONTEXT_BYTES:
+        raise RunnerError(
+            f"context bytes must be between 0 and {MAX_CONTEXT_BYTES}"
+        )
     if not worker_model.strip() or not worker_effort.strip():
         raise RunnerError("worker model and effort must be nonempty")
     worker_policy = {
