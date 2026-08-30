@@ -2,8 +2,16 @@
 
 This changelog records the experiments that shaped the standalone hackathon implementation. Discarded experiments remain part of the story rather than being counted as evidence.
 
+## Current product correction
+
+- Entries through `Private-release safety gate` describe a useful checkpoint/recovery prototype, not the intended continuous same-session keeper.
+- Product drift: fork isolation and evaluation controls replaced the original runtime invariant in `SPEC.md`, `ARCHITECTURE.md`, and completion gates.
+- Recovery decision: retain the importer, semantic history, projection, conflict/goal state, private storage, verification, packaging, tests, and evidence; replace the top-level runtime with exact-session Codex lifecycle hooks.
+- New closure rule: no ongoing-session claim until an installed hook injects validated intent into the same attached session across prompt, restart/resume, compaction, conflict, and detach.
+
 | Stage | What changed and why | Evidence | Decision |
 |---|---|---|---|
+| Product-drift recovery | The project shipped `inspect → isolated child → verify`, but no worker stayed attached after the initial injection. The current conversation reproduced the exact failure: the original ongoing-ledger requirement remained stable while later implementation constraints became a replacement goal. | Current source has no enrollment lifecycle or prompt/compaction hooks; a continued child can drift after one-shot grounding. Codex 0.150.1 exposes stable enabled lifecycle hooks for prompt, stop, session start, and compaction. | Keep the prototype as recovery/evaluation support. Lock the same-session hook flow as the product and require K01–K20 before a new MVP claim. |
 | Baseline | A fresh general-purpose Codex agent resumed from the surviving worktree after a hard transcript loss. | Final baseline: 3/5 protected cases verified; two failed agents still emitted completed turns. | Kept as the narrowly labelled worktree-only recovery baseline. |
 | Ledger core | Added append-only goal, requirement, steering, evidence, and closure events. | Reopen tests preserve steering and closure exits `2` while requirements remain unresolved. | Kept. |
 | Codex adapter | Reconstructed the goal/frontier for a fresh ephemeral Codex process and retained raw JSONL trajectories. | Real smoke run and adapter tests completed without changing `AGENTS.md`, `CLAUDE.md`, or the ledger. | Kept as the first convenience adapter; generic integration remains the JSON contract. |
