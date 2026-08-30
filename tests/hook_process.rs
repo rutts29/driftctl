@@ -25,10 +25,10 @@ fn temporary_home_directory(case: &str) -> PathBuf {
         .duration_since(UNIX_EPOCH)
         .expect("system clock is after the Unix epoch")
         .as_nanos();
-    let path = Path::new("/home/rutts").join(format!(
-        ".driftctl-hook-{case}-{}-{nonce}",
-        std::process::id()
-    ));
+    let path =
+        PathBuf::from(std::env::var_os("HOME").expect("HOME is set for integration tests")).join(
+            format!(".driftctl-hook-{case}-{}-{nonce}", std::process::id()),
+        );
     fs::create_dir(&path).expect("create isolated home test directory");
     path
 }

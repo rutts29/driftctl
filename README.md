@@ -42,7 +42,7 @@ driftctl integrate codex status
 The packaged Linux release is checksum-verified by `scripts/install.sh`:
 
 ```bash
-./scripts/install.sh --version v0.3.0
+./scripts/install.sh --version v0.4.0
 driftctl integrate codex install
 ```
 
@@ -79,6 +79,26 @@ driftctl status codex --session <exact-session-id>
 ```
 
 Continue that same session normally. Only the exact enabled session is active; other sessions in the same repository remain untouched.
+
+## Run a prospective A/B trial
+
+Start from a detached, persisted midpoint session in a clean source checkout:
+
+```bash
+driftctl ab prepare codex --session <midpoint-session-id> --json
+```
+
+The result contains one run ID plus separate baseline/workflow session IDs and working directories. Both are idle persisted forks with the same inherited prefix, native goal, worker policy, and candidate digest. Prepare enrolls neither arm and does not change the source checkout.
+
+Resume each reported session from its reported directory. Continue the baseline normally. In the workflow arm, invoke `$driftctl on` before giving the same continuation task. Before invoking `$driftctl off`, run one acceptance command against both candidates:
+
+```bash
+driftctl ab report --run <run-id> --json -- ./verify-candidate.sh
+```
+
+Report requires a detached baseline, the exact enrolled workflow fork, an unchanged source, and the recorded equal starting state. It runs the same verifier once per arm, rejects candidate/verifier mutation, and caches an identical retry. Verified completion is primary; post-checkpoint prompts, records, verifier time, and measured keeper overhead are secondary evidence.
+
+This command prepares and measures the experiment; it does not drive either coding session or adopt either candidate.
 
 On every accepted prompt, Driftctl:
 
@@ -143,6 +163,7 @@ driftctl detach codex --session <exact-session-id>
 - Ambiguity, invalid proposals, overflow, and pending goal changes block before work.
 - A real attached Codex session retained a new output constraint across a separate resume process.
 - A production-shaped `PreCompact → SessionStart(compact)` restored the same goal and constraint.
+- A real persisted checkpoint produced two independent forks; only the workflow fork enrolled, both candidates passed the same verifier, and a repeated report reused cached evidence.
 - The process suite covers install/remove preservation, isolation, detach, duplicate delivery, invalid output, conflict resolution, and native-goal approval.
 
 Exact commands and retained evidence are in [REPRODUCING.md](REPRODUCING.md). The product contract and component boundaries are in [SPEC.md](SPEC.md) and [ARCHITECTURE.md](ARCHITECTURE.md).
@@ -151,6 +172,8 @@ Exact commands and retained evidence are in [REPRODUCING.md](REPRODUCING.md). Th
 
 - Codex is the only native lifecycle adapter in this MVP.
 - Keeper calls add model latency and consume the user's allowance.
+- A/B prepare supports a persisted current checkpoint, not arbitrary slicing at an earlier transcript turn.
+- A/B execution remains operator-driven; equal starting state does not make asymmetrically steered runs a valid efficacy comparison.
 - Model proposals can be wrong; deterministic checks reject structural errors but cannot guarantee semantic correctness.
 - Hook trust is an operator decision. Untrusted hooks may be skipped by Codex.
 - Driftctl is not a security sandbox and does not make YOLO or host-wide permissions safe.

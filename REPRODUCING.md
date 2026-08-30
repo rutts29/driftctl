@@ -167,20 +167,55 @@ driftctl detach codex --session <exact-session-id> --json
 
 A later hook for that session must emit nothing and create no state.
 
+## Prospective paired A/B
+
+Use a clean disposable repository and a detached Codex session persisted at the intended midpoint:
+
+```bash
+driftctl ab prepare codex --session <midpoint-session-id> --json
+```
+
+Expected:
+
+- `experiment_kind: prospective_paired` and `status: ready`.
+- Distinct baseline/workflow session IDs and working directories.
+- Equal starting candidate digest, inherited goal, and worker policy.
+- No started turn, enrollment, or source-checkout mutation.
+
+Resume the baseline from `baseline.cwd` and continue normally. Resume the workflow from `workflow.cwd`, invoke `$driftctl on`, then provide the same continuation task. Do not enroll the baseline or source session.
+
+Create one executable verifier that exits zero only when the user-visible task is complete. Run it before detaching the workflow:
+
+```bash
+cd <source-repository>
+driftctl ab report --run <run-id> --json -- <verifier> [args...]
+```
+
+Expected:
+
+- Baseline `detached`; workflow `attached_exact`; source unchanged.
+- The same verifier command executes once in each candidate.
+- Per-arm exit status, candidate/verifier digests, timing, post-checkpoint records/prompts, and workflow keeper overhead.
+- A repeated identical report returns `cached: true`; a different verifier is rejected.
+
+Then invoke `$driftctl off` in the workflow arm. Use verified completion as the primary outcome. Treat turns, corrections, elapsed time, and keeper usage as secondary. If prompts or operator interventions differed, label the run a pipeline rehearsal rather than a controlled efficacy result.
+
+The retained sanitized rehearsal is `evals/results/prospective-ab-pipeline-20260830.json`. It proves the fork/enrollment/report lifecycle and records a tie; it does not supersede the negative frozen efficacy evaluation.
+
 ## Package rehearsal
 
 Use a disposable path; do not overwrite the normal installed binary:
 
 ```bash
 export DRIFTCTL_REHEARSAL=/tmp/driftctl-reproduction
-mkdir -p "$DRIFTCTL_REHEARSAL/releases/v0.3.0" \
+mkdir -p "$DRIFTCTL_REHEARSAL/releases/v0.4.0" \
   "$DRIFTCTL_REHEARSAL/bin"
 
 sh scripts/package-release.sh \
-  --out "$DRIFTCTL_REHEARSAL/releases/v0.3.0"
+  --out "$DRIFTCTL_REHEARSAL/releases/v0.4.0"
 
 DRIFTCTL_BASE_URL="file://$DRIFTCTL_REHEARSAL/releases" \
-  sh scripts/install.sh --version v0.3.0 \
+  sh scripts/install.sh --version v0.4.0 \
     --bin-dir "$DRIFTCTL_REHEARSAL/bin"
 
 "$DRIFTCTL_REHEARSAL/bin/driftctl" --help
