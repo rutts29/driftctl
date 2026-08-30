@@ -136,7 +136,14 @@ driftctl resolve codex --session <exact-session-id> --edit-goal '<replacement>' 
 driftctl resolve codex --session <exact-session-id> --approve-goal --json
 ```
 
-Approval must execute `goal/get → goal/clear → goal/set → goal/get` against the exact session. Edit and reject cannot mutate the native goal. Stale, wrong-session, and replayed approval must fail without mutation.
+If approval reports a native-goal mismatch, it must exit `2` without a mutating goal RPC. In the exact attached Codex session, run:
+
+```text
+/goal clear
+/goal <replacement>
+```
+
+Rerun `--approve-goal`. It must commit only after read-only exact goal and source-head verification. Edit, reject, concurrent change, stale, wrong-session, and replayed approval must leave the native goal untouched.
 
 Detach:
 

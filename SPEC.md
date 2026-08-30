@@ -69,10 +69,11 @@ The Codex hook event is read from stdin and validated before enrollment lookup.
 - Explicit compatible supersession: deactivate replaced intent and commit replacement.
 - Ambiguous steering: block for operator resolution.
 - Native-goal mismatch: block for operator resolution.
-- Approved goal transition binds exact session ID, projection revision, source head, and proposed text.
-- Transition order: `goal/get → goal/clear → goal/set → goal/get`.
-- Exact read-back is required before unblocking.
-- Reject, edit, failure, stale approval, or wrong session cannot change the native goal.
+- Goal approval binds exact session ID, projection revision, source head, and proposed text.
+- Driftctl never clears or sets the native goal of an attached same session.
+- Mismatch returns a manual handoff: operator runs `/goal clear` and `/goal <proposed>` inside that exact session, then reruns approval.
+- Approval commits only after read-only exact native-goal and source-head verification.
+- Reject, edit, failure, concurrent change, stale approval, replay, or wrong session cannot mutate the native goal through Driftctl.
 
 ## Isolation Contract
 

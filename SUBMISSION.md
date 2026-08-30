@@ -38,7 +38,7 @@ existing Codex session
 | Source-linked immutable history | Superseded and rejected steering remains auditable |
 | Bounded active projection | The session receives current intent, not an ever-growing transcript copy |
 | Exact enrollment | Other sessions, including same-repository sessions, remain no-ops |
-| Operator conflict/goal approval | Ambiguity and native goal mutation cannot be guessed autonomously |
+| Operator conflict/goal approval | Ambiguity is explicit; native same-session goal changes stay inside the operator's Codex session |
 | Lifecycle hooks | Continuity follows the same session across prompt, stop, resume, and compaction |
 
 ## Current evidence
@@ -52,6 +52,7 @@ existing Codex session
 | Production-shaped `PreCompact → SessionStart(compact)` recovery | pass |
 | Unenrolled/same-repository control receives context | no |
 | Wrong/stale/replayed goal approval mutates native goal | no |
+| Driftctl same-session goal clear/set RPCs | none |
 
 Real acceptance sequence:
 

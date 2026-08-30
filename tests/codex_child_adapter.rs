@@ -280,18 +280,17 @@ fn skips_clear_when_the_persisted_child_goal_is_already_absent() {
 }
 
 #[test]
-fn matching_same_session_goal_is_read_back_without_mutation() {
+fn observes_a_matching_same_session_goal_without_mutation() {
     let root = temporary_directory("same-session-goal-already-matching");
     let child_cwd = root.join("unused-child");
     fs::create_dir(&child_cwd).expect("create fixture directory");
     let objective = "Already approved objective";
     let adapter = configure_fake(&root, "success", &child_cwd, objective);
 
-    let transition = adapter
-        .replace_exact_goal("child-thread", objective)
-        .expect("matching goal read-back succeeds");
-    assert_eq!(transition.previous().objective(), Some(objective));
-    assert_eq!(transition.current().objective(), Some(objective));
+    let observed = adapter
+        .observe_persisted_goal("child-thread")
+        .expect("matching goal observation succeeds");
+    assert_eq!(observed.objective(), Some(objective));
     let requests = captured_requests(&root);
     assert!(
         !requests.iter().any(|request| matches!(

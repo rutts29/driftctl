@@ -147,6 +147,10 @@ for raw in sys.stdin:
             "threadId":request["params"]["threadId"],
             "objective":objective,
         }
+        drift_after_read = os.environ.get("DRIFTCTL_FAKE_DRIFT_AFTER_GOAL_GET")
+        if state_path and drift_after_read and objective is not None:
+            with open(state_path, "w", encoding="utf-8") as file:
+                json.dump(drift_after_read, file)
         result = {"goal":goal}
     elif method == "thread/goal/clear":
         state_path = os.environ["DRIFTCTL_FAKE_GOAL_STATE"]
@@ -1130,8 +1134,117 @@ fn k09_goal_change_requires_exact_operator_approval_and_native_readback() {
     environment.insert("DRIFTCTL_FAKE_READ", accepted_read.to_string());
 
     let capture = PathBuf::from(&environment["DRIFTCTL_FAKE_RPC_CAPTURE"]);
+    let projection_before_approval = private_state_document(&environment, "projection.json");
     let calls_before = fs::read_to_string(&capture)
         .unwrap_or_default()
+        .lines()
+        .count();
+    let handoff = run_cli(
+        &root,
+        &[
+            "resolve",
+            "codex",
+            "--session",
+            session_id,
+            "--approve-goal",
+            "--json",
+        ],
+        &environment,
+    );
+    assert_eq!(handoff.status.code(), Some(2), "{handoff:?}");
+    let handoff_text = String::from_utf8_lossy(&handoff.stderr);
+    assert!(handoff_text.contains("/goal clear"), "{handoff_text}");
+    assert!(
+        handoff_text.contains(&format!("/goal {edited_goal}")),
+        "{handoff_text}"
+    );
+    assert!(
+        handoff_text.contains("rerun"),
+        "handoff omitted confirmation step: {handoff_text}"
+    );
+    assert_eq!(
+        fs::read_to_string(&environment["DRIFTCTL_FAKE_GOAL_STATE"])
+            .expect("native goal after handoff"),
+        "null"
+    );
+    assert_eq!(
+        private_state_document(&environment, "projection.json"),
+        projection_before_approval
+    );
+    let handoff_methods = fs::read_to_string(&capture)
+        .expect("captured handoff RPC")
+        .lines()
+        .skip(calls_before)
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .filter_map(|request| request["method"].as_str().map(str::to_owned))
+        .collect::<Vec<_>>();
+    assert!(
+        !handoff_methods
+            .iter()
+            .any(|method| matches!(method.as_str(), "thread/goal/clear" | "thread/goal/set")),
+        "handoff mutated the native goal: {handoff_methods:?}"
+    );
+
+    fs::write(
+        &environment["DRIFTCTL_FAKE_GOAL_STATE"],
+        serde_json::to_string(edited_goal).expect("encode operator-set goal"),
+    )
+    .expect("simulate operator setting the native goal");
+    environment.insert(
+        "DRIFTCTL_FAKE_DRIFT_AFTER_GOAL_GET",
+        "Concurrent operator goal".to_owned(),
+    );
+    let calls_before_race = fs::read_to_string(&capture)
+        .expect("captured pre-race RPC")
+        .lines()
+        .count();
+    let raced = run_cli(
+        &root,
+        &[
+            "resolve",
+            "codex",
+            "--session",
+            session_id,
+            "--approve-goal",
+            "--json",
+        ],
+        &environment,
+    );
+    assert_eq!(raced.status.code(), Some(2), "{raced:?}");
+    assert_eq!(
+        serde_json::from_str::<Value>(
+            &fs::read_to_string(&environment["DRIFTCTL_FAKE_GOAL_STATE"])
+                .expect("native goal after concurrent change")
+        )
+        .expect("concurrent native goal JSON"),
+        json!("Concurrent operator goal")
+    );
+    assert_eq!(
+        private_state_document(&environment, "projection.json"),
+        projection_before_approval
+    );
+    let race_methods = fs::read_to_string(&capture)
+        .expect("captured race RPC")
+        .lines()
+        .skip(calls_before_race)
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .filter_map(|request| request["method"].as_str().map(str::to_owned))
+        .collect::<Vec<_>>();
+    assert!(
+        !race_methods
+            .iter()
+            .any(|method| matches!(method.as_str(), "thread/goal/clear" | "thread/goal/set")),
+        "concurrent goal was overwritten: {race_methods:?}"
+    );
+
+    environment.remove("DRIFTCTL_FAKE_DRIFT_AFTER_GOAL_GET");
+    fs::write(
+        &environment["DRIFTCTL_FAKE_GOAL_STATE"],
+        serde_json::to_string(edited_goal).expect("encode confirmed operator goal"),
+    )
+    .expect("restore exact operator-set goal");
+    let calls_before_confirmation = fs::read_to_string(&capture)
+        .expect("captured pre-confirmation RPC")
         .lines()
         .count();
     let approved = run_cli(
@@ -1167,7 +1280,7 @@ fn k09_goal_change_requires_exact_operator_approval_and_native_readback() {
     let methods = fs::read_to_string(&capture)
         .expect("captured approval RPC")
         .lines()
-        .skip(calls_before)
+        .skip(calls_before_confirmation)
         .filter_map(|line| serde_json::from_str::<Value>(line).ok())
         .filter_map(|request| request["method"].as_str().map(str::to_owned))
         .collect::<Vec<_>>();
@@ -1176,14 +1289,14 @@ fn k09_goal_change_requires_exact_operator_approval_and_native_readback() {
         .filter(|method| method.starts_with("thread/goal/"))
         .collect::<Vec<_>>();
     assert!(
-        goal_methods.windows(4).any(|window| window
-            == [
-                "thread/goal/get",
-                "thread/goal/clear",
-                "thread/goal/set",
-                "thread/goal/get"
-            ]),
-        "approval RPCs did not contain the exact transition: {goal_methods:?}"
+        goal_methods
+            .iter()
+            .all(|method| method == "thread/goal/get"),
+        "confirmation used a mutating native-goal RPC: {goal_methods:?}"
+    );
+    assert!(
+        goal_methods.len() >= 2,
+        "confirmation omitted exact read-back: {goal_methods:?}"
     );
 
     environment.insert(
