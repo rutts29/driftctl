@@ -31,10 +31,44 @@ impl GoalObservation {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WorkerPolicy {
+    model: String,
+    effort: String,
+}
+
+impl WorkerPolicy {
+    pub fn new(
+        model: impl Into<String>,
+        effort: impl Into<String>,
+    ) -> Result<Self, ChildAdapterError> {
+        Ok(Self {
+            model: validate_identifier(model.into(), "worker model")?,
+            effort: validate_identifier(effort.into(), "worker reasoning effort")?,
+        })
+    }
+
+    pub fn luna_max() -> Self {
+        Self {
+            model: "gpt-5.6-luna".to_owned(),
+            effort: "max".to_owned(),
+        }
+    }
+
+    pub fn model(&self) -> &str {
+        &self.model
+    }
+
+    pub fn effort(&self) -> &str {
+        &self.effort
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ChildForkRequest {
     parent_thread_id: String,
     isolated_cwd: PathBuf,
     approved_objective: String,
+    worker_policy: WorkerPolicy,
 }
 
 impl ChildForkRequest {
@@ -59,7 +93,13 @@ impl ChildForkRequest {
             parent_thread_id,
             isolated_cwd,
             approved_objective,
+            worker_policy: WorkerPolicy::luna_max(),
         })
+    }
+
+    pub fn with_worker_policy(mut self, worker_policy: WorkerPolicy) -> Self {
+        self.worker_policy = worker_policy;
+        self
     }
 }
 
@@ -95,6 +135,7 @@ pub struct ChildTurnRequest {
     child_cwd: PathBuf,
     neutral_prompt: String,
     projection: Option<String>,
+    worker_policy: WorkerPolicy,
 }
 
 impl ChildTurnRequest {
@@ -120,6 +161,7 @@ impl ChildTurnRequest {
             child_cwd,
             neutral_prompt,
             projection: Some(projection),
+            worker_policy: WorkerPolicy::luna_max(),
         })
     }
 
@@ -142,7 +184,13 @@ impl ChildTurnRequest {
             child_cwd,
             neutral_prompt: validate_text(neutral_prompt.into(), "neutral prompt")?,
             projection: None,
+            worker_policy: WorkerPolicy::luna_max(),
         })
+    }
+
+    pub fn with_worker_policy(mut self, worker_policy: WorkerPolicy) -> Self {
+        self.worker_policy = worker_policy;
+        self
     }
 
     fn text(&self) -> String {
@@ -242,6 +290,7 @@ impl CodexChildAdapter {
             server.initialize()?;
             let parent_goal = server.get_goal(&request.parent_thread_id)?;
             let child = server.fork_persisted(&request)?;
+            server.set_worker_policy(&child.id, &child.cwd, &request.worker_policy)?;
             let initial_child_goal = server.get_goal(&child.id)?;
             if initial_child_goal != GoalObservation::Absent {
                 server.clear_goal(&child.id)?;
@@ -278,6 +327,11 @@ impl CodexChildAdapter {
         let result = (|| {
             server.initialize()?;
             server.resume_child(&request)?;
+            server.set_worker_policy(
+                &request.child_thread_id,
+                &request.child_cwd,
+                &request.worker_policy,
+            )?;
             server.start_turn(&request)
         })();
         server.stop();
@@ -347,6 +401,9 @@ impl AppServer {
                 "threadId": request.parent_thread_id,
                 "cwd": request.isolated_cwd,
                 "ephemeral": false,
+                "model": request.worker_policy.model,
+                "sandbox": "workspace-write",
+                "approvalPolicy": "never",
             }),
         )?;
         let thread = response.get("thread").ok_or_else(|| {
@@ -399,8 +456,15 @@ impl AppServer {
     }
 
     fn resume_child(&mut self, request: &ChildTurnRequest) -> Result<(), ChildAdapterError> {
-        let response =
-            self.request("thread/resume", json!({"threadId":request.child_thread_id}))?;
+        let response = self.request(
+            "thread/resume",
+            json!({
+                "threadId":request.child_thread_id,
+                "model":request.worker_policy.model,
+                "sandbox":"workspace-write",
+                "approvalPolicy":"never",
+            }),
+        )?;
         let thread = response.get("thread").ok_or_else(|| {
             ChildAdapterError::protocol("thread/resume response has no child thread")
         })?;
@@ -412,6 +476,63 @@ impl AppServer {
         {
             return Err(ChildAdapterError::protocol(
                 "thread/resume did not load the expected persisted child and cwd",
+            ));
+        }
+        Ok(())
+    }
+
+    fn set_worker_policy(
+        &mut self,
+        child_id: &str,
+        child_cwd: &Path,
+        policy: &WorkerPolicy,
+    ) -> Result<(), ChildAdapterError> {
+        self.request(
+            "thread/settings/update",
+            json!({
+                "threadId":child_id,
+                "model":policy.model,
+                "effort":policy.effort,
+                "approvalPolicy":"never",
+                "sandboxPolicy":{"type":"workspaceWrite"},
+            }),
+        )?;
+        self.request(
+            "thread/read",
+            json!({"threadId":child_id,"includeTurns":false}),
+        )?;
+        let notification = self
+            .notifications
+            .iter()
+            .rev()
+            .find(|notification| {
+                notification.get("method").and_then(Value::as_str)
+                    == Some("thread/settings/updated")
+                    && notification
+                        .pointer("/params/threadId")
+                        .and_then(Value::as_str)
+                        == Some(child_id)
+            })
+            .ok_or_else(|| {
+                ChildAdapterError::protocol(
+                    "child worker policy update had no verifiable settings notification",
+                )
+            })?;
+        let settings = notification
+            .pointer("/params/threadSettings")
+            .ok_or_else(|| ChildAdapterError::protocol("child worker settings are missing"))?;
+        let observed_cwd = settings.get("cwd").and_then(Value::as_str);
+        let sandbox = settings
+            .pointer("/sandboxPolicy/type")
+            .and_then(Value::as_str);
+        if settings.get("model").and_then(Value::as_str) != Some(policy.model())
+            || settings.get("effort").and_then(Value::as_str) != Some(policy.effort())
+            || settings.get("approvalPolicy").and_then(Value::as_str) != Some("never")
+            || sandbox != Some("workspaceWrite")
+            || observed_cwd != Some(child_cwd.to_string_lossy().as_ref())
+        {
+            return Err(ChildAdapterError::protocol(
+                "child worker policy read-back does not exactly match the requested policy",
             ));
         }
         Ok(())
@@ -454,6 +575,10 @@ impl AppServer {
             json!({
                 "threadId": request.child_thread_id,
                 "input": [{"type":"text", "text":request.text()}],
+                "model":request.worker_policy.model,
+                "effort":request.worker_policy.effort,
+                "approvalPolicy":"never",
+                "sandboxPolicy":{"type":"workspaceWrite"},
             }),
         )?;
         let turn = response
