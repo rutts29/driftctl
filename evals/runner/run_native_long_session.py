@@ -71,7 +71,7 @@ class AppServer:
             "initialize",
             {
                 "clientInfo": {"name": "driftctl-native-eval", "version": "1"},
-                "capabilities": {"experimentalApi": True, "requestAttestation": False},
+                "capabilities": {"experimentalApi": False, "requestAttestation": False},
             },
         )
         self.notify("initialized", {})
@@ -103,17 +103,10 @@ class AppServer:
     def notify(self, method: str, params: Mapping[str, Any]) -> None:
         self._write({"method": method, "params": params})
 
-    def planning_turn(
-        self,
-        thread_id: str,
-        text: str,
-        phase: str,
-        worker_policy: Mapping[str, str],
-    ) -> str:
+    def record_user_turn(self, thread_id: str, text: str, phase: str) -> str:
         result = self.request(
             "turn/start",
             {
-                "collaborationMode": collaboration_mode("plan", worker_policy),
                 "input": [{"type": "text", "text": text}],
                 "threadId": thread_id,
             },
@@ -126,26 +119,10 @@ class AppServer:
         if not isinstance(turn_id, str) or not turn_id or not isinstance(status, str):
             raise RunnerError(f"App Server {phase} turn is malformed")
         if status == "inProgress":
-            status = self._wait_for_turn(thread_id, turn_id)
-        if status != "completed":
+            self.request("turn/interrupt", {"threadId": thread_id, "turnId": turn_id})
+        elif status not in {"completed", "interrupted"}:
             raise RunnerError(f"App Server {phase} turn ended with {status!r}")
         return turn_id
-
-    def _wait_for_turn(self, thread_id: str, turn_id: str) -> str:
-        while True:
-            response = self._read()
-            if response.get("method") != "turn/completed":
-                continue
-            params = response.get("params")
-            if not isinstance(params, Mapping) or params.get("threadId") != thread_id:
-                continue
-            turn = params.get("turn")
-            if not isinstance(turn, Mapping) or turn.get("id") != turn_id:
-                continue
-            status = turn.get("status")
-            if isinstance(status, str):
-                return status
-            raise RunnerError("App Server completion notification has no turn status")
 
     def _write(self, value: Mapping[str, Any]) -> None:
         self.input.write(json.dumps(value, separators=(",", ":")) + "\n")
@@ -323,32 +300,19 @@ def seed_native_session(
             raise RunnerError(
                 "App Server thread/start response has no persisted thread ID"
             )
-        initial = server.planning_turn(
-            thread_id,
-            planning_prompt(definition, False),
-            "initial",
-            worker_policy,
+        initial = server.record_user_turn(
+            thread_id, source_prompt(definition, False), "initial"
         )
         injection = inject_non_authoritative_context(server, thread_id, context_bytes)
-        steering = server.planning_turn(
-            thread_id,
-            planning_prompt(definition, True),
-            "steering",
-            worker_policy,
-        )
-        server.request(
-            "thread/settings/update",
-            {
-                "collaborationMode": collaboration_mode("default", worker_policy),
-                "threadId": thread_id,
-            },
+        steering = server.record_user_turn(
+            thread_id, source_prompt(definition, True), "steering"
         )
         return thread_id, [initial, steering], injection
     finally:
         server.close()
 
 
-def planning_prompt(definition: CaseDefinition, late: bool) -> str:
+def source_prompt(definition: CaseDefinition, late: bool) -> str:
     heading = "Late steering" if late else "Goal"
     body = (
         "\n".join(f"- {item.requirement}" for item in definition.steering)
@@ -357,17 +321,6 @@ def planning_prompt(definition: CaseDefinition, late: bool) -> str:
         + "\n".join(f"- {item}" for item in definition.initial_requirements)
     )
     return f"{heading}:\n{body}"
-
-
-def collaboration_mode(mode: str, worker_policy: Mapping[str, str]) -> dict[str, Any]:
-    return {
-        "mode": mode,
-        "settings": {
-            "developer_instructions": None,
-            "model": worker_policy["model"],
-            "reasoning_effort": worker_policy["effort"],
-        },
-    }
 
 
 def inject_non_authoritative_context(
@@ -447,7 +400,7 @@ def arm_result(
         "mode": mode,
         "native_checkpoint": {
             "injection": dict(injection),
-            "planning_turn_count": len(source_turns),
+            "source_user_turn_count": len(source_turns),
             "source_workspace_clean": source_clean,
         },
         "premature_completion": {

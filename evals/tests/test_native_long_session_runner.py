@@ -34,6 +34,7 @@ class NativeLongSessionRunnerTests(unittest.TestCase):
                 self.assertTrue(arm["agent_succeeded"])
                 self.assertTrue(arm["native_checkpoint"]["source_workspace_clean"])
                 self.assertTrue(arm["native_checkpoint"]["injection"]["accepted"])
+                self.assertEqual(arm["native_checkpoint"]["source_user_turn_count"], 2)
                 self.assertEqual(
                     arm["worker_policy"],
                     {
@@ -84,22 +85,20 @@ class NativeLongSessionRunnerTests(unittest.TestCase):
                     "initialized",
                     "thread/start",
                     "turn/start",
+                    "turn/interrupt",
                     "thread/inject_items",
                     "turn/start",
-                    "thread/settings/update",
+                    "turn/interrupt",
                 ],
             )
-            self.assertTrue(requests[0]["params"]["capabilities"]["experimentalApi"])
+            self.assertFalse(requests[0]["params"]["capabilities"]["experimentalApi"])
             self.assertIn("Goal:", requests[3]["params"]["input"][0]["text"])
             self.assertNotIn(
                 "Do not edit files", requests[3]["params"]["input"][0]["text"]
             )
-            self.assertIn("Late steering", requests[5]["params"]["input"][0]["text"])
-            self.assertEqual(requests[3]["params"]["collaborationMode"]["mode"], "plan")
-            self.assertEqual(requests[5]["params"]["collaborationMode"]["mode"], "plan")
-            self.assertEqual(
-                requests[6]["params"]["collaborationMode"]["mode"], "default"
-            )
+            self.assertIn("Late steering", requests[6]["params"]["input"][0]["text"])
+            self.assertNotIn("collaborationMode", requests[3]["params"])
+            self.assertNotIn("collaborationMode", requests[6]["params"])
             self.assertEqual(requests[2]["params"]["model"], "gpt-5.6-luna")
             self.assertEqual(requests[2]["params"]["effort"], "max")
             self.assertEqual(requests[2]["params"]["sandbox"], "workspace-write")
@@ -226,14 +225,14 @@ for raw in sys.stdin:
     elif method == "thread/start":
         result = {"thread": {"id": "source-thread", "cwd": request["params"]["cwd"], "ephemeral": False}}
     elif method == "turn/start":
-        result = {"turn": {"id": "planning-" + str(request["id"]), "status": "completed"}}
+        result = {"turn": {"id": "source-" + str(request["id"]), "status": "inProgress"}}
+    elif method == "turn/interrupt":
+        result = {}
     elif method == "thread/inject_items" and os.environ.get("FAKE_INJECTION_UNSUPPORTED"):
         print(json.dumps({"id": request["id"], "error": {"message": "unsupported"}}), flush=True)
         continue
     elif method == "thread/inject_items":
         result = {"accepted": True}
-    elif method == "thread/settings/update":
-        result = {}
     else:
         print(json.dumps({"id": request["id"], "error": {"message": "unexpected"}}), flush=True)
         continue
