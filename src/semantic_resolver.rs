@@ -96,11 +96,12 @@ impl CompactorConfig {
     }
 
     #[must_use]
-    pub(crate) fn disclosure(self) -> String {
+    pub(crate) fn disclosure_for_chunks(self, chunks: usize) -> String {
         format!(
-            "compactor model: {}\nreasoning: {}\nexpected calls: 1; maximum 2 with repair\nuses local Codex authentication and usage allowance; model output may be incomplete or wrong; the operator owns approved intent",
+            "compactor model: {}\nreasoning: {}\nexpected calls: {chunks}; maximum {} with repair\nuses local Codex authentication and usage allowance; model output may be incomplete or wrong; the operator owns approved intent",
             self.model(),
-            self.reasoning()
+            self.reasoning(),
+            chunks.saturating_mul(2),
         )
     }
 }
@@ -326,6 +327,146 @@ impl ValidationFailure {
             Self::ActiveAccounting => "active_intent_accounting",
             Self::DeltaBound => "incremental_delta_bound",
         }
+    }
+}
+
+pub(crate) fn initial_chunk_count(bundle: &NeutralSessionBundle) -> Result<usize, String> {
+    initial_chunks(bundle)
+        .map(|chunks| chunks.len())
+        .map_err(|failure| failure.code().to_owned())
+}
+
+/// Resolve an initial source in bounded chronological chunks. Small sessions
+/// retain the existing one-call path; later chunks use the same incremental
+/// validator as future steering.
+pub(crate) fn resolve_initial(
+    root: &Path,
+    bundle: &NeutralSessionBundle,
+    config: CompactorConfig,
+    projection_config: ProjectionConfig,
+) -> Result<InspectResolution, ResolverFailure> {
+    let chunks = initial_chunks(bundle).map_err(|failure| ResolverFailure {
+        kind: ResolverFailureKind::InvalidProposal,
+        metadata: Box::new(metadata(
+            config,
+            0,
+            0,
+            ResolverUsage::default(),
+            Some(failure.code().to_owned()),
+            &[],
+        )),
+    })?;
+    let mut chunks = chunks.into_iter();
+    let first = chunks
+        .next()
+        .expect("a valid bundle has at least one chunk");
+    let mut resolution = resolve(root, &first, config, projection_config)?;
+    for delta in chunks {
+        let prior_metadata = resolution.metadata.clone();
+        resolution = match resolve_incremental(
+            root,
+            &resolution.history,
+            &resolution.projection,
+            &delta,
+            config,
+            projection_config,
+        ) {
+            Ok(mut next) => {
+                combine_metadata(&mut next.metadata, &prior_metadata);
+                next
+            }
+            Err(mut failure) => {
+                combine_metadata(&mut failure.metadata, &prior_metadata);
+                return Err(failure);
+            }
+        };
+    }
+    Ok(resolution)
+}
+
+fn initial_chunks(
+    bundle: &NeutralSessionBundle,
+) -> Result<Vec<NeutralSessionBundle>, ValidationFailure> {
+    bundle
+        .validate_for_projection()
+        .map_err(|_| ValidationFailure::Source)?;
+    let mut chunks = Vec::<Vec<BundleRecord>>::new();
+    let mut current = Vec::<BundleRecord>::new();
+    for record in bundle.records() {
+        let mut candidate = current.clone();
+        candidate.push(record.clone());
+        if initial_records_bytes(&candidate)? <= MAX_INCREMENTAL_DELTA_PROMPT_BYTES {
+            current = candidate;
+            continue;
+        }
+        if current.is_empty() {
+            return Err(ValidationFailure::DeltaBound);
+        }
+        chunks.push(std::mem::take(&mut current));
+        current.push(record.clone());
+        if initial_records_bytes(&current)? > MAX_INCREMENTAL_DELTA_PROMPT_BYTES {
+            return Err(ValidationFailure::DeltaBound);
+        }
+    }
+    if !current.is_empty() {
+        chunks.push(current);
+    }
+    chunks
+        .into_iter()
+        .map(|records| {
+            NeutralSessionBundle::from_records_with_native_goal(
+                bundle.source().provider(),
+                bundle.source().session_ref_private(),
+                bundle.source().repository_digest(),
+                bundle.native_goal().clone(),
+                records,
+            )
+            .map_err(|_| ValidationFailure::Source)
+        })
+        .collect()
+}
+
+fn initial_records_bytes(records: &[BundleRecord]) -> Result<usize, ValidationFailure> {
+    let records = records
+        .iter()
+        .map(|record| {
+            json!({
+                "id":record.id(),
+                "role":record.role(),
+                "content":record.content(),
+                "content_digest":record.content_digest(),
+            })
+        })
+        .collect::<Vec<_>>();
+    serde_json::to_vec(&json!({"records":records}))
+        .map(|value| value.len())
+        .map_err(|_| ValidationFailure::DeltaBound)
+}
+
+fn combine_metadata(current: &mut ResolverMetadata, prior: &ResolverMetadata) {
+    current.calls = current.calls.saturating_add(prior.calls);
+    current.elapsed_ms = current.elapsed_ms.saturating_add(prior.elapsed_ms);
+    current.usage.input_tokens = current
+        .usage
+        .input_tokens
+        .saturating_add(prior.usage.input_tokens);
+    current.usage.cached_input_tokens = current
+        .usage
+        .cached_input_tokens
+        .saturating_add(prior.usage.cached_input_tokens);
+    current.usage.output_tokens = current
+        .usage
+        .output_tokens
+        .saturating_add(prior.usage.output_tokens);
+    current.usage.reasoning_output_tokens = current
+        .usage
+        .reasoning_output_tokens
+        .saturating_add(prior.usage.reasoning_output_tokens);
+    let mut artifacts = prior.artifact_ids.clone();
+    artifacts.append(&mut current.artifact_ids);
+    current.artifact_ids = artifacts;
+    if current.last_validation_failure.is_none() {
+        current.last_validation_failure = prior.last_validation_failure.clone();
     }
 }
 
