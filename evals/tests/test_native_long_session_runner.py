@@ -49,7 +49,30 @@ class NativeLongSessionRunnerTests(unittest.TestCase):
         }
 
         with self.assertRaisesRegex(RunnerError, "tool"):
-            require_comparison_fairness(comparison, worker_policy)
+            require_comparison_fairness(comparison, worker_policy, "baseline-first")
+
+    def test_records_and_enforces_requested_workflow_first_order(self) -> None:
+        with temporary_fixture() as fixture:
+            completed = invoke_fixture(fixture, arm_order="workflow-first")
+            self.assertEqual(completed.returncode, 0, completed.stdout)
+            manifest = json.loads(completed.stdout)
+            for filename in manifest["result_files"].values():
+                result = json.loads(
+                    (fixture / "results" / filename).read_text(encoding="utf-8")
+                )
+                self.assertEqual(
+                    result["native_checkpoint"]["arm_execution_order"],
+                    ["workflow", "baseline"],
+                )
+            requests = read_json_lines(fixture / "driftctl-requests.jsonl")
+            comparison = next(
+                request["arguments"]
+                for request in requests
+                if request["arguments"][0] == "compare"
+            )
+            self.assertEqual(
+                comparison[-3:], ["--arm-order", "workflow-first", "--json"]
+            )
 
     def test_runner_process_timeout_fails_closed(self) -> None:
         timeout = subprocess.TimeoutExpired(["hung"], 1800, output="partial", stderr="private")
@@ -767,6 +790,7 @@ def invoke_fixture(
     extra: dict[str, str] | None = None,
     case: Path = CASE,
     plain_summary_file: Path | None = None,
+    arm_order: str = "baseline-first",
 ) -> subprocess.CompletedProcess[str]:
     results = root / "results"
     environment = os.environ | {
@@ -794,6 +818,8 @@ def invoke_fixture(
             "64",
             "--artifacts",
             str(root / "artifacts"),
+            "--arm-order",
+            arm_order,
         ]
     if plain_summary_file is not None:
         arguments.extend(["--plain-summary-file", str(plain_summary_file)])
@@ -990,6 +1016,7 @@ if arguments[0] == "inspect":
     print(json.dumps(document))
     raise SystemExit(2 if os.environ.get("FAKE_INSPECT_BLOCKED") else 0)
 if arguments[0] == "compare":
+    arm_order = arguments[arguments.index("--arm-order") + 1]
     changed_paths = ["service_client.py"]
     if os.environ.get("FAKE_EXTRA_CHANGED_PATH"):
         changed_paths.append(os.environ["FAKE_EXTRA_CHANGED_PATH"])
@@ -1000,6 +1027,7 @@ if arguments[0] == "compare":
             "tool_policy_equal": True,
             "turn_timeout_equal": True,
             "turn_timeout_policy": "provider_terminal_event",
+            "arm_execution_order": ["workflow", "baseline"] if arm_order == "workflow-first" else ["baseline", "workflow"],
             "worker_policy": {
                 "model": "gpt-5.6-luna",
                 "effort": "max",

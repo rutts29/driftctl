@@ -402,6 +402,11 @@ def main(arguments: Sequence[str]) -> int:
     parser.add_argument("--context-bytes", type=int, default=32768)
     parser.add_argument("--worker-model", default=DEFAULT_WORKER_MODEL)
     parser.add_argument("--worker-effort", default=DEFAULT_WORKER_EFFORT)
+    parser.add_argument(
+        "--arm-order",
+        choices=("baseline-first", "workflow-first"),
+        default="baseline-first",
+    )
     parser.add_argument("--artifacts", type=Path)
     parser.add_argument("--plain-summary-file", type=Path)
     namespace = parser.parse_args(arguments)
@@ -416,6 +421,7 @@ def main(arguments: Sequence[str]) -> int:
             namespace.worker_model,
             namespace.worker_effort,
             namespace.plain_summary_file,
+            namespace.arm_order,
         )
     except RunnerError as error:
         print(
@@ -436,6 +442,7 @@ def run_case(
     worker_model: str = DEFAULT_WORKER_MODEL,
     worker_effort: str = DEFAULT_WORKER_EFFORT,
     plain_summary_file: Path | None = None,
+    arm_order: str = "baseline-first",
 ) -> dict[str, Any]:
     if context_bytes < 0 or context_bytes > MAX_CONTEXT_BYTES:
         raise RunnerError(
@@ -443,6 +450,8 @@ def run_case(
         )
     if not worker_model.strip() or not worker_effort.strip():
         raise RunnerError("worker model and effort must be nonempty")
+    if arm_order not in {"baseline-first", "workflow-first"}:
+        raise RunnerError("arm order must be baseline-first or workflow-first")
     worker_policy = {
         "approval_policy": "never",
         "effort": worker_effort,
@@ -517,8 +526,11 @@ def run_case(
                 "statistical_claim": NO_SIGNIFICANCE_LABEL,
                 "status": "safety_blocked",
             }
-        comparison = invoke_compare(driftctl_bin, workspace, session_id, environment)
-        require_comparison_fairness(comparison, worker_policy)
+        comparison = invoke_compare(
+            driftctl_bin, workspace, session_id, environment, arm_order
+        )
+        require_comparison_fairness(comparison, worker_policy, arm_order)
+        arm_execution_order = comparison["fairness"]["arm_execution_order"]
         require_evaluation_fingerprint(case_directory, fingerprint)
         private_artifact = retain_private_artifact(
             private_artifact_root, definition.case_id, session_id, comparison
@@ -548,6 +560,7 @@ def run_case(
                 gold_projection,
                 codex_bin,
                 review_artifact_root,
+                arm_execution_order,
             )
             for mode in ("baseline", "workflow")
         }
@@ -585,6 +598,7 @@ def run_case(
                 gold_projection,
                 codex_bin,
                 review_artifact_root,
+                arm_execution_order,
             )
             results["plain_summary"]["control_context"] = {
                 "kind": "flat_plain_summary",
@@ -805,10 +819,23 @@ def terminal_turn_status(
 
 
 def invoke_compare(
-    driftctl_bin: str, workspace: Path, session_id: str, environment: Mapping[str, str]
+    driftctl_bin: str,
+    workspace: Path,
+    session_id: str,
+    environment: Mapping[str, str],
+    arm_order: str,
 ) -> Mapping[str, Any]:
     completed = invoke(
-        [driftctl_bin, "compare", "codex", "--session", session_id, "--json"],
+        [
+            driftctl_bin,
+            "compare",
+            "codex",
+            "--session",
+            session_id,
+            "--arm-order",
+            arm_order,
+            "--json",
+        ],
         workspace,
         environment,
         "run native comparison",
@@ -1203,7 +1230,9 @@ def logical_source_records(
 
 
 def require_comparison_fairness(
-    comparison: Mapping[str, Any], worker_policy: Mapping[str, str]
+    comparison: Mapping[str, Any],
+    worker_policy: Mapping[str, str],
+    expected_arm_order: str = "baseline-first",
 ) -> None:
     fairness = comparison.get("fairness")
     if not isinstance(fairness, Mapping):
@@ -1218,6 +1247,13 @@ def require_comparison_fairness(
         raise RunnerError("native comparison did not prove an equal turn timeout policy")
     if fairness.get("turn_timeout_policy") != "provider_terminal_event":
         raise RunnerError("native comparison reported an unexpected turn timeout policy")
+    expected_order = (
+        ["workflow", "baseline"]
+        if expected_arm_order == "workflow-first"
+        else ["baseline", "workflow"]
+    )
+    if fairness.get("arm_execution_order") != expected_order:
+        raise RunnerError("native comparison did not use the requested arm execution order")
     if comparison.get("parent_unchanged") is not True:
         raise RunnerError("native comparison did not preserve the parent session")
     if comparison.get("source_unchanged") is not True:
@@ -1251,6 +1287,7 @@ def arm_result(
     gold_projection: Mapping[str, Any],
     codex_bin: str,
     review_artifact_root: Path,
+    arm_execution_order: Sequence[str],
 ) -> dict[str, Any]:
     candidate = Path(str(arm["child_cwd"]))
     if not candidate.is_dir():
@@ -1293,6 +1330,7 @@ def arm_result(
         "human_interventions": 0,
         "mode": mode,
         "native_checkpoint": {
+            "arm_execution_order": list(arm_execution_order),
             "injection": dict(injection),
             "source_user_turn_count": len(source_records),
             "source_turn_labels": [

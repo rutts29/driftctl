@@ -860,6 +860,10 @@ fn compare_runs_equal_isolated_children_with_only_the_projection_added() {
     assert_eq!(document["fairness"]["tool_policy_equal"], true);
     assert_eq!(document["fairness"]["turn_timeout_equal"], true);
     assert_eq!(
+        document["fairness"]["arm_execution_order"],
+        json!(["baseline", "workflow"])
+    );
+    assert_eq!(
         document["fairness"]["turn_timeout_policy"],
         "provider_terminal_event"
     );
@@ -935,6 +939,34 @@ fn compare_runs_equal_isolated_children_with_only_the_projection_added() {
             && request["params"]["approvalPolicy"] == "never"
     }));
     assert_eq!(fixture.calls().len(), 1);
+    fixture.assert_unchanged();
+}
+
+#[test]
+fn compare_can_execute_the_workflow_arm_first_and_records_the_order() {
+    let fixture = Fixture::new(vec![base_proposal()]);
+    let compared = fixture.run_compare(&["--arm-order", "workflow-first", "--json"]);
+    assert_eq!(compared.status.code(), Some(0), "{compared:?}");
+    let document: Value = serde_json::from_slice(&compared.stdout).expect("comparison JSON");
+    assert_eq!(
+        document["fairness"]["arm_execution_order"],
+        json!(["workflow", "baseline"])
+    );
+
+    let turns = fixture
+        .rpc_calls()
+        .into_iter()
+        .filter(|request| request["method"] == "turn/start")
+        .collect::<Vec<_>>();
+    assert_eq!(turns.len(), 2);
+    let first = turns[0]["params"]["input"][0]["text"]
+        .as_str()
+        .expect("first prompt");
+    let second = turns[1]["params"]["input"][0]["text"]
+        .as_str()
+        .expect("second prompt");
+    assert!(first.contains("\"frontier\""));
+    assert!(!second.contains("\"frontier\""));
     fixture.assert_unchanged();
 }
 
