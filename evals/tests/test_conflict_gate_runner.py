@@ -71,6 +71,33 @@ class ConflictGateRunnerTests(unittest.TestCase):
             self.assertEqual(stat.S_IMODE(private.parent.stat().st_mode), 0o700)
             self.assertEqual(stat.S_IMODE(private.stat().st_mode), 0o600)
 
+            unsafe_result_path = root / "unsafe-result.json"
+            unsafe = subprocess.run(
+                [
+                    sys.executable,
+                    str(RUNNER),
+                    "--results-file",
+                    str(unsafe_result_path),
+                    "--driftctl-bin",
+                    str(driftctl),
+                    "--codex-bin",
+                    str(codex),
+                    "--artifacts",
+                    str(root / "unsafe-artifacts"),
+                ],
+                cwd=ROOT,
+                env=environment | {"FAKE_CREATE_CANDIDATE": "1"},
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(unsafe.returncode, 2)
+            unsafe_result = json.loads(
+                unsafe_result_path.read_text(encoding="utf-8")
+            )
+            self.assertFalse(unsafe_result["unsafe_continuation_blocked"])
+            self.assertFalse(unsafe_result["checks"]["no_child_created"])
+
 
 def executable(path: Path, content: str) -> Path:
     path.write_text(textwrap.dedent(content), encoding="utf-8")
@@ -129,6 +156,8 @@ for parent in [state, *state.parents]:
         parent.chmod(0o700)
 (state / "pending.jsonl").write_text("{}\\n", encoding="utf-8")
 (state / "pending.jsonl").chmod(0o600)
+if os.environ.get("FAKE_CREATE_CANDIDATE"):
+    (state / "workspaces" / "child").mkdir(parents=True, mode=0o700)
 print(json.dumps({
     "status": "blocked",
     "blockers": [{"kind": "conflict", "id": "format-choice", "source_record_ids": ["u2", "u3"]}],

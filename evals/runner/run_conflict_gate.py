@@ -142,6 +142,7 @@ def run_gate(
             before_threads == after_threads
             and session_id in after_threads
             and not contains_any_key(document, {"child_thread_id", "child_cwd"})
+            and not candidate_state_exists(state)
         )
         checks = {
             "blocked_exit": completed.returncode == 2
@@ -357,6 +358,13 @@ def private_permissions(directory: Path) -> bool:
         if path.is_file() and mode != 0o600:
             return False
     return True
+
+
+def candidate_state_exists(directory: Path) -> bool:
+    return any(
+        path.is_dir() and path.name in {"workspaces", "comparisons"}
+        for path in directory.rglob("*")
+    )
 
 
 def git_output(workspace: Path, arguments: Sequence[str]) -> str:
