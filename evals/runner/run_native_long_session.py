@@ -54,6 +54,7 @@ CONTEXT_CHUNK_COUNT = 4
 MAX_CONTEXT_BYTES = 1024 * 1024
 MAX_PLAIN_SUMMARY_BYTES = 64 * 1024
 REVIEWER_TIMEOUT_SECONDS = 600
+RUNNER_PROCESS_TIMEOUT_SECONDS = 1800
 NEUTRAL_CONTINUATION_PROMPT = (
     "Continue the task from this checkpoint. Preserve existing behavior and complete "
     "the remaining work. Do not claim completion without running relevant validation."
@@ -543,6 +544,7 @@ def run_case(
                 private_artifact,
                 worker_policy,
                 projection_generation,
+                projection_fidelity,
                 gold_projection,
                 codex_bin,
                 review_artifact_root,
@@ -579,6 +581,7 @@ def run_case(
                 private_artifact,
                 worker_policy,
                 projection_generation,
+                projection_fidelity,
                 gold_projection,
                 codex_bin,
                 review_artifact_root,
@@ -1209,6 +1212,12 @@ def require_comparison_fairness(
         raise RunnerError("native comparison starting manifests are not equal")
     if fairness.get("neutral_prompt_equal") is not True:
         raise RunnerError("native comparison did not use an equal neutral prompt")
+    if fairness.get("tool_policy_equal") is not True:
+        raise RunnerError("native comparison did not prove an equal tool policy")
+    if fairness.get("turn_timeout_equal") is not True:
+        raise RunnerError("native comparison did not prove an equal turn timeout policy")
+    if fairness.get("turn_timeout_policy") != "provider_terminal_event":
+        raise RunnerError("native comparison reported an unexpected turn timeout policy")
     if comparison.get("parent_unchanged") is not True:
         raise RunnerError("native comparison did not preserve the parent session")
     if comparison.get("source_unchanged") is not True:
@@ -1238,6 +1247,7 @@ def arm_result(
     private_artifact: str | None,
     worker_policy: Mapping[str, str],
     projection_generation: Mapping[str, Any],
+    projection_fidelity: Mapping[str, Any],
     gold_projection: Mapping[str, Any],
     codex_bin: str,
     review_artifact_root: Path,
@@ -1257,6 +1267,7 @@ def arm_result(
     )
     passed_requirements = sum(item["passed"] is True for item in requirement_evidence)
     requirement_pass_rate = passed_requirements / len(requirement_evidence)
+    full_regression_suite_passed = full_regression_result(verifiers)
     review = review_candidate(
         codex_bin,
         candidate,
@@ -1278,6 +1289,8 @@ def arm_result(
         "case_id": definition.case_id,
         "changed_paths": changed_paths,
         "evaluation_kind": LONG_SESSION_LABEL,
+        "full_regression_suite_passed": full_regression_suite_passed,
+        "human_interventions": 0,
         "mode": mode,
         "native_checkpoint": {
             "injection": dict(injection),
@@ -1321,9 +1334,27 @@ def arm_result(
         "verifiers": verifiers,
         "worker_policy": dict(worker_policy),
     }
+    if mode == "workflow":
+        overall_pass = projection_fidelity.get("overall_pass")
+        if not isinstance(overall_pass, bool):
+            raise RunnerError("projection fidelity has no boolean overall result")
+        result["projection_fidelity"] = {
+            "available": True,
+            "overall_pass": overall_pass,
+            "scope": "workflow_input_projection",
+        }
     if private_artifact is not None:
         result["private_artifact"] = private_artifact
     return result
+
+
+def full_regression_result(verifiers: Sequence[Mapping[str, Any]]) -> bool:
+    """Return the single verifier that executes the case's full regression suite."""
+
+    results = [item.get("passed") for item in verifiers if item.get("name") == "all"]
+    if len(results) != 1 or not isinstance(results[0], bool):
+        raise RunnerError("native case must define exactly one full-suite verifier")
+    return results[0]
 
 
 def review_candidate(
@@ -1816,7 +1847,12 @@ def invoke(
             capture_output=True,
             text=True,
             check=False,
+            timeout=RUNNER_PROCESS_TIMEOUT_SECONDS,
         )
+    except subprocess.TimeoutExpired as error:
+        raise RunnerError(
+            f"could not {action}: timed out after {RUNNER_PROCESS_TIMEOUT_SECONDS} seconds"
+        ) from error
     except OSError as error:
         raise RunnerError(f"could not {action}: {error}") from error
 

@@ -1305,6 +1305,9 @@ fn compare_codex(root: &Path, arguments: &[String]) -> CliOutput {
         "fairness":{
             "starting_manifest_equal":pair.baseline().manifest() == pair.workflow().manifest(),
             "neutral_prompt_equal":true,
+            "tool_policy_equal":true,
+            "turn_timeout_equal":true,
+            "turn_timeout_policy":"provider_terminal_event",
             "worker_policy":{
                 "model":"gpt-5.6-luna",
                 "effort":"max",

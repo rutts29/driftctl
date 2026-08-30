@@ -101,6 +101,15 @@ PYTHONDONTWRITEBYTECODE=1 python3 evals/runner/run_native_suite.py \
 
 The recorded 2026-08-30 run used Luna Max, never-approve, workspace-write candidates, and 128 KiB of post-steering context. Four cases reached A/C comparison: baseline 3/4 and Driftctl 2/4. Case 02's B control also verified. Case 05 required operator clarification before coding and is excluded from completion denominators. Nine candidates passed process, fixed verifiers, and exact scope; independent review blocked three with Required findings. See [`evals/results/native-suite-20260830/summary.json`](evals/results/native-suite-20260830/summary.json). These are descriptive results without a significance claim.
 
+Re-score the immutable arm files without overwriting the published summary:
+
+```sh
+python3 evals/runner/score_results.py \
+  evals/results/native-suite-20260830/*-native-*.json
+```
+
+The scorer treats independent review, fixed verifiers, and scope as external acceptance facts; internal Driftctl closure is never efficacy proof. Each secondary metric includes an availability count. Historical intervention, per-arm projection-fidelity, and token data remain unavailable instead of being inferred as zero. The native runner has a 1,800-second outer process limit; both coding arms use the same provider-terminal-event policy, which is parity evidence rather than a per-arm wall-clock deadline.
+
 ## Native case-02 compaction-parity replay
 
 This is the exact one-case command shape used for the eligible 800 KiB native result. It creates real Codex sessions and private artifacts; it is not deterministic in cost, latency, or model output.
