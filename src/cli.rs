@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
 use std::fs;
-use std::io::{IsTerminal as _, Write as _};
+use std::io::{IsTerminal as _, Read as _, Write as _};
 use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
@@ -24,9 +24,11 @@ use crate::semantic_resolver::{
     ResolverMetadata, ResolverUsage, sanitized_human, sanitized_json,
 };
 use crate::session_bundle::NativeGoal;
+use crate::session_bundle::NeutralSessionBundle;
 use crate::{ClosureError, Ledger, Snapshot};
 
 const CONTAINMENT_NOTICE: &str = "workspace isolation only; Driftctl inherits worker permissions, so host-wide or YOLO access remains outside its containment";
+const MAX_NEUTRAL_BUNDLE_BYTES: u64 = 16 * 1024 * 1024;
 
 const USAGE: &str = "driftctl — durable continuity for coding-agent tasks\n\n\
 Usage:\n\
@@ -36,6 +38,7 @@ Usage:\n\
   driftctl status [--json]\n\
   driftctl resume [--json]\n\
   driftctl inspect codex (--last | --session <id>) [--json] [--compactor luna|terra|sol] [--reasoning high|medium]\n\
+  driftctl inspect bundle (--file <path> | --stdin) [--json] [--compactor luna|terra|sol] [--reasoning high|medium]\n\
   driftctl bundle --run <run-id> --json\n\
   driftctl compare codex (--last | --session <id>) [--json]\n\
   driftctl continue codex (--last | --session <id>) [--resolve-conflict <conflict-id> <alternative-id> | --approve-goal | --edit-goal <text> | --retain-goal | --cancel] [--json]\n\
@@ -112,6 +115,13 @@ pub fn execute(root: &Path, arguments: impl IntoIterator<Item = String>) -> CliO
 }
 
 fn inspect(root: &Path, arguments: &[String]) -> CliOutput {
+    if arguments.first().map(String::as_str) == Some("bundle") {
+        return inspect_neutral_bundle(root, arguments);
+    }
+    inspect_codex(root, arguments)
+}
+
+fn inspect_codex(root: &Path, arguments: &[String]) -> CliOutput {
     let parsed = parse_inspect_arguments(arguments);
     let Ok(options) = parsed else {
         return CliOutput::error(parsed.expect_err("checked error"));
@@ -173,6 +183,7 @@ fn inspect(root: &Path, arguments: &[String]) -> CliOutput {
                     source.cursor().accepted_record_count(),
                     source.cursor().digest(),
                     options.json,
+                    "codex",
                 );
             }
             Ok(SourceCursorComparison::NewRecords(records)) => {
@@ -218,6 +229,7 @@ fn inspect(root: &Path, arguments: &[String]) -> CliOutput {
                         source.cursor().accepted_record_count(),
                         source.cursor().digest(),
                         options.json,
+                        "codex",
                     );
                 }
                 let accepted_count = source.cursor().accepted_record_count() - records.len();
@@ -270,6 +282,7 @@ fn inspect(root: &Path, arguments: &[String]) -> CliOutput {
                     source.cursor().accepted_record_count(),
                     source.cursor().digest(),
                     options.json,
+                    "codex",
                 );
             }
             Ok(SourceCursorComparison::Stale { .. }) => {
@@ -305,10 +318,249 @@ fn inspect(root: &Path, arguments: &[String]) -> CliOutput {
                 imported.imported_user_record_count(),
                 &imported.source_digest(),
                 options.json,
+                "codex",
             )
         }
         Err(failure) => resolver_failure_output(failure, options.json),
     }
+}
+
+struct NeutralBundleInput {
+    bundle: NeutralSessionBundle,
+    file: Option<(PathBuf, String)>,
+}
+
+impl NeutralBundleInput {
+    fn verify_unchanged(&self) -> Result<(), String> {
+        let Some((path, expected_digest)) = &self.file else {
+            return Ok(());
+        };
+        let bytes = read_bounded_neutral_bundle_file(path)?;
+        let observed = format!("sha256:{:x}", Sha256::digest(&bytes));
+        if &observed == expected_digest {
+            Ok(())
+        } else {
+            Err("neutral bundle input changed during inspection".to_owned())
+        }
+    }
+}
+
+fn inspect_neutral_bundle(root: &Path, arguments: &[String]) -> CliOutput {
+    let options = match parse_neutral_bundle_inspect_arguments(arguments) {
+        Ok(options) => options,
+        Err(error) => return CliOutput::error(error),
+    };
+    let input = match read_neutral_bundle_input(&options) {
+        Ok(input) => input,
+        Err(error) => return CliOutput::error(error),
+    };
+    if let Err(error) = input.bundle.validate_for_projection() {
+        return CliOutput::error(error.to_string());
+    }
+    let canonical_root = match root.canonicalize() {
+        Ok(root) => root,
+        Err(error) => {
+            return CliOutput::error(format!("could not canonicalize repository: {error}"));
+        }
+    };
+    let Some(canonical_root) = canonical_root.to_str() else {
+        return CliOutput::error("neutral bundle inspection requires a UTF-8 repository path");
+    };
+    let expected_repository_digest =
+        format!("sha256:{:x}", Sha256::digest(canonical_root.as_bytes()));
+    if input.bundle.source().repository_digest() != expected_repository_digest {
+        return CliOutput::error("neutral bundle belongs to a different repository");
+    }
+    let source = match InspectSource::from_bundle(&input.bundle) {
+        Ok(source) => source,
+        Err(error) => return CliOutput::error(error.to_string()),
+    };
+    let projection_config = match inspect_projection_config() {
+        Ok(config) => config,
+        Err(error) => return CliOutput::error(error),
+    };
+    match source.open(root) {
+        Ok(Some(existing)) => {
+            let comparison = match existing.recovered.source_cursor.as_ref() {
+                Some(accepted) => accepted.compare(source.cursor()),
+                None => return CliOutput::error("stored bundle run has no source cursor"),
+            };
+            if !matches!(comparison, Ok(SourceCursorComparison::Current)) {
+                return CliOutput::error(
+                    "updated neutral bundles require a new source session_ref in this release",
+                );
+            }
+            if let Err(error) = input.verify_unchanged() {
+                return CliOutput::error(error);
+            }
+            let goal_change = match load_goal_change(
+                &existing.store,
+                &existing.recovered,
+                source.cursor().digest(),
+            ) {
+                Ok(goal_change) => goal_change,
+                Err(error) => return CliOutput::error(error),
+            };
+            let resolution = cached_resolution(
+                existing.recovered,
+                Some(input.bundle.native_goal()),
+                goal_change,
+            );
+            inspect_output(
+                &resolution,
+                source.run_id().as_str(),
+                input.bundle.authoritative_records().len(),
+                source.cursor().digest(),
+                options.json,
+                "bundle",
+            )
+        }
+        Ok(None) => {
+            let initial_chunks = match semantic_resolver::initial_chunk_count(&input.bundle) {
+                Ok(chunks) => chunks,
+                Err(error) => return CliOutput::error(error),
+            };
+            if let Err(error) = write_disclosure(options.compactor, initial_chunks) {
+                return CliOutput::error(error);
+            }
+            let resolution = match semantic_resolver::resolve_initial(
+                root,
+                &input.bundle,
+                options.compactor,
+                projection_config,
+            ) {
+                Ok(resolution) => resolution,
+                Err(failure) => return resolver_failure_output(failure, options.json),
+            };
+            if let Err(error) = input.verify_unchanged() {
+                return CliOutput::error(error);
+            }
+            if let Err(error) = source.create(root, &resolution.history, &resolution.projection) {
+                return CliOutput::error(error.to_string());
+            }
+            inspect_output(
+                &resolution,
+                source.run_id().as_str(),
+                input.bundle.authoritative_records().len(),
+                source.cursor().digest(),
+                options.json,
+                "bundle",
+            )
+        }
+        Err(error) => CliOutput::error(error.to_string()),
+    }
+}
+
+#[derive(Debug)]
+struct NeutralBundleInspectOptions {
+    file: Option<PathBuf>,
+    json: bool,
+    compactor: CompactorConfig,
+}
+
+fn parse_neutral_bundle_inspect_arguments(
+    arguments: &[String],
+) -> Result<NeutralBundleInspectOptions, String> {
+    let mut file = None;
+    let mut stdin = false;
+    let mut json = false;
+    let mut compactor = None;
+    let mut reasoning = None;
+    let mut index = 1;
+    while index < arguments.len() {
+        match arguments[index].as_str() {
+            "--file" if file.is_none() && !stdin => {
+                let path = arguments
+                    .get(index + 1)
+                    .filter(|path| !path.is_empty())
+                    .ok_or_else(|| "missing value for --file".to_owned())?;
+                file = Some(PathBuf::from(path));
+                index += 2;
+            }
+            "--stdin" if file.is_none() && !stdin => {
+                stdin = true;
+                index += 1;
+            }
+            "--json" if !json => {
+                json = true;
+                index += 1;
+            }
+            "--compactor" if compactor.is_none() => {
+                compactor = Some(
+                    arguments
+                        .get(index + 1)
+                        .ok_or_else(|| "missing value for --compactor".to_owned())?
+                        .as_str(),
+                );
+                index += 2;
+            }
+            "--reasoning" if reasoning.is_none() => {
+                reasoning = Some(
+                    arguments
+                        .get(index + 1)
+                        .ok_or_else(|| "missing value for --reasoning".to_owned())?
+                        .as_str(),
+                );
+                index += 2;
+            }
+            option => {
+                return Err(format!(
+                    "unsupported or repeated bundle inspect option: {option}"
+                ));
+            }
+        }
+    }
+    if file.is_some() == stdin {
+        return Err("inspect bundle requires exactly one of --file or --stdin".to_owned());
+    }
+    Ok(NeutralBundleInspectOptions {
+        file,
+        json,
+        compactor: CompactorConfig::new(compactor.unwrap_or("luna"), reasoning)?,
+    })
+}
+
+fn read_neutral_bundle_input(
+    options: &NeutralBundleInspectOptions,
+) -> Result<NeutralBundleInput, String> {
+    let (bytes, file) = if let Some(path) = &options.file {
+        let bytes = read_bounded_neutral_bundle_file(path)?;
+        let digest = format!("sha256:{:x}", Sha256::digest(&bytes));
+        (bytes, Some((path.clone(), digest)))
+    } else {
+        let mut bytes = Vec::new();
+        std::io::stdin()
+            .lock()
+            .take(MAX_NEUTRAL_BUNDLE_BYTES + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|error| format!("could not read neutral bundle stdin: {error}"))?;
+        if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > MAX_NEUTRAL_BUNDLE_BYTES {
+            return Err("neutral bundle stdin exceeds 16 MiB".to_owned());
+        }
+        (bytes, None)
+    };
+    let text =
+        std::str::from_utf8(&bytes).map_err(|_| "neutral bundle must be UTF-8 JSON".to_owned())?;
+    let bundle = NeutralSessionBundle::from_json(text).map_err(|error| error.to_string())?;
+    Ok(NeutralBundleInput { bundle, file })
+}
+
+fn read_bounded_neutral_bundle_file(path: &Path) -> Result<Vec<u8>, String> {
+    let metadata = fs::metadata(path)
+        .map_err(|error| format!("could not inspect neutral bundle file: {error}"))?;
+    if !metadata.is_file() || metadata.len() > MAX_NEUTRAL_BUNDLE_BYTES {
+        return Err("neutral bundle file must be a regular file no larger than 16 MiB".to_owned());
+    }
+    let mut bytes = Vec::new();
+    fs::File::open(path)
+        .map_err(|error| format!("could not open neutral bundle file: {error}"))?
+        .take(MAX_NEUTRAL_BUNDLE_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| format!("could not read neutral bundle file: {error}"))?;
+    if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > MAX_NEUTRAL_BUNDLE_BYTES {
+        return Err("neutral bundle file exceeds 16 MiB".to_owned());
+    }
+    Ok(bytes)
 }
 
 fn write_disclosure(compactor: CompactorConfig, chunks: usize) -> Result<(), String> {
@@ -419,10 +671,11 @@ fn inspect_output(
     imported_user_records: usize,
     source_digest: &str,
     json_output: bool,
+    provider: &str,
 ) -> CliOutput {
     let output = if json_output {
         sanitized_json(resolution, imported_user_records, source_digest)
-            .and_then(|document| insert_run_id(&document, run_id))
+            .and_then(|document| decorate_inspect_document(&document, run_id, provider))
             .unwrap_or_else(|_| {
                 "{\"schema_version\":1,\"status\":\"error\",\"error\":\"serialization_failed\"}"
                     .to_owned()
@@ -444,12 +697,17 @@ fn inspect_output(
     }
 }
 
-fn insert_run_id(document: &str, run_id: &str) -> Result<String, serde_json::Error> {
+fn decorate_inspect_document(
+    document: &str,
+    run_id: &str,
+    provider: &str,
+) -> Result<String, serde_json::Error> {
     let mut value: serde_json::Value = serde_json::from_str(document)?;
     let Some(object) = value.as_object_mut() else {
         return serde_json::to_string(&value);
     };
     object.insert("run_id".to_owned(), json!(run_id));
+    object.insert("provider".to_owned(), json!(provider));
     serde_json::to_string(&value)
 }
 

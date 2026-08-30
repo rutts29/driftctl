@@ -22,7 +22,16 @@ driftctl compare codex --last
 driftctl continue codex --last
 ```
 
-`inspect` reads the selected Codex session and source repository, then stores immutable history, projection, proposals, and private artifacts under `${XDG_STATE_HOME:-$HOME/.local/state}/driftctl`. It does not use a repository ledger for this flow. `bundle` exports a versioned, sanitized projection and blocker bundle that another harness wrapper can attach as context. The implemented native adapter is Codex CLI only.
+For another harness, export its approved local transcript into the strict schema-v1 neutral session bundle defined in [`SPEC.md`](SPEC.md), set `provider` to `bundle`, and run:
+
+```bash
+driftctl inspect bundle --file session.json --json
+# or: harness-export-command | driftctl inspect bundle --stdin --json
+```
+
+The bundle's repository digest must match the canonical current repository. File/stdin intake is capped at 16 MiB, validates every record/digest before model use, and keeps non-user roles non-authoritative. Re-reading the same bundle uses cached state without another model call. This release treats a changed bundle as a new snapshot and requires a new `session_ref`; it does not claim native control of the source harness.
+
+`inspect` reads the selected Codex session or neutral bundle and source repository, then stores immutable history, projection, proposals, and private artifacts under `${XDG_STATE_HOME:-$HOME/.local/state}/driftctl`. It does not use a repository ledger for this flow. `driftctl bundle --run` exports a separate sanitized projection/blocker handoff that another harness wrapper can attach as context. The implemented native process adapter is Codex CLI only.
 
 `compare` creates isolated, equal starting children and leaves adoption manual. `continue` creates one isolated child; ambiguous steering or native-goal changes require an explicit operator action, and no-TTY operation blocks rather than prompting. Existing `AGENTS.md`, `CLAUDE.md`, skills, hooks, permissions, and the user's harness configuration remain authoritative and unchanged.
 

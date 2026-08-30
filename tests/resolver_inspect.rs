@@ -1,11 +1,16 @@
 use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::fs;
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::{Command, Output, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
+
+use driftctl::intent_history::{SourceProvider, SourceRole};
+use driftctl::session_bundle::{BundleRecord, NativeGoal, NeutralSessionBundle};
 
 fn has_argument_pair(arguments: &Value, first: &str, second: &str) -> bool {
     arguments
@@ -372,6 +377,40 @@ impl Fixture {
         command.output().expect("run driftctl bundle")
     }
 
+    fn run_bundle_inspect(&self, path: &Path, options: &[&str]) -> Output {
+        let mut arguments = vec!["inspect", "bundle", "--file", path.to_str().unwrap()];
+        arguments.extend_from_slice(options);
+        let mut command = Command::new(driftctl_bin());
+        command.current_dir(&self.root).args(arguments);
+        for (name, value) in &self.environment {
+            command.env(name, value);
+        }
+        command.output().expect("run neutral bundle inspect")
+    }
+
+    fn run_bundle_inspect_stdin(&self, bytes: &[u8]) -> Output {
+        let mut command = Command::new(driftctl_bin());
+        command
+            .current_dir(&self.root)
+            .args(["inspect", "bundle", "--stdin", "--json"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        for (name, value) in &self.environment {
+            command.env(name, value);
+        }
+        let mut child = command.spawn().expect("spawn neutral bundle stdin inspect");
+        child
+            .stdin
+            .take()
+            .expect("bundle stdin")
+            .write_all(bytes)
+            .expect("write bundle stdin");
+        child
+            .wait_with_output()
+            .expect("wait for bundle stdin inspect")
+    }
+
     fn run_continue(&self, options: &[&str]) -> Output {
         let mut arguments = vec!["continue", "codex", "--session", &self.session_id];
         arguments.extend_from_slice(options);
@@ -591,6 +630,101 @@ fn inspect_persists_and_reuses_a_private_run_that_bundle_can_export() {
             "Driftctl state must not be group/world accessible"
         );
     }
+    fixture.assert_unchanged();
+}
+
+#[test]
+fn inspect_accepts_a_strict_neutral_bundle_without_a_native_harness_adapter() {
+    let fixture = Fixture::new(vec![base_proposal()]);
+    let canonical = fixture.root.canonicalize().expect("canonical source");
+    let repository_digest = format!(
+        "sha256:{:x}",
+        Sha256::digest(canonical.to_str().expect("UTF-8 source path").as_bytes())
+    );
+    let bundle = NeutralSessionBundle::from_records_with_native_goal(
+        SourceProvider::Bundle,
+        "synthetic-local-session",
+        repository_digest,
+        NativeGoal::Unknown,
+        vec![
+            BundleRecord::new("u1:0", SourceRole::User, "Ship a usable inspector")
+                .expect("goal record"),
+            BundleRecord::new("u2:0", SourceRole::User, "Emit JSON").expect("steering record"),
+            BundleRecord::new(
+                "a1:0",
+                SourceRole::Assistant,
+                "private assistant context is not intent authority",
+            )
+            .expect("assistant context record"),
+            BundleRecord::new("u3:0", SourceRole::User, "Emit YAML instead")
+                .expect("supersession record"),
+        ],
+    )
+    .expect("neutral bundle");
+    let path = fixture.state_home.with_file_name("neutral-session.json");
+    fs::write(&path, bundle.to_json().expect("bundle JSON")).expect("write neutral bundle");
+    let before = fs::read(&path).expect("bundle before");
+
+    let inspected = fixture.run_bundle_inspect(&path, &["--json"]);
+    assert_eq!(inspected.status.code(), Some(0), "{inspected:?}");
+    let document: Value = serde_json::from_slice(&inspected.stdout).expect("bundle inspect JSON");
+    assert_eq!(document["status"], "usable");
+    assert_eq!(document["provider"], "bundle");
+    assert_eq!(document["source"]["imported_user_records"], 3);
+    assert_eq!(
+        document["projection"]["goal"]["text"],
+        "Ship a usable inspector"
+    );
+    assert_eq!(document["projection"]["frontier"][0]["text"], "Emit YAML");
+    assert!(
+        !document
+            .to_string()
+            .contains("private assistant context is not intent authority")
+    );
+    assert_eq!(fs::read(&path).expect("bundle after"), before);
+
+    let cached = fixture.run_bundle_inspect(&path, &["--json"]);
+    assert_eq!(cached.status.code(), Some(0), "{cached:?}");
+    assert_eq!(
+        fixture.calls().len(),
+        1,
+        "cached intake must not rerun the model"
+    );
+    let piped = fixture.run_bundle_inspect_stdin(&before);
+    assert_eq!(piped.status.code(), Some(0), "{piped:?}");
+    assert_eq!(
+        fixture.calls().len(),
+        1,
+        "stdin cached intake reran the model"
+    );
+
+    let mut wrong_repository: Value =
+        serde_json::from_slice(&before).expect("mutable neutral bundle JSON");
+    wrong_repository["source"]["repository_digest"] = json!(format!("sha256:{}", "0".repeat(64)));
+    fs::write(&path, wrong_repository.to_string()).expect("write wrong-repository bundle");
+    let rejected = fixture.run_bundle_inspect(&path, &["--json"]);
+    assert_eq!(rejected.status.code(), Some(1), "{rejected:?}");
+    assert!(
+        String::from_utf8_lossy(&rejected.stderr).contains("different repository"),
+        "{rejected:?}"
+    );
+    assert_eq!(fixture.calls().len(), 1, "rejection must precede model use");
+
+    let mut future_schema: Value =
+        serde_json::from_slice(&before).expect("future-schema neutral bundle JSON");
+    future_schema["schema_version"] = json!(2);
+    fs::write(&path, future_schema.to_string()).expect("write future-schema bundle");
+    let future = fixture.run_bundle_inspect(&path, &["--json"]);
+    assert_eq!(future.status.code(), Some(1), "{future:?}");
+    assert!(
+        String::from_utf8_lossy(&future.stderr).contains("unsupported neutral session bundle"),
+        "{future:?}"
+    );
+    assert_eq!(
+        fixture.calls().len(),
+        1,
+        "schema rejection precedes model use"
+    );
     fixture.assert_unchanged();
 }
 
