@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import ExitStack
 import hashlib
 import json
 import os
@@ -102,10 +103,20 @@ class AppServer:
     def notify(self, method: str, params: Mapping[str, Any]) -> None:
         self._write({"method": method, "params": params})
 
-    def planning_turn(self, thread_id: str, text: str, phase: str) -> str:
+    def planning_turn(
+        self,
+        thread_id: str,
+        text: str,
+        phase: str,
+        worker_policy: Mapping[str, str],
+    ) -> str:
         result = self.request(
             "turn/start",
-            {"threadId": thread_id, "input": [{"type": "text", "text": text}]},
+            {
+                "collaborationMode": collaboration_mode("plan", worker_policy),
+                "input": [{"type": "text", "text": text}],
+                "threadId": thread_id,
+            },
         )
         turn = result.get("turn")
         if not isinstance(turn, Mapping):
@@ -215,14 +226,23 @@ def run_case(
         raise RunnerError(f"case workspace does not exist: {source_workspace}")
     results_directory = results_directory.resolve()
     results_directory.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(
-        prefix=f"driftctl-native-{definition.case_id}-"
-    ) as temporary:
-        root = Path(temporary)
+    with ExitStack() as resources:
+        if artifact_directory is None:
+            temporary = resources.enter_context(
+                tempfile.TemporaryDirectory(
+                    prefix=f"driftctl-native-{definition.case_id}-"
+                )
+            )
+            root = Path(temporary)
+            private_artifact_root = None
+        else:
+            root = create_private_run_directory(artifact_directory, definition.case_id)
+            private_artifact_root = root / "artifacts"
         workspace = root / "source-workspace"
         shutil.copytree(source_workspace, workspace, symlinks=True)
         initialize_git_repository(workspace)
         state_directory = root / "state"
+        state_directory.mkdir(mode=0o700)
         environment = os.environ | {
             "DRIFTCTL_CODEX_BIN": codex_bin,
             "XDG_STATE_HOME": str(state_directory),
@@ -236,8 +256,10 @@ def run_case(
         comparison = invoke_compare(driftctl_bin, workspace, session_id, environment)
         require_evaluation_fingerprint(case_directory, fingerprint)
         private_artifact = retain_private_artifact(
-            artifact_directory, definition.case_id, session_id, comparison
+            private_artifact_root, definition.case_id, session_id, comparison
         )
+        if private_artifact is not None:
+            private_artifact = f"{root.name}/artifacts/{private_artifact}"
         arms = {mode: comparison.get(mode) for mode in ("baseline", "workflow")}
         if any(not isinstance(arm, Mapping) for arm in arms.values()):
             raise RunnerError("native comparison has an incomplete arm")
@@ -302,11 +324,24 @@ def seed_native_session(
                 "App Server thread/start response has no persisted thread ID"
             )
         initial = server.planning_turn(
-            thread_id, planning_prompt(definition, False), "initial"
+            thread_id,
+            planning_prompt(definition, False),
+            "initial",
+            worker_policy,
         )
         injection = inject_non_authoritative_context(server, thread_id, context_bytes)
         steering = server.planning_turn(
-            thread_id, planning_prompt(definition, True), "steering"
+            thread_id,
+            planning_prompt(definition, True),
+            "steering",
+            worker_policy,
+        )
+        server.request(
+            "thread/settings/update",
+            {
+                "collaborationMode": collaboration_mode("default", worker_policy),
+                "threadId": thread_id,
+            },
         )
         return thread_id, [initial, steering], injection
     finally:
@@ -321,12 +356,18 @@ def planning_prompt(definition: CaseDefinition, late: bool) -> str:
         else f"{definition.goal}\n\nKnown requirements:\n"
         + "\n".join(f"- {item}" for item in definition.initial_requirements)
     )
-    phase = (
-        "late user steering in the same session"
-        if late
-        else "initial planning checkpoint"
-    )
-    return f"This is the {phase}. Do not edit files or run commands. Reply only with a concise revised plan.\n\n{heading}:\n{body}"
+    return f"{heading}:\n{body}"
+
+
+def collaboration_mode(mode: str, worker_policy: Mapping[str, str]) -> dict[str, Any]:
+    return {
+        "mode": mode,
+        "settings": {
+            "developer_instructions": None,
+            "model": worker_policy["model"],
+            "reasoning_effort": worker_policy["effort"],
+        },
+    }
 
 
 def inject_non_authoritative_context(
@@ -522,6 +563,22 @@ def git_clean(workspace: Path) -> bool:
     if completed.returncode != 0:
         raise RunnerError("could not inspect planning-only source workspace")
     return not completed.stdout.strip()
+
+
+def create_private_run_directory(directory: Path, case_id: str) -> Path:
+    directory = directory.absolute()
+    try:
+        if directory.is_symlink():
+            raise RunnerError("private artifact directory must not be a symlink")
+        directory.mkdir(parents=True, mode=0o700, exist_ok=True)
+        if not directory.is_dir():
+            raise RunnerError("private artifact path is not a directory")
+        directory.chmod(0o700)
+        run = Path(tempfile.mkdtemp(prefix=f"{case_id}-native-run-", dir=directory))
+        run.chmod(0o700)
+        return run
+    except OSError as error:
+        raise RunnerError(f"could not create private run directory: {error}") from error
 
 
 def retain_private_artifact(
