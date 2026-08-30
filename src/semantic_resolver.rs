@@ -1718,13 +1718,39 @@ impl TemporaryCallFiles {
             .as_nanos();
         let directory =
             env::temp_dir().join(format!("driftctl-compactor-{}-{nonce}", std::process::id()));
-        fs::create_dir(&directory).map_err(|_| ())?;
-        Ok(Self {
+        create_private_directory(&directory)?;
+        let files = Self {
             schema: directory.join("projection-proposal.schema.json"),
             final_message: directory.join("projection-proposal.json"),
             directory,
-        })
+        };
+        create_private_empty_file(&files.schema)?;
+        create_private_empty_file(&files.final_message)?;
+        Ok(files)
     }
+}
+
+fn create_private_directory(path: &Path) -> Result<(), ()> {
+    let mut builder = fs::DirBuilder::new();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        builder.mode(0o700);
+    }
+    builder.create(path).map_err(|_| ())?;
+    set_private_directory_permissions(path)
+}
+
+fn create_private_empty_file(path: &Path) -> Result<(), ()> {
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    options.open(path).map_err(|_| ())?;
+    set_private_file_permissions(path)
 }
 
 impl Drop for TemporaryCallFiles {
@@ -2343,6 +2369,29 @@ fn source_record_ids(sources: &[SourceRef]) -> Vec<&str> {
 mod incremental_tests {
     use super::*;
     use crate::intent_history::{EvidenceRef, IntentLifecycle, SourceProvider, SourceRole};
+
+    #[cfg(unix)]
+    #[test]
+    fn temporary_compactor_directory_and_files_are_private_at_creation() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let files = TemporaryCallFiles::create().expect("create temporary compactor files");
+
+        assert_eq!(
+            fs::symlink_metadata(&files.directory)
+                .expect("temporary directory metadata")
+                .permissions()
+                .mode()
+                & 0o077,
+            0
+        );
+        for path in [&files.schema, &files.final_message] {
+            let metadata = fs::symlink_metadata(path).expect("temporary file metadata");
+            assert!(metadata.is_file());
+            assert!(!metadata.file_type().is_symlink());
+            assert_eq!(metadata.permissions().mode() & 0o077, 0);
+        }
+    }
 
     #[test]
     fn incremental_output_schema_requires_every_declared_root_property() {
