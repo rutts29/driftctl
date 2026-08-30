@@ -391,6 +391,24 @@ impl Fixture {
         command.output().expect("run driftctl compare")
     }
 
+    fn run_bound_verify(&self, run_id: &str, requirement: &str, verifier: &str) -> Output {
+        let mut command = Command::new(driftctl_bin());
+        command.current_dir(&self.root).args([
+            "verify",
+            "--run",
+            run_id,
+            "--requirement",
+            requirement,
+            "--json",
+            "--",
+            verifier,
+        ]);
+        for (name, value) in &self.environment {
+            command.env(name, value);
+        }
+        command.output().expect("run bound driftctl verifier")
+    }
+
     fn calls(&self) -> Vec<Value> {
         fs::read_to_string(&self.capture)
             .expect("read exec capture")
@@ -694,6 +712,93 @@ fn compare_runs_equal_isolated_children_with_only_the_projection_added() {
             && request["params"]["approvalPolicy"] == "never"
     }));
     assert_eq!(fixture.calls().len(), 1);
+    fixture.assert_unchanged();
+}
+
+#[test]
+fn run_bound_verification_attaches_evidence_and_candidate_change_reopens_it() {
+    let fixture = Fixture::new(vec![base_proposal()]);
+    let inspected = fixture.run(&["--json"]);
+    assert_eq!(inspected.status.code(), Some(0), "{inspected:?}");
+    let inspected_document: Value =
+        serde_json::from_slice(&inspected.stdout).expect("inspect JSON");
+    let run_id = inspected_document["run_id"].as_str().expect("run ID");
+    let requirement_id = inspected_document["projection"]["frontier"][0]["id"]
+        .as_str()
+        .expect("active requirement ID");
+
+    let continued = fixture.run_continue(&["--json"]);
+    assert_eq!(continued.status.code(), Some(0), "{continued:?}");
+    let continued_document: Value =
+        serde_json::from_slice(&continued.stdout).expect("continue JSON");
+    let candidate = PathBuf::from(
+        continued_document["child_cwd"]
+            .as_str()
+            .expect("bound candidate path"),
+    );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        assert_eq!(
+            fs::metadata(fixture.state_file("candidate.json"))
+                .expect("candidate binding metadata")
+                .permissions()
+                .mode()
+                & 0o077,
+            0
+        );
+    }
+
+    let passed = fixture.run_bound_verify(run_id, requirement_id, "/bin/true");
+    assert_eq!(passed.status.code(), Some(0), "{passed:?}");
+    let passed_document: Value =
+        serde_json::from_slice(&passed.stdout).expect("bound verification JSON");
+    assert_eq!(passed_document["run_id"], run_id);
+    assert_eq!(passed_document["status"], "passed");
+    assert_eq!(passed_document["evidence_attached"], true);
+    assert_eq!(passed_document["requirement_evidence_complete"], true);
+
+    let satisfied = fixture.run(&["--json"]);
+    assert_eq!(satisfied.status.code(), Some(0), "{satisfied:?}");
+    let satisfied_document: Value =
+        serde_json::from_slice(&satisfied.stdout).expect("satisfied inspect JSON");
+    assert!(
+        satisfied_document["projection"]["frontier"]
+            .as_array()
+            .expect("frontier")
+            .is_empty()
+    );
+    assert_eq!(
+        satisfied_document["projection"]["preserve"][0]["evidence_state"],
+        "satisfied"
+    );
+
+    fs::write(
+        candidate.join("README.md"),
+        "candidate changed after evidence\n",
+    )
+    .expect("mutate only the isolated candidate");
+    let failed = fixture.run_bound_verify(run_id, requirement_id, "/bin/false");
+    assert_eq!(failed.status.code(), Some(2), "{failed:?}");
+    let failed_document: Value =
+        serde_json::from_slice(&failed.stdout).expect("failed bound verification JSON");
+    assert_eq!(failed_document["status"], "failed");
+    assert_eq!(failed_document["evidence_attached"], false);
+    assert_eq!(failed_document["invalidated_evidence_count"], 1);
+    assert_eq!(failed_document["requirement_evidence_complete"], false);
+
+    let reopened = fixture.run(&["--json"]);
+    assert_eq!(reopened.status.code(), Some(0), "{reopened:?}");
+    let reopened_document: Value =
+        serde_json::from_slice(&reopened.stdout).expect("reopened inspect JSON");
+    assert_eq!(
+        reopened_document["projection"]["frontier"][0]["id"],
+        requirement_id
+    );
+    assert_eq!(
+        reopened_document["projection"]["frontier"][0]["evidence_state"],
+        "reopened"
+    );
     fixture.assert_unchanged();
 }
 

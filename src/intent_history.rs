@@ -659,6 +659,15 @@ impl History {
     }
 
     #[must_use]
+    pub fn evidence_is_valid(&self, id: &EvidenceId) -> bool {
+        self.state
+            .intents
+            .values()
+            .any(|item| item.evidence.iter().any(|evidence| &evidence.id == id))
+            && !self.state.evidence_invalidated.contains(id)
+    }
+
+    #[must_use]
     pub fn open_conflicts(&self) -> BTreeMap<ConflictId, Conflict> {
         self.state
             .conflicts

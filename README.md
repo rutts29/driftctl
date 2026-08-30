@@ -35,16 +35,16 @@ driftctl continue codex --last \
 
 The decision is recorded in private local state and only the selected alternative enters the child prompt. Invalid IDs and unattended ambiguity create no child.
 
-A completed child is not verified completion. `continue --json` returns its `child_cwd`, changed paths, current evidence, and blockers. Run requirement-specific checks against that candidate before manually adopting it:
+A completed child is not verified completion. `continue --json` returns its `run_id`, `child_cwd`, changed paths, current evidence, and blockers. Attach requirement-specific checks to that exact continued child before manually adopting it:
 
 ```bash
 driftctl verify \
-  --candidate <child_cwd> \
+  --run <run-id> \
   --requirement <requirement-id> \
   --json -- <verification-command> [args...]
 ```
 
-`verify` records command, verifier, candidate, stdout, and stderr digests while retaining raw output only in private local artifacts.
+`verify --run` records command, verifier, candidate, stdout, and stderr digests while retaining raw output only in private local artifacts. Passing evidence is appended to that requirement's durable history. If the candidate changes, a later bound check invalidates prior candidate-bound evidence and reopens the requirement. `--candidate <path>` remains available for a standalone check but does not update a run. Requirement evidence alone is not the full regression, integration, scope, goal-alignment, and review closure gate.
 
 Driftctl has no service and no telemetry. Provider calls use the user's existing Codex authentication and usage allowance. Source session, source worktree, and parent native goal are read-only; candidate edits occur in an isolated workspace. Isolation is workspace-only: inherited host-wide or YOLO permissions remain outside Driftctl's containment guarantee.
 

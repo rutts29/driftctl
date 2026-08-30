@@ -199,7 +199,7 @@ fn verifier_digest(candidate: &Path, command: &[OsString]) -> Result<String, Ver
     Ok(format!("sha256:{:x}", hasher.finalize()))
 }
 
-fn candidate_digest(candidate: &Path) -> Result<String, VerificationError> {
+pub(crate) fn candidate_digest(candidate: &Path) -> Result<String, VerificationError> {
     let output = Command::new("git")
         .current_dir(candidate)
         .args([

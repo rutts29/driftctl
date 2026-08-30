@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::fs;
 use std::io::{IsTerminal as _, Write as _};
 use std::path::{Path, PathBuf};
@@ -11,8 +12,8 @@ use crate::codex_source::{self, SessionSelection};
 use crate::goal_change_store::{GoalChangeStore, PendingGoalChange};
 use crate::inspect_state::InspectSource;
 use crate::intent_history::{
-    Approval, ConflictId, ConflictResolution, Event, GoalRevision, SourceProvider, SourceRef,
-    SourceRole,
+    Approval, ConflictId, ConflictResolution, Event, EvidenceId, EvidenceRef, GoalRevision,
+    IntentId, SourceProvider, SourceRef, SourceRole,
 };
 use crate::projection::{ActiveProjection, ProjectionConfig};
 use crate::run_store::{RunStore, SourceCursorComparison};
@@ -36,7 +37,7 @@ Usage:\n\
   driftctl bundle --run <run-id> --json\n\
   driftctl compare codex (--last | --session <id>) [--json]\n\
   driftctl continue codex (--last | --session <id>) [--resolve-conflict <conflict-id> <alternative-id> | --approve-goal | --edit-goal <text> | --retain-goal | --cancel] [--json]\n\
-  driftctl verify --candidate <path> --requirement <id> [--json] -- <program> [args...]\n\
+  driftctl verify (--run <run-id> | --candidate <path>) --requirement <id> [--json] -- <program> [args...]\n\
   driftctl run codex\n\
   driftctl close";
 
@@ -96,7 +97,7 @@ pub fn execute(root: &Path, arguments: impl IntoIterator<Item = String>) -> CliO
         "bundle" => return bundle(root, &arguments),
         "compare" => return compare_codex(root, &arguments),
         "continue" => return continue_codex(root, &arguments),
-        "verify" => return verify_requirement(&arguments),
+        "verify" => return verify_requirement(root, &arguments),
         "run" => run(root, &arguments),
         "close" => return close(root, &arguments),
         _ => Err(format!("unknown command: {command}\n\n{USAGE}")),
@@ -493,7 +494,7 @@ fn bundle(root: &Path, arguments: &[String]) -> CliOutput {
     }
 }
 
-fn verify_requirement(arguments: &[String]) -> CliOutput {
+fn verify_requirement(root: &Path, arguments: &[String]) -> CliOutput {
     let separator = match arguments.iter().position(|argument| argument == "--") {
         Some(index) => index,
         None => return CliOutput::error("verify requires -- before the verifier command"),
@@ -504,6 +505,7 @@ fn verify_requirement(arguments: &[String]) -> CliOutput {
         return CliOutput::error("verify requires a verifier command after --");
     }
     let mut candidate = None;
+    let mut run_id = None;
     let mut requirement = None;
     let mut json_output = false;
     let mut index = 0;
@@ -512,6 +514,10 @@ fn verify_requirement(arguments: &[String]) -> CliOutput {
             "--candidate" if candidate.is_none() => {
                 index += 1;
                 candidate = options.get(index).cloned();
+            }
+            "--run" if run_id.is_none() => {
+                index += 1;
+                run_id = options.get(index).cloned();
             }
             "--requirement" if requirement.is_none() => {
                 index += 1;
@@ -522,25 +528,53 @@ fn verify_requirement(arguments: &[String]) -> CliOutput {
         }
         index += 1;
     }
-    let Some(candidate) = candidate else {
-        return CliOutput::error("verify requires --candidate <path>");
-    };
     let Some(requirement) = requirement else {
         return CliOutput::error("verify requires exactly one --requirement <id>");
     };
-    let state_root = match RunStore::default_state_root() {
-        Ok(root) => root,
-        Err(error) => return CliOutput::error(error.to_string()),
-    };
-    if let Err(error) = crate::run_store::ensure_private_directory(&state_root) {
-        return CliOutput::error(error.to_string());
+    if candidate.is_some() == run_id.is_some() {
+        return CliOutput::error("verify requires exactly one of --run or --candidate");
     }
-    let artifact_root = state_root.join("verification-artifacts");
+    let mut bound_store = None;
+    let (candidate, artifact_root) = if let Some(run_id) = run_id.as_ref() {
+        let store = match RunStore::open_default(root, run_id) {
+            Ok(store) => store,
+            Err(error) => return CliOutput::error(error.to_string()),
+        };
+        let recovered = match store.recover() {
+            Ok(recovered) => recovered,
+            Err(error) => return CliOutput::error(error.to_string()),
+        };
+        let Some(item) = recovered.history.intent(&requirement) else {
+            return CliOutput::error("run has no requirement with the selected ID");
+        };
+        if !item.is_active() {
+            return CliOutput::error("only an active run requirement can receive evidence");
+        }
+        let binding = match store.candidate_binding() {
+            Ok(Some(binding)) => binding,
+            Ok(None) => return CliOutput::error("run has no completed continued candidate"),
+            Err(error) => return CliOutput::error(error.to_string()),
+        };
+        let candidate = binding.candidate_path_private().to_path_buf();
+        let artifact_root = store.path().join("verification-artifacts");
+        bound_store = Some((run_id.clone(), store, binding));
+        (candidate, artifact_root)
+    } else {
+        let candidate = PathBuf::from(candidate.expect("exactly one candidate source"));
+        let state_root = match RunStore::default_state_root() {
+            Ok(root) => root,
+            Err(error) => return CliOutput::error(error.to_string()),
+        };
+        if let Err(error) = crate::run_store::ensure_private_directory(&state_root) {
+            return CliOutput::error(error.to_string());
+        }
+        (candidate, state_root.join("verification-artifacts"))
+    };
     let request = match crate::verification::VerificationRequest::new(
-        candidate,
-        requirement,
+        &candidate,
+        &requirement,
         command.iter().map(std::ffi::OsString::from),
-        artifact_root,
+        &artifact_root,
     ) {
         Ok(request) => request,
         Err(error) => return CliOutput::error(error.to_string()),
@@ -549,9 +583,38 @@ fn verify_requirement(arguments: &[String]) -> CliOutput {
         Ok(result) => result,
         Err(error) => return CliOutput::error(error.to_string()),
     };
+    let bound_update = match bound_store.as_ref() {
+        Some((_run_id, store, binding)) => {
+            match apply_bound_verification(store, binding, &requirement, &result) {
+                Ok(update) => Some(update),
+                Err(error) => return CliOutput::error(error),
+            }
+        }
+        None => None,
+    };
     let exit_code = if result.passed() { 0 } else { 2 };
     let stdout = if json_output {
-        match serde_json::to_string(&result) {
+        let mut document = match serde_json::to_value(&result) {
+            Ok(Value::Object(document)) => document,
+            _ => return CliOutput::error("could not serialize verification result"),
+        };
+        if let (Some((run_id, _, _)), Some(update)) = (&bound_store, &bound_update) {
+            document.insert("run_id".to_owned(), json!(run_id));
+            document.insert(
+                "evidence_attached".to_owned(),
+                json!(update.evidence_attached),
+            );
+            document.insert(
+                "invalidated_evidence_count".to_owned(),
+                json!(update.invalidated_evidence_count),
+            );
+            document.insert(
+                "requirement_evidence_complete".to_owned(),
+                json!(update.projection.closure.can_close()),
+            );
+            document.insert("closure".to_owned(), json!(update.projection.closure));
+        }
+        match serde_json::to_string(&document) {
             Ok(output) => output,
             Err(_) => return CliOutput::error("could not serialize verification result"),
         }
@@ -566,6 +629,129 @@ fn verify_requirement(arguments: &[String]) -> CliOutput {
         stdout,
         stderr: String::new(),
     }
+}
+
+struct BoundVerificationUpdate {
+    projection: ActiveProjection,
+    evidence_attached: bool,
+    invalidated_evidence_count: usize,
+}
+
+fn apply_bound_verification(
+    store: &RunStore,
+    binding: &crate::run_store::CandidateBinding,
+    requirement_id: &str,
+    result: &crate::verification::VerificationResult,
+) -> Result<BoundVerificationUpdate, String> {
+    let recovered = store.recover().map_err(|error| error.to_string())?;
+    let selected = recovered
+        .history
+        .intent(requirement_id)
+        .ok_or_else(|| "run has no requirement with the selected ID".to_owned())?;
+    if !selected.is_active() {
+        return Err("only an active run requirement can receive evidence".to_owned());
+    }
+    let selected_id = selected.id.clone();
+    let candidate_changed_during_check =
+        result.candidate_before_digest != result.candidate_after_digest;
+    let mut invalidations = Vec::new();
+    let mut seen = BTreeSet::new();
+    for item in recovered.history.intents().values() {
+        for evidence in &item.evidence {
+            if !recovered.history.evidence_is_valid(&evidence.id) {
+                continue;
+            }
+            let bound_digest = evidence.source_refs.iter().find_map(|source| {
+                (matches!(source.role, SourceRole::Tool)
+                    && source.record == evidence.id.as_str()
+                    && source.record.starts_with("verification-"))
+                .then_some(source.content_digest.as_str())
+            });
+            let Some(bound_digest) = bound_digest else {
+                continue;
+            };
+            let stale_before_check = bound_digest != result.candidate_before_digest;
+            let failed_selected_check = item.id == selected_id && !result.passed();
+            if (stale_before_check || candidate_changed_during_check || failed_selected_check)
+                && seen.insert(evidence.id.clone())
+            {
+                let reason = if candidate_changed_during_check {
+                    "verification command changed the candidate"
+                } else if stale_before_check {
+                    "candidate changed since this evidence was recorded"
+                } else {
+                    "latest requirement verifier did not pass"
+                };
+                invalidations.push((item.id.clone(), evidence.id.clone(), reason.to_owned()));
+            }
+        }
+    }
+
+    let candidate_session = binding
+        .candidate_path_private()
+        .to_string_lossy()
+        .into_owned();
+    let observation = SourceRef::new(
+        SourceProvider::Codex,
+        candidate_session.clone(),
+        result.artifact_id.clone(),
+        SourceRole::Tool,
+        result.candidate_after_digest.clone(),
+    );
+    let mut history = recovered.history;
+    for (intent_id, evidence_id, reason) in &invalidations {
+        let record = history
+            .append(Event::EvidenceInvalidated {
+                intent_id: intent_id.clone(),
+                evidence_id: evidence_id.clone(),
+                source_refs: vec![observation.clone()],
+                reason: reason.clone(),
+            })
+            .map_err(|error| error.to_string())?;
+        store
+            .append_pending(record)
+            .map_err(|error| error.to_string())?;
+    }
+
+    let evidence_attached = result.passed();
+    if evidence_attached {
+        let evidence_id = EvidenceId::new(&result.artifact_id);
+        let source = SourceRef::new(
+            SourceProvider::Codex,
+            candidate_session,
+            evidence_id.as_str(),
+            SourceRole::Tool,
+            result.candidate_after_digest.clone(),
+        );
+        let record = history
+            .append(Event::EvidenceAttached {
+                intent_id: IntentId::new(requirement_id),
+                evidence: EvidenceRef::new(
+                    evidence_id,
+                    "external command passed without changing the candidate",
+                    vec![source],
+                ),
+            })
+            .map_err(|error| error.to_string())?;
+        store
+            .append_pending(record)
+            .map_err(|error| error.to_string())?;
+    }
+
+    let mut projection = ActiveProjection::from_history(
+        &history,
+        ProjectionConfig::new(recovered.projection.overflow.budget),
+    )
+    .map_err(|error| error.to_string())?;
+    projection.generated_by = recovered.projection.generated_by;
+    store
+        .commit_projection(&projection)
+        .map_err(|error| error.to_string())?;
+    Ok(BoundVerificationUpdate {
+        projection,
+        evidence_attached,
+        invalidated_evidence_count: invalidations.len(),
+    })
 }
 
 fn compare_codex(root: &Path, arguments: &[String]) -> CliOutput {
@@ -989,6 +1175,11 @@ fn continue_codex(root: &Path, arguments: &[String]) -> CliOutput {
         Ok(diff) => diff,
         Err(error) => return CliOutput::error(error.to_string()),
     };
+    if continuation_completed
+        && let Err(error) = store.bind_candidate(migration.child_id(), migration.child_cwd())
+    {
+        return CliOutput::error(error.to_string());
+    }
     let mut blockers = Vec::new();
     if !continuation_completed {
         blockers.push(json!({
@@ -998,7 +1189,7 @@ fn continue_codex(root: &Path, arguments: &[String]) -> CliOutput {
     }
     blockers.push(json!({
         "kind":"external_verification_required",
-        "reason":"no requirement-specific external verifier has run; use driftctl verify before manual adoption",
+        "reason":format!("no requirement-specific external verifier has run; use driftctl verify --run {run_id} --requirement <id> before manual adoption"),
     }));
     let output = json!({
         "schema_version":1,
@@ -1040,7 +1231,7 @@ fn continue_codex(root: &Path, arguments: &[String]) -> CliOutput {
             candidate_diff.changed_paths().join(", ")
         };
         CliOutput::success(format!(
-            "started child {} in {}\nchanged paths: {changed_paths}\nevidence: none; external verification required before manual adoption\nparent and source unchanged; adoption remains manual\n{}",
+            "started child {} in {}\nchanged paths: {changed_paths}\nevidence: none; run `driftctl verify --run {run_id} --requirement <id> -- <command>` before manual adoption\nparent and source unchanged; adoption remains manual\n{}",
             migration.child_id(),
             migration.child_cwd().display(),
             CONTAINMENT_NOTICE,
