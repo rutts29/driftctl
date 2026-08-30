@@ -10,6 +10,8 @@ use std::fmt;
 use std::io::{BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use std::thread;
+use std::time::Duration;
 
 use serde_json::{Value, json};
 
@@ -354,15 +356,9 @@ struct AppServer {
 
 impl AppServer {
     fn start(program: &OsString) -> Result<Self, ChildAdapterError> {
-        let mut child = Command::new(program)
-            .args(["app-server", "--stdio"])
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            .map_err(|error| {
-                ChildAdapterError::protocol(format!("could not launch Codex App Server: {error}"))
-            })?;
+        let mut child = spawn_app_server(program).map_err(|error| {
+            ChildAdapterError::protocol(format!("could not launch Codex App Server: {error}"))
+        })?;
         let stdin = child
             .stdin
             .take()
@@ -385,7 +381,7 @@ impl AppServer {
             "initialize",
             json!({
                 "clientInfo": {"name":"driftctl", "title":null, "version":env!("CARGO_PKG_VERSION")},
-                "capabilities": {"experimentalApi":false, "requestAttestation":false},
+                "capabilities": {"experimentalApi":true, "requestAttestation":false},
             }),
         )?;
         self.notify("initialized", json!({}))
@@ -713,6 +709,25 @@ impl AppServer {
         let _ = self.child.kill();
         let _ = self.child.wait();
     }
+}
+
+fn spawn_app_server(program: &OsString) -> std::io::Result<Child> {
+    const MAX_ATTEMPTS: usize = 3;
+    for attempt in 1..=MAX_ATTEMPTS {
+        let result = Command::new(program)
+            .args(["app-server", "--stdio"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn();
+        match result {
+            Err(error) if attempt < MAX_ATTEMPTS && error.raw_os_error() == Some(26) => {
+                thread::sleep(Duration::from_millis(10));
+            }
+            result => return result,
+        }
+    }
+    unreachable!("bounded App Server launch loop always returns")
 }
 
 impl Drop for AppServer {
