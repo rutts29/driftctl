@@ -3,10 +3,15 @@
 mod agent;
 pub mod cli;
 pub mod codex_child;
+mod codex_hook;
+mod codex_integration;
 mod codex_source;
+mod enrollment;
 mod goal_change_store;
+mod hook_event_store;
 mod inspect_state;
 pub mod intent_history;
+mod keeper;
 mod ledger;
 pub mod projection;
 pub mod run_store;

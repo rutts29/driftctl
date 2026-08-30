@@ -24,6 +24,22 @@ pub enum GoalObservation {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ExactGoalTransition {
+    previous: GoalObservation,
+    current: GoalObservation,
+}
+
+impl ExactGoalTransition {
+    pub fn previous(&self) -> &GoalObservation {
+        &self.previous
+    }
+
+    pub fn current(&self) -> &GoalObservation {
+        &self.current
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ManualGoalState {
     Absent,
     Known(String),
@@ -485,6 +501,94 @@ impl CodexChildAdapter {
         server.stop();
         result
     }
+
+    /// Replace the native goal on one exact persisted session. A matching goal
+    /// is read back without mutation. A required transition performs get,
+    /// clear, set, and exact read-back. If any step after observation fails,
+    /// Driftctl attempts to restore the observed goal before returning an error.
+    pub fn replace_exact_goal(
+        &self,
+        thread_id: &str,
+        objective: &str,
+    ) -> Result<ExactGoalTransition, ChildAdapterError> {
+        let thread_id = validate_identifier(thread_id.to_owned(), "thread ID")?;
+        let objective = validate_objective(objective.to_owned())?;
+        let policy = WorkerPolicy::luna_max();
+        let mut server = AppServer::start(&self.program, &policy)?;
+        let result = (|| {
+            server.initialize()?;
+            let previous = server.get_goal(&thread_id)?;
+            let desired = GoalObservation::Known(objective.clone());
+            if previous == desired {
+                let current = server.get_goal(&thread_id)?;
+                if current != desired {
+                    return Err(ChildAdapterError::protocol(
+                        "same-session native goal changed during matching read-back",
+                    ));
+                }
+                return Ok(ExactGoalTransition { previous, current });
+            }
+            let transition = (|| {
+                server.clear_goal_observed(&thread_id, &previous)?;
+                server.set_goal(&thread_id, &objective)?;
+                let current = server.get_goal(&thread_id)?;
+                if current != desired {
+                    return Err(ChildAdapterError::protocol(
+                        "same-session native goal read-back did not match the approved goal",
+                    ));
+                }
+                Ok(ExactGoalTransition {
+                    previous: previous.clone(),
+                    current,
+                })
+            })();
+            match transition {
+                Ok(transition) => Ok(transition),
+                Err(failure) => match server.restore_goal(&thread_id, &previous) {
+                    Ok(()) => Err(ChildAdapterError::protocol(format!(
+                        "same-session native goal transition failed and the prior goal was restored: {failure}"
+                    ))),
+                    Err(rollback) => Err(ChildAdapterError::protocol(format!(
+                        "same-session native goal transition failed and rollback could not be verified: {failure}; {rollback}"
+                    ))),
+                },
+            }
+        })();
+        server.stop();
+        result
+    }
+
+    /// Restore a prior goal only if the current native goal still exactly
+    /// matches the state produced by this caller. A concurrent change is never
+    /// overwritten.
+    pub fn restore_exact_goal(
+        &self,
+        thread_id: &str,
+        expected_current: &GoalObservation,
+        restore: &GoalObservation,
+    ) -> Result<(), ChildAdapterError> {
+        let thread_id = validate_identifier(thread_id.to_owned(), "thread ID")?;
+        if let GoalObservation::Known(goal) = expected_current {
+            validate_objective(goal.clone())?;
+        }
+        if let GoalObservation::Known(goal) = restore {
+            validate_objective(goal.clone())?;
+        }
+        let policy = WorkerPolicy::luna_max();
+        let mut server = AppServer::start(&self.program, &policy)?;
+        let result = (|| {
+            server.initialize()?;
+            let observed = server.get_goal(&thread_id)?;
+            if &observed != expected_current {
+                return Err(ChildAdapterError::protocol(
+                    "native goal changed after Driftctl read-back; rollback was refused",
+                ));
+            }
+            server.restore_goal(&thread_id, restore)
+        })();
+        server.stop();
+        result
+    }
 }
 
 fn manual_goal_handoff_error(
@@ -704,6 +808,48 @@ impl AppServer {
         if response.get("cleared").and_then(Value::as_bool) != Some(true) {
             return Err(ChildAdapterError::protocol(
                 "thread/goal/clear did not confirm a complete child goal clear",
+            ));
+        }
+        Ok(())
+    }
+
+    fn clear_goal_observed(
+        &mut self,
+        thread_id: &str,
+        observed: &GoalObservation,
+    ) -> Result<(), ChildAdapterError> {
+        let response = self.request("thread/goal/clear", json!({"threadId":thread_id}))?;
+        let cleared = response
+            .get("cleared")
+            .and_then(Value::as_bool)
+            .ok_or_else(|| {
+                ChildAdapterError::protocol(
+                    "thread/goal/clear response did not contain a boolean result",
+                )
+            })?;
+        match (observed, cleared) {
+            (GoalObservation::Known(_), true) | (GoalObservation::Absent, false) => Ok(()),
+            _ => Err(ChildAdapterError::protocol(
+                "native goal changed between observation and clear",
+            )),
+        }
+    }
+
+    fn restore_goal(
+        &mut self,
+        thread_id: &str,
+        target: &GoalObservation,
+    ) -> Result<(), ChildAdapterError> {
+        let observed = self.get_goal(thread_id)?;
+        if &observed != target {
+            self.clear_goal_observed(thread_id, &observed)?;
+            if let GoalObservation::Known(objective) = target {
+                self.set_goal(thread_id, objective)?;
+            }
+        }
+        if &self.get_goal(thread_id)? != target {
+            return Err(ChildAdapterError::protocol(
+                "native goal rollback read-back did not match the prior goal",
             ));
         }
         Ok(())

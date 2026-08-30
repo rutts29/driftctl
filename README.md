@@ -1,126 +1,131 @@
-# driftctl
+# Driftctl
 
-`driftctl` is a local Rust CLI for inspecting an existing Codex session, building a bounded active-intent projection, comparing isolated child continuations, and continuing an approved child. It is a continuity layer, not a replacement for Codex, repository instructions, skills, permissions, or a security sandbox.
+Driftctl keeps one opted-in Codex session aligned with its accepted goal and later steering. It runs locally through Codex lifecycle hooks and injects a compact, source-linked active-intent projection before work continues.
 
-Hackathon framing, measured result, limitations, and the five-minute video flow are collected in [`SUBMISSION.md`](SUBMISSION.md).
+Primary flow:
 
-## Current local flow
+```text
+install plugin
+  → attach exact existing session
+  → reconcile prompt
+  → Luna proposes semantic change
+  → deterministic validation commits or blocks
+  → inject active intent into the same session
+  → recover and inject again after resume or compaction
+  → detach to restore ordinary Codex behavior
+```
 
-Prerequisites: Git, Rust/Cargo 1.97.1, and an authenticated Codex CLI. Python 3.11+ is required only for evaluation and release tests.
+The existing `inspect`, `continue`, `compare`, and evaluation commands remain available as recovery and research tools. They are not the same-session keeper.
 
-Build and install from source:
+## Requirements
+
+- Linux x86_64.
+- Codex CLI 0.150.1 or a compatible release with stable lifecycle hooks.
+- Existing local Codex authentication.
+- Git repository associated with the target session.
+- Rust/Cargo 1.97.1 only when building from source.
+
+Driftctl uses the user's Codex allowance. The keeper defaults to `gpt-5.6-luna` at `max`; `terra` with `high` or `medium` is optional.
+
+## Install
+
+From source:
 
 ```bash
-cargo build --release --locked
 cargo install --path . --locked
+driftctl integrate codex install
+driftctl integrate codex status
 ```
 
-From the source repository associated with an existing Codex session:
+The packaged Linux release is checksum-verified by `scripts/install.sh`:
 
 ```bash
-driftctl inspect codex --last
+./scripts/install.sh --version v0.2.0
+driftctl integrate codex install
+```
+
+The GitHub repository and release remain private until the operator publishes them. After publication, the same installer downloads the pinned archive and checksum from GitHub.
+
+Open Codex once after integration and approve the Driftctl hook source in the `/hooks` review UI. Normal interactive use does not require a trust-bypass flag.
+
+## Attach one existing session
+
+Copy the persisted Codex session UUID, enter that session's repository, then run:
+
+```bash
+driftctl attach codex --session <exact-session-id>
+driftctl status codex --session <exact-session-id>
+```
+
+Continue that same session normally. Only the exact attached session is active; other sessions in the same repository remain untouched.
+
+On every accepted prompt, Driftctl:
+
+1. Reconciles persisted records missed during interruption.
+2. Gives Luna only the bounded active projection plus the new user delta.
+3. Validates source accounting, legal transitions, stale bases, and size bounds.
+4. Commits the durable ledger and injects the active projection before the model turn.
+
+`Stop` advances the provider cursor without granting assistant or tool output steering authority. `PreCompact` flushes state. `SessionStart` restores and injects the projection on startup, resume, and post-compaction continuation.
+
+Private state is under `${XDG_STATE_HOME:-$HOME/.local/state}/driftctl`. There is no daemon, hosted service, telemetry, credential copy, or repository instruction rewrite.
+
+## Resolve a block
+
+Get the run ID and inspect the sanitized active projection:
+
+```bash
+driftctl status codex --session <exact-session-id> --json
 driftctl bundle --run <run-id> --json
-driftctl compare codex --last
-driftctl continue codex --last
 ```
 
-For a first manual trial, use a separate terminal and target an inactive old session; do not invoke Driftctl from inside the parent session being inspected because that conversation would change while its preservation is being attested. Run `inspect --json` into a private local directory, review any conflicts, then run `continue` only after the ledger is acceptable:
-
-For a historical midpoint backtest, first create a normal persisted Codex fork through the desired completed turn and leave that fork inactive. Use the fork's session ID with Driftctl. The original long session remains the untouched control; Driftctl reads the midpoint fork, then `continue` creates a separate projected child from it.
+Choose an explicit conflict alternative:
 
 ```bash
-mkdir -p /tmp/driftctl-manual-private
-chmod 700 /tmp/driftctl-manual-private
-driftctl inspect codex --last --json \
-  > /tmp/driftctl-manual-private/inspect.json
-driftctl continue codex --last --json \
-  > /tmp/driftctl-manual-private/continue.json
+driftctl resolve codex \
+  --session <exact-session-id> \
+  --conflict <conflict-id> \
+  --alternative <alternative-id>
 ```
 
-`inspect` may exit `2` with conflict, native-goal, or overflow blockers; that is a review state, not a successful continuation. Use the explicit conflict and goal actions described below. `continue` creates and edits only an isolated child; the selected parent session and source worktree remain read-only. Keep both JSON files private because an inspection result contains source-linked intent text and local identifiers. Use `--session <id>` instead of `--last` when the desired inactive session is not the latest exact-CWD match.
-
-For another harness, export its approved local transcript into the strict schema-v1 neutral session bundle defined in [`SPEC.md`](SPEC.md), set `provider` to `bundle`, and run:
+Decide a proposed overall goal change:
 
 ```bash
-driftctl inspect bundle --file session.json --json
-# or: harness-export-command | driftctl inspect bundle --stdin --json
+driftctl resolve codex --session <exact-session-id> --reject-goal
+driftctl resolve codex --session <exact-session-id> --edit-goal '<replacement>'
+driftctl resolve codex --session <exact-session-id> --approve-goal
 ```
 
-The bundle's repository digest must match the canonical current repository. File/stdin intake is capped at 16 MiB, validates every record/digest before model use, and keeps non-user roles non-authoritative. Re-reading the same bundle uses cached state without another model call. This release treats a changed bundle as a new snapshot and requires a new `session_ref`; it does not claim native control of the source harness.
+Editing remains blocked until approval. Approval verifies the exact session and source head, then performs native `goal/get → goal/clear → goal/set → goal/get`. Wrong-session, stale, failed, or replayed decisions do not mutate the native goal.
 
-`inspect` reads the selected Codex session or neutral bundle and source repository, then stores immutable history, projection, proposals, and private artifacts under `${XDG_STATE_HOME:-$HOME/.local/state}/driftctl`. It does not use a repository ledger for this flow. `driftctl bundle --run` exports a separate sanitized projection/blocker handoff that another harness wrapper can attach as context. The implemented native process adapter is Codex CLI only.
-
-Codex intake accepts App Server responses up to 128 MiB. Every supported thread item is validated and retained in the private source cursor by ID, role, and digest. Explicit user text is the only intent authority. Assistant, tool, attachment, and system items become digest-only evidence; consecutive non-user records are coalesced into bounded prompt batches with role counts and explicit `contextCompaction` counts. Raw tool output and provider summaries never become steering. A non-user-only append advances the attested cursor without a model call or projection change.
-
-`--last` remains restricted to sessions whose canonical CWD exactly matches the current repository. An explicit historical session started from an ancestor directory can be inspected with `--allow-ancestor-cwd` only when that thread contains a command-execution CWD that exactly names the current canonical repository; otherwise intake fails before model use.
-
-`compare` creates isolated, equal starting children and leaves adoption manual. `continue` creates one isolated child; ambiguous steering or native-goal changes require an explicit operator action, and no-TTY operation blocks rather than prompting. Existing `AGENTS.md`, `CLAUDE.md`, skills, hooks, permissions, and the user's harness configuration remain authoritative and unchanged.
-
-If the installed Codex App Server cannot complete a child goal clear/set/read-back, `continue --json` exits `2` without starting the child turn. It returns the child ID/CWD, observed and intended goal states, `codex resume <child-id>`, and separate `/goal clear` plus `/goal` instructions. The operator must grant new approval and verify the child goal manually; Driftctl never runs those interactive commands itself.
-
-For a blocked semantic conflict, copy the conflict and alternative IDs from `inspect --json`, then make the operator choice explicitly:
+Detach only that session:
 
 ```bash
-driftctl continue codex --last \
-  --resolve-conflict <conflict-id> <alternative-id>
+driftctl detach codex --session <exact-session-id>
 ```
 
-The decision is recorded in private local state and only the selected alternative enters the child prompt. Invalid IDs and unattended ambiguity create no child.
+## Verified behavior
 
-A completed child is not verified completion. `continue --json` returns its `run_id`, `child_cwd`, changed paths, current evidence, and blockers. Attach requirement-specific checks to that exact continued child before manually adopting it:
+- Unenrolled sessions are strict no-ops.
+- Attach is exact and idempotent; unknown sessions create no enrollment.
+- Different hook and persisted provider IDs bind one-to-one without duplicate semantic calls.
+- Additive steering is committed before model execution.
+- Ambiguity, invalid proposals, overflow, and pending goal changes block before work.
+- A real attached Codex session retained a new output constraint across a separate resume process.
+- A production-shaped `PreCompact → SessionStart(compact)` restored the same goal and constraint.
+- The process suite covers install/remove preservation, isolation, detach, duplicate delivery, invalid output, conflict resolution, and native-goal approval.
 
-```bash
-driftctl verify \
-  --run <run-id> \
-  --requirement <requirement-id> \
-  --json -- <verification-command> [args...]
-```
+Exact commands and retained evidence are in [REPRODUCING.md](REPRODUCING.md). The product contract and component boundaries are in [SPEC.md](SPEC.md) and [ARCHITECTURE.md](ARCHITECTURE.md).
 
-`verify --run` records command, verifier, candidate, stdout, and stderr digests while retaining raw output only in private local artifacts. Passing evidence is appended to that requirement's durable history. If the candidate changes, a later bound check invalidates prior candidate-bound evidence and reopens the requirement. `--candidate <path>` remains available for a standalone check but does not update a run.
+## Limits
 
-Full closure also requires four explicit commands against the same candidate checkpoint:
-
-```bash
-driftctl verify --run <run-id> --gate regression --json -- <regression-command>
-driftctl verify --run <run-id> --gate integration --json -- <integration-command>
-driftctl verify --run <run-id> --gate protected_scope --json -- <scope-command>
-driftctl verify --run <run-id> --gate review --json -- <review-command>
-```
-
-The review command must exit nonzero when any unresolved `Critical` or `Required` finding exists. Review is one-shot per candidate digest: after it records a failure, the candidate must change before another review, which also makes prior requirement and gate evidence stale. `verified_completion` becomes true only when every active requirement has current evidence, all four gates pass on the same candidate digest, no conflict or overflow remains, and the continued child has the exact goal binding already proved during migration.
-
-Driftctl has no service and no telemetry. Provider calls use the user's existing Codex authentication and usage allowance. Source session, source worktree, and parent native goal are read-only; candidate edits occur in an isolated workspace. Paths excluded from candidate copies—harness/provider configuration, local Driftctl state, secret-named files, and hidden graders—are streamed into an opaque source attestation so create/delete/content/mode/symlink changes block without exposing or copying them; `.git` internals remain outside this check. The child native goal is re-read after its turn and before run-bound verified completion. Isolation is workspace-only: inherited host-wide or YOLO permissions remain outside Driftctl's containment guarantee.
-
-Older `start`, `steer`, `resume`, `verify`, and `close` commands remain available for the legacy local-ledger workflow; they are not the current native-session flow above.
-
-## Evidence and limits
-
-The frozen intact-session suite ran once at 128 KiB of post-steering context. Four cases reached behavioral comparison: baseline verified 3/4 and Driftctl verified 2/4. The one plain-summary control tied both other arms. Case 05 blocked before coding on a source-linked unresolved conflict and is reported separately from completion rates. This is descriptive negative evidence: it does not show that Driftctl improves coding outcomes.
-
-All nine coding candidates passed the fixed verifiers and exact scope before independent review. One blind, read-only review per candidate found three Required defects and blocked closure without a feedback/fix loop. The useful measured behavior was refusal to claim verified completion, not an efficacy gain from the projection. See [`evals/results/native-suite-20260830/summary.json`](evals/results/native-suite-20260830/summary.json) and [`IMPROVEMENT-CHANGELOG.md`](IMPROVEMENT-CHANGELOG.md).
-
-An earlier case-02 pair at 800 KiB recorded native compaction in both arms, passed the external and exact-scope checks, and completed in 528.933 seconds. This remains separate compaction-boundary parity/no-harm evidence.
-
-One separate no-TTY conflict safety case passed: `continue` exited blocked before child creation and preserved the source session and workspace. That single case demonstrates fail-closed handling of its unresolved conflict, not coding-quality improvement or significance. See [`evals/results/conflict-gate.json`](evals/results/conflict-gate.json), [`IMPROVEMENT-CHANGELOG.md`](IMPROVEMENT-CHANGELOG.md), and [`REPRODUCING.md`](REPRODUCING.md).
-
-The archived five-case hard-loss result remains historical fault-injection evidence only: workflow 5/5 versus worktree-only baseline 3/5. It predates the current exact-scope and independent-review gates and is not combined with the intact-session result.
-
-One immutable organic snapshot with 42 authoritative user records reached the installed Luna Max resolver. Two retained attempts failed strict validation; after source-accounting and semantic-key prompt defects were fixed, a third attempt produced a fully validated projection in one call and exited safely blocked on three semantic conflicts, native-goal mismatch, and a 27,822-byte projection over the 16 KiB default. This proves real default-model intake, proposal validation, and blocking behavior for that checkpoint. It does not prove continuation efficacy because no coding arm was allowed to start.
-
-A final pre-manual attempt tested a 32 KiB default and native-goal preservation guidance but exhausted its one repair on a later invalid history transition after 991.576 seconds. The retained proposals had exact 42/42 source coverage; both incorrectly superseded an item already made conflicted. Prompt schema v4 now states that ambiguity resolved by later explicit steering must collapse to the resolved final intent rather than a transient conflict. That fix is process-tested but intentionally has not consumed another provider run; the next acceptance evidence is the operator's manual trial.
-
-The native runner uses `gpt-5.6-luna` at `max` reasoning by default. Recorded environment versions include Rust/Cargo 1.97.1, Python 3.14.4 (3.11+ required), Git 2.53.0, and `codex-cli 0.150.1`; live behavior, timing, and usage depend on the executing user's Codex account and configuration.
-
-### Claim index
-
-| Public claim | Reproducible evidence |
-|---|---|
-| Native-session projection is source-linked, bounded, and compaction-aware | [`tests/inspect.rs`](tests/inspect.rs), [`tests/resolver_inspect.rs`](tests/resolver_inspect.rs), long-session compaction entry in [`IMPROVEMENT-CHANGELOG.md`](IMPROVEMENT-CHANGELOG.md) |
-| Parent session, native goal, and source worktree are read-only inputs | Installed-boundary regressions in [`tests/resolver_inspect.rs`](tests/resolver_inspect.rs), [`evals/results/conflict-gate.json`](evals/results/conflict-gate.json) |
-| Ambiguous unattended steering blocks before child creation | [`evals/results/conflict-gate.json`](evals/results/conflict-gate.json), case 05 in [`evals/results/native-suite-20260830/summary.json`](evals/results/native-suite-20260830/summary.json) |
-| The frozen suite measured no coding-efficacy improvement | [`evals/results/native-suite-20260830/summary.json`](evals/results/native-suite-20260830/summary.json), immutable arm files in [`evals/results/native-suite-20260830`](evals/results/native-suite-20260830) |
-| The Linux archive installs only after checksum and entrypoint verification | [`release/tests/test_installer.py`](release/tests/test_installer.py), exact commands in [`REPRODUCING.md`](REPRODUCING.md) |
-| Cross-harness portability is a strict bundle seam, not native control | [`tests/session_bundle.rs`](tests/session_bundle.rs), bundle process test in [`tests/resolver_inspect.rs`](tests/resolver_inspect.rs), schema in [`SPEC.md`](SPEC.md) |
+- Codex is the only native lifecycle adapter in this MVP.
+- Keeper calls add model latency and consume the user's allowance.
+- Model proposals can be wrong; deterministic checks reject structural errors but cannot guarantee semantic correctness.
+- Hook trust is an operator decision. Untrusted hooks may be skipped by Codex.
+- Driftctl is not a security sandbox and does not make YOLO or host-wide permissions safe.
+- The retained frozen coding evaluation is negative: baseline 3/4 versus workflow 2/4. Do not claim coding-efficacy improvement from it.
+- The current command name collides with an existing public tool; rename before broad package-manager publication.
 
 ## Checks
 
@@ -131,8 +136,7 @@ cargo test --locked
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover \
   -s evals/tests -p 'test_*.py' -v
 shellcheck scripts/package-release.sh scripts/install.sh
-PYTHONDONTWRITEBYTECODE=1 python3 -m unittest \
-  release.tests.test_installer -v
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest release.tests.test_installer -v
 ```
 
-The evaluator unittest command runs the complete deterministic evaluator suite without provider calls. The release test builds an x86_64 Linux archive, installs the actual binary after SHA-256 verification, invokes `--help`, rejects a corrupted archive, and rejects unshipped targets before network access. The public release URL is not live. Homebrew is deferred because no macOS artifact or real `brew` boundary has been tested. The current `driftctl` name is internal-only pending a public rename because it collides with an existing CLI and Homebrew formula. See [`REPRODUCING.md`](REPRODUCING.md) for exact rehearsals and live native/conflict commands. Raw provider trajectories can include private context or local paths; keep them outside the repository and sanitize plus manually review anything selected for publication.
+Raw provider trajectories and local state can contain private context and paths. Keep them outside the repository; publish only sanitized, manually reviewed evidence.

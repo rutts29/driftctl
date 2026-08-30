@@ -29,11 +29,10 @@ driftctl detach codex --session <exact-id>
 Internal hook entrypoints:
 
 ```text
-driftctl hook codex session-start
-driftctl hook codex user-prompt
-driftctl hook codex pre-compact
-driftctl hook codex stop
+driftctl hook codex
 ```
+
+The Codex hook event is read from stdin and validated before enrollment lookup.
 
 ## Runtime Contract
 
@@ -122,7 +121,7 @@ pub fn handle(event: HookEvent, state: &mut SessionState) -> Result<HookOutput, 
 - Pure state transitions: unit tests.
 - Filesystem, lock, App Server, plugin, and hook protocol: process tests.
 - Each completed slice: checksum-installed binary through the real process/filesystem/permission boundary.
-- Final acceptance: one real attached Codex session across prompt, conflict, restart/resume, compaction, and detach.
+- Final acceptance: one real attached Codex session across prompt and process restart/resume; production-shaped installed hook boundaries for compaction, conflict, goal approval, isolation, and detach.
 - Frozen cases: `tasks/todo.md`; no deletion or weakening.
 
 ## Boundaries
@@ -135,7 +134,7 @@ pub fn handle(event: HookEvent, state: &mut SessionState) -> Result<HookOutput, 
 
 - Every test in `tasks/todo.md` passes.
 - Installed hook injects a validated projection into the exact attached session before the model runs.
-- Restart, resume, and native compaction restore the same attachment and projection.
+- Restart and resume restore the same attachment and projection; `PreCompact` followed by `SessionStart(compact)` restores it through the installed hook entrypoint.
 - Two concurrent sessions in one repository remain isolated.
 - Detach restores no-op behavior.
 - One production-shaped real-session E2E passes.

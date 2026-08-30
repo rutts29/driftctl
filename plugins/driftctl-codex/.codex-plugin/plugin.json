@@ -1,0 +1,17 @@
+{
+  "name": "driftctl-codex",
+  "version": "0.2.0",
+  "description": "Driftctl Codex plugin",
+  "author": {
+    "name": "Driftctl"
+  },
+  "interface": {
+    "displayName": "Driftctl Codex",
+    "shortDescription": "Keep attached long sessions aligned.",
+    "longDescription": "Adds opt-in local lifecycle hooks for source-linked intent continuity in exact Codex sessions.",
+    "developerName": "Driftctl",
+    "category": "Productivity",
+    "capabilities": [],
+    "defaultPrompt": "Show the Driftctl attachment status for this session."
+  }
+}

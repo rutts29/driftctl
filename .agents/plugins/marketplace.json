@@ -1,0 +1,20 @@
+{
+  "name": "driftctl-local",
+  "interface": {
+    "displayName": "Driftctl Local"
+  },
+  "plugins": [
+    {
+      "name": "driftctl-codex",
+      "source": {
+        "source": "local",
+        "path": "./plugins/driftctl-codex"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}
