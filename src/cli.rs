@@ -6,6 +6,7 @@ use serde_json::json;
 
 use crate::agent::{display_path, run_codex};
 use crate::codex_source::{self, SessionSelection};
+use crate::goal_change_store::{GoalChangeStore, PendingGoalChange};
 use crate::inspect_state::InspectSource;
 use crate::projection::ProjectionConfig;
 use crate::run_store::{RunStore, SourceCursorComparison};
@@ -139,7 +140,16 @@ fn inspect(root: &Path, arguments: &[String]) -> CliOutput {
         };
         match comparison {
             Ok(SourceCursorComparison::Current) => {
-                let resolution = cached_resolution(existing.recovered, Some(bundle.native_goal()));
+                let goal_change = match load_goal_change(
+                    &existing.store,
+                    &existing.recovered,
+                    source.cursor().digest(),
+                ) {
+                    Ok(goal_change) => goal_change,
+                    Err(error) => return CliOutput::error(error),
+                };
+                let resolution =
+                    cached_resolution(existing.recovered, Some(bundle.native_goal()), goal_change);
                 return inspect_output(
                     &resolution,
                     source.run_id().as_str(),
@@ -149,6 +159,50 @@ fn inspect(root: &Path, arguments: &[String]) -> CliOutput {
                 );
             }
             Ok(SourceCursorComparison::NewRecords(records)) => {
+                let proposal_store = match GoalChangeStore::open(&existing.store) {
+                    Ok(store) => store,
+                    Err(error) => return CliOutput::error(error.to_string()),
+                };
+                let pending_goal_change = match proposal_store.load() {
+                    Ok(proposal) => proposal,
+                    Err(error) => return CliOutput::error(error.to_string()),
+                };
+                if let Some(proposal) = pending_goal_change {
+                    let event_sequence = match accepted_event_sequence(&existing.recovered) {
+                        Ok(sequence) => sequence,
+                        Err(error) => return CliOutput::error(error),
+                    };
+                    if !proposal.matches(
+                        existing.recovered.projection.revision,
+                        event_sequence,
+                        source.cursor().digest(),
+                    ) {
+                        return CliOutput::error(
+                            "pending goal-change proposal is stale for the observed source",
+                        );
+                    }
+                    if let Err(error) = codex_source::verify_unchanged(root, &imported) {
+                        return CliOutput::error(error.to_string());
+                    }
+                    if let Err(error) = existing.store.commit_projection_with_source_cursor(
+                        &existing.recovered.projection,
+                        source.cursor(),
+                    ) {
+                        return CliOutput::error(error.to_string());
+                    }
+                    let resolution = cached_resolution(
+                        existing.recovered,
+                        Some(bundle.native_goal()),
+                        Some(proposal.observation()),
+                    );
+                    return inspect_output(
+                        &resolution,
+                        source.run_id().as_str(),
+                        source.cursor().accepted_record_count(),
+                        source.cursor().digest(),
+                        options.json,
+                    );
+                }
                 let accepted_count = source.cursor().accepted_record_count() - records.len();
                 let delta = match source.delta_bundle(&bundle, accepted_count) {
                     Ok(delta) => delta,
@@ -174,6 +228,16 @@ fn inspect(root: &Path, arguments: &[String]) -> CliOutput {
                 let accepted_events = existing.recovered.history.records().len();
                 for record in &resolution.history.records()[accepted_events..] {
                     if let Err(error) = existing.store.append_pending(record.clone()) {
+                        return CliOutput::error(error.to_string());
+                    }
+                }
+                if let Some(goal_change) = &resolution.goal_change {
+                    let proposal =
+                        match PendingGoalChange::new(goal_change, source.cursor().digest()) {
+                            Ok(proposal) => proposal,
+                            Err(error) => return CliOutput::error(error.to_string()),
+                        };
+                    if let Err(error) = proposal_store.persist(&proposal) {
                         return CliOutput::error(error.to_string());
                     }
                 }
@@ -270,6 +334,7 @@ fn resolver_failure_output(
 fn cached_resolution(
     recovered: crate::run_store::RecoveredRun,
     native_goal: Option<&NativeGoal>,
+    goal_change: Option<semantic_resolver::GoalChangeObservation>,
 ) -> InspectResolution {
     let generated = &recovered.projection.generated_by;
     let metadata = ResolverMetadata {
@@ -302,7 +367,33 @@ fn cached_resolution(
         projection: recovered.projection,
         metadata,
         native_goal,
+        goal_change,
     }
+}
+
+fn accepted_event_sequence(recovered: &crate::run_store::RecoveredRun) -> Result<u64, String> {
+    recovered
+        .history
+        .records()
+        .last()
+        .map(|record| record.sequence)
+        .ok_or_else(|| "stored inspect run has no accepted event sequence".to_owned())
+}
+
+fn load_goal_change(
+    run: &RunStore,
+    recovered: &crate::run_store::RecoveredRun,
+    source_digest: &str,
+) -> Result<Option<semantic_resolver::GoalChangeObservation>, String> {
+    let store = GoalChangeStore::open(run).map_err(|error| error.to_string())?;
+    let Some(proposal) = store.load().map_err(|error| error.to_string())? else {
+        return Ok(None);
+    };
+    let event_sequence = accepted_event_sequence(recovered)?;
+    if !proposal.matches(recovered.projection.revision, event_sequence, source_digest) {
+        return Err("pending goal-change proposal is stale for the accepted source".to_owned());
+    }
+    Ok(Some(proposal.observation()))
 }
 
 fn inspect_output(
@@ -326,7 +417,7 @@ fn inspect_output(
         )
     };
     CliOutput {
-        exit_code: if resolution.projection.continuation_blocked() {
+        exit_code: if resolution.continuation_blocked() {
             2
         } else {
             0
@@ -363,7 +454,11 @@ fn bundle(root: &Path, arguments: &[String]) -> CliOutput {
     let Some(cursor) = recovered.source_cursor.as_ref() else {
         return CliOutput::error("stored inspect run has no accepted source cursor");
     };
-    let resolution = cached_resolution(recovered.clone(), None);
+    let goal_change = match load_goal_change(&store, &recovered, cursor.digest()) {
+        Ok(goal_change) => goal_change,
+        Err(error) => return CliOutput::error(error),
+    };
+    let resolution = cached_resolution(recovered.clone(), None, goal_change);
     let document =
         match sanitized_json(&resolution, cursor.accepted_record_count(), cursor.digest())
             .and_then(|document| serde_json::from_str::<serde_json::Value>(&document))
