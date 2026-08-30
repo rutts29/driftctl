@@ -61,6 +61,17 @@ import os
 import sys
 
 capture = os.environ["DRIFTCTL_FAKE_CAPTURE"]
+if sys.argv[1] == "exec":
+    sys.stdin.read()
+    proposal = os.environ["DRIFTCTL_FAKE_PROPOSAL"]
+    last_path = sys.argv[sys.argv.index("--output-last-message") + 1]
+    with open(last_path, "w", encoding="utf-8") as file:
+        file.write(proposal)
+    print(json.dumps({"type":"thread.started","thread_id":"private-compactor"}))
+    print(json.dumps({"type":"item.completed","item":{"id":"item","type":"agent_message","text":proposal}}))
+    print(json.dumps({"type":"turn.completed","usage":{"input_tokens":10,"cached_input_tokens":0,"output_tokens":5,"reasoning_output_tokens":1}}))
+    sys.exit(0)
+
 for raw in sys.stdin:
     request = json.loads(raw)
     with open(capture, "a", encoding="utf-8") as file:
@@ -138,12 +149,28 @@ fn fake_environment(
     let capture = fake_root.join("requests.jsonl");
     let mut environment = BTreeMap::new();
     environment.insert("DRIFTCTL_CODEX_BIN", fake_codex.display().to_string());
+    environment.insert(
+        "DRIFTCTL_ARTIFACT_DIR",
+        fake_root.join("private-artifacts").display().to_string(),
+    );
     environment.insert("DRIFTCTL_FAKE_CAPTURE", capture.display().to_string());
     environment.insert(
         "DRIFTCTL_FAKE_LIST_PAGES",
         Value::Array(list_pages).to_string(),
     );
     environment.insert("DRIFTCTL_FAKE_READ", read.to_string());
+    environment.insert(
+        "DRIFTCTL_FAKE_PROPOSAL",
+        json!({
+            "schema_version":1,
+            "goal":{"text":"Synthesized inspect goal","source_record_ids":["user-1:0"]},
+            "accounted_source_record_ids":["user-1:0","user-2:0"],
+            "operations":[
+                {"operation":"add","key":"latest-steering","kind":"constraint","text":"Honor latest steering","target_key":"","intent_keys":[],"source_record_ids":["user-2:0"],"alternatives":[]}
+            ]
+        })
+        .to_string(),
+    );
     if truncate {
         environment.insert("DRIFTCTL_FAKE_TRUNCATE", "1".to_owned());
     }
@@ -199,21 +226,20 @@ fn inspect_last_uses_the_canonical_cwd_imports_only_user_text_and_leaves_source_
         &["inspect", "codex", "--last", "--json"],
         &environment,
     );
-    assert_eq!(output.status.code(), Some(2));
-    assert!(output.stderr.is_empty());
+    assert_eq!(output.status.code(), Some(0));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("gpt-5.6-luna"));
     let result: Value = serde_json::from_slice(&output.stdout).expect("inspect JSON");
     assert_eq!(result["schema_version"], 1);
     assert_eq!(result["provider"], "codex");
-    assert_eq!(result["imported_user_records"], 2);
-    assert_eq!(result["blocker"], "projection_not_built");
-    assert!(
-        result["session"]
-            .as_str()
-            .expect("redacted session")
-            .starts_with("codex-session:sha256:")
+    assert_eq!(result["status"], "usable");
+    assert_eq!(result["source"]["imported_user_records"], 2);
+    assert_eq!(
+        result["projection"]["goal"]["text"],
+        "Synthesized inspect goal"
     );
+    assert!(result.get("session").is_none());
     assert!(
-        result["source_digest"]
+        result["source"]["digest"]
             .as_str()
             .expect("source digest")
             .starts_with("sha256:")
@@ -262,10 +288,10 @@ fn inspect_explicit_session_reads_only_that_session_and_keeps_text_out_of_human_
         &["inspect", "codex", "--session", selected_id],
         &environment,
     );
-    assert_eq!(output.status.code(), Some(2));
+    assert_eq!(output.status.code(), Some(0));
     let text = String::from_utf8_lossy(&output.stdout);
     assert!(text.contains("provider: codex"));
-    assert!(text.contains("blocker: projection_not_built"));
+    assert!(text.contains("status: usable"));
     assert!(!text.contains(selected_id));
     assert!(!text.contains("private user intent"));
     let requests = captured_requests(&capture);
@@ -422,7 +448,7 @@ fn inspect_last_reads_every_page_before_selecting_the_latest_exact_cwd_match() {
         &["inspect", "codex", "--last", "--json"],
         &environment,
     );
-    assert_eq!(output.status.code(), Some(2));
+    assert_eq!(output.status.code(), Some(0));
     let requests = captured_requests(&capture);
     assert_eq!(requests[2]["params"]["cursor"], Value::Null);
     assert_eq!(requests[3]["method"], "thread/list");
