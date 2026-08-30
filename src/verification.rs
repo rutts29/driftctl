@@ -66,6 +66,18 @@ pub enum VerificationStatus {
     CandidateChanged,
 }
 
+impl VerificationStatus {
+    #[must_use]
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Passed => "passed",
+            Self::Failed => "failed",
+            Self::ProtectedInputChanged => "protected_input_changed",
+            Self::CandidateChanged => "candidate_changed",
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct VerificationResult {
     pub schema_version: u32,

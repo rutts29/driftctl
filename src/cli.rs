@@ -16,7 +16,9 @@ use crate::intent_history::{
     IntentId, SourceProvider, SourceRef, SourceRole,
 };
 use crate::projection::{ActiveProjection, ProjectionConfig};
-use crate::run_store::{RunStore, SourceCursorComparison};
+use crate::run_store::{
+    CompletionGate, CompletionGateRecord, CompletionGateState, RunStore, SourceCursorComparison,
+};
 use crate::semantic_resolver::{
     self, CompactorConfig, InspectResolution, NativeGoalObservation, ResolverFailureKind,
     ResolverMetadata, ResolverUsage, sanitized_human, sanitized_json,
@@ -37,7 +39,7 @@ Usage:\n\
   driftctl bundle --run <run-id> --json\n\
   driftctl compare codex (--last | --session <id>) [--json]\n\
   driftctl continue codex (--last | --session <id>) [--resolve-conflict <conflict-id> <alternative-id> | --approve-goal | --edit-goal <text> | --retain-goal | --cancel] [--json]\n\
-  driftctl verify (--run <run-id> | --candidate <path>) --requirement <id> [--json] -- <program> [args...]\n\
+  driftctl verify (--run <run-id> | --candidate <path>) (--requirement <id> | --gate regression|integration|protected_scope|review) [--json] -- <program> [args...]\n\
   driftctl run codex\n\
   driftctl close";
 
@@ -507,6 +509,7 @@ fn verify_requirement(root: &Path, arguments: &[String]) -> CliOutput {
     let mut candidate = None;
     let mut run_id = None;
     let mut requirement = None;
+    let mut gate = None;
     let mut json_output = false;
     let mut index = 0;
     while index < options.len() {
@@ -523,17 +526,41 @@ fn verify_requirement(root: &Path, arguments: &[String]) -> CliOutput {
                 index += 1;
                 requirement = options.get(index).cloned();
             }
+            "--gate" if gate.is_none() => {
+                index += 1;
+                gate = match options.get(index).map(String::as_str) {
+                    Some("regression") => Some(CompletionGate::Regression),
+                    Some("integration") => Some(CompletionGate::Integration),
+                    Some("protected_scope") => Some(CompletionGate::ProtectedScope),
+                    Some("review") => Some(CompletionGate::Review),
+                    Some(_) => {
+                        return CliOutput::error(
+                            "verify gate must be regression, integration, protected_scope, or review",
+                        );
+                    }
+                    None => return CliOutput::error("--gate requires a gate name"),
+                };
+            }
             "--json" if !json_output => json_output = true,
             option => return CliOutput::error(format!("unsupported verify option: {option}")),
         }
         index += 1;
     }
-    let Some(requirement) = requirement else {
-        return CliOutput::error("verify requires exactly one --requirement <id>");
-    };
+    if requirement.is_some() == gate.is_some() {
+        return CliOutput::error("verify requires exactly one of --requirement or --gate");
+    }
     if candidate.is_some() == run_id.is_some() {
         return CliOutput::error("verify requires exactly one of --run or --candidate");
     }
+    if candidate.is_some() && gate.is_some() {
+        return CliOutput::error("completion gates require --run <run-id>");
+    }
+    let verification_id = requirement.clone().unwrap_or_else(|| {
+        format!(
+            "gate:{}",
+            gate.expect("exactly one verification target").as_str()
+        )
+    });
     let mut bound_store = None;
     let (candidate, artifact_root) = if let Some(run_id) = run_id.as_ref() {
         let store = match RunStore::open_default(root, run_id) {
@@ -544,11 +571,13 @@ fn verify_requirement(root: &Path, arguments: &[String]) -> CliOutput {
             Ok(recovered) => recovered,
             Err(error) => return CliOutput::error(error.to_string()),
         };
-        let Some(item) = recovered.history.intent(&requirement) else {
-            return CliOutput::error("run has no requirement with the selected ID");
-        };
-        if !item.is_active() {
-            return CliOutput::error("only an active run requirement can receive evidence");
+        if let Some(requirement) = requirement.as_ref() {
+            let Some(item) = recovered.history.intent(requirement) else {
+                return CliOutput::error("run has no requirement with the selected ID");
+            };
+            if !item.is_active() {
+                return CliOutput::error("only an active run requirement can receive evidence");
+            }
         }
         let binding = match store.candidate_binding() {
             Ok(Some(binding)) => binding,
@@ -570,9 +599,28 @@ fn verify_requirement(root: &Path, arguments: &[String]) -> CliOutput {
         }
         (candidate, state_root.join("verification-artifacts"))
     };
+    if gate == Some(CompletionGate::Review) {
+        let (_, store, _) = bound_store.as_ref().expect("review requires run binding");
+        let candidate_digest = match crate::verification::candidate_digest(&candidate) {
+            Ok(digest) => digest,
+            Err(error) => return CliOutput::error(error.to_string()),
+        };
+        let gates = match store.completion_gate_state() {
+            Ok(gates) => gates,
+            Err(error) => return CliOutput::error(error.to_string()),
+        };
+        if gates
+            .record(CompletionGate::Review)
+            .is_some_and(|prior| prior.candidate_digest == candidate_digest)
+        {
+            return CliOutput::error(
+                "review is already recorded for this candidate checkpoint; change the candidate before reviewing again",
+            );
+        }
+    }
     let request = match crate::verification::VerificationRequest::new(
         &candidate,
-        &requirement,
+        &verification_id,
         command.iter().map(std::ffi::OsString::from),
         &artifact_root,
     ) {
@@ -585,13 +633,31 @@ fn verify_requirement(root: &Path, arguments: &[String]) -> CliOutput {
     };
     let bound_update = match bound_store.as_ref() {
         Some((_run_id, store, binding)) => {
-            match apply_bound_verification(store, binding, &requirement, &result) {
+            match apply_bound_verification(store, binding, requirement.as_deref(), &result) {
                 Ok(update) => Some(update),
                 Err(error) => return CliOutput::error(error),
             }
         }
         None => None,
     };
+    if let (Some(gate), Some((_run_id, store, _binding))) = (gate, bound_store.as_ref()) {
+        let record = CompletionGateRecord {
+            gate,
+            passed: result.passed(),
+            status: result.status.as_str().to_owned(),
+            candidate_digest: result.candidate_after_digest.clone(),
+            artifact_id: result.artifact_id.clone(),
+            command_digest: result.command_digest.clone(),
+            verifier_digest: result.verifier_digest.clone(),
+            stdout_digest: result.stdout_digest.clone(),
+            stderr_digest: result.stderr_digest.clone(),
+            started_at_unix_ms: result.started_at_unix_ms,
+            elapsed_ms: result.elapsed_ms,
+        };
+        if let Err(error) = store.record_completion_gate(record) {
+            return CliOutput::error(error.to_string());
+        }
+    }
     let exit_code = if result.passed() { 0 } else { 2 };
     let stdout = if json_output {
         let mut document = match serde_json::to_value(&result) {
@@ -613,6 +679,26 @@ fn verify_requirement(root: &Path, arguments: &[String]) -> CliOutput {
                 json!(update.projection.closure.can_close()),
             );
             document.insert("closure".to_owned(), json!(update.projection.closure));
+            if let Some(gate) = gate {
+                document.insert("gate".to_owned(), json!(gate.as_str()));
+                document.insert("gate_evidence_recorded".to_owned(), json!(result.passed()));
+            }
+            let (_, store, binding) = bound_store.as_ref().expect("matched bound store");
+            let gates = match store.completion_gate_state() {
+                Ok(gates) => gates,
+                Err(error) => return CliOutput::error(error.to_string()),
+            };
+            let completion_blockers = completion_blockers(
+                &update.projection,
+                &gates,
+                binding,
+                &result.candidate_after_digest,
+            );
+            document.insert(
+                "verified_completion".to_owned(),
+                json!(completion_blockers.is_empty()),
+            );
+            document.insert("completion_blockers".to_owned(), json!(completion_blockers));
         }
         match serde_json::to_string(&document) {
             Ok(output) => output,
@@ -640,18 +726,23 @@ struct BoundVerificationUpdate {
 fn apply_bound_verification(
     store: &RunStore,
     binding: &crate::run_store::CandidateBinding,
-    requirement_id: &str,
+    requirement_id: Option<&str>,
     result: &crate::verification::VerificationResult,
 ) -> Result<BoundVerificationUpdate, String> {
     let recovered = store.recover().map_err(|error| error.to_string())?;
-    let selected = recovered
-        .history
-        .intent(requirement_id)
-        .ok_or_else(|| "run has no requirement with the selected ID".to_owned())?;
-    if !selected.is_active() {
-        return Err("only an active run requirement can receive evidence".to_owned());
-    }
-    let selected_id = selected.id.clone();
+    let selected_id = match requirement_id {
+        Some(requirement_id) => {
+            let selected = recovered
+                .history
+                .intent(requirement_id)
+                .ok_or_else(|| "run has no requirement with the selected ID".to_owned())?;
+            if !selected.is_active() {
+                return Err("only an active run requirement can receive evidence".to_owned());
+            }
+            Some(selected.id.clone())
+        }
+        None => None,
+    };
     let candidate_changed_during_check =
         result.candidate_before_digest != result.candidate_after_digest;
     let mut invalidations = Vec::new();
@@ -671,7 +762,7 @@ fn apply_bound_verification(
                 continue;
             };
             let stale_before_check = bound_digest != result.candidate_before_digest;
-            let failed_selected_check = item.id == selected_id && !result.passed();
+            let failed_selected_check = selected_id.as_ref() == Some(&item.id) && !result.passed();
             if (stale_before_check || candidate_changed_during_check || failed_selected_check)
                 && seen.insert(evidence.id.clone())
             {
@@ -713,8 +804,9 @@ fn apply_bound_verification(
             .map_err(|error| error.to_string())?;
     }
 
-    let evidence_attached = result.passed();
+    let evidence_attached = requirement_id.is_some() && result.passed();
     if evidence_attached {
+        let requirement_id = requirement_id.expect("evidence target was checked");
         let evidence_id = EvidenceId::new(&result.artifact_id);
         let source = SourceRef::new(
             SourceProvider::Codex,
@@ -752,6 +844,56 @@ fn apply_bound_verification(
         evidence_attached,
         invalidated_evidence_count: invalidations.len(),
     })
+}
+
+fn completion_blockers(
+    projection: &ActiveProjection,
+    gates: &CompletionGateState,
+    binding: &crate::run_store::CandidateBinding,
+    candidate_digest: &str,
+) -> Vec<Value> {
+    let mut blockers = projection
+        .closure
+        .blockers
+        .iter()
+        .map(|blocker| {
+            json!({
+                "kind":"projection_closure",
+                "projection_kind":blocker.kind,
+                "id":blocker.id,
+                "reason":blocker.reason,
+            })
+        })
+        .collect::<Vec<_>>();
+    if binding.approved_goal_digest().trim().is_empty() {
+        blockers.push(json!({
+            "kind":"native_goal_alignment",
+            "reason":"the continued child has no verified approved-goal binding",
+        }));
+    }
+    for gate in CompletionGate::ALL {
+        match gates.record(gate) {
+            None => blockers.push(json!({
+                "kind":"missing_completion_gate",
+                "gate":gate.as_str(),
+                "reason":"the required gate has no run-bound evidence",
+            })),
+            Some(record) if record.candidate_digest != candidate_digest => {
+                blockers.push(json!({
+                    "kind":"stale_completion_gate",
+                    "gate":gate.as_str(),
+                    "reason":"the gate evidence belongs to a different candidate checkpoint",
+                }));
+            }
+            Some(record) if !record.passed => blockers.push(json!({
+                "kind":"failed_completion_gate",
+                "gate":gate.as_str(),
+                "reason":"the latest gate command did not pass",
+            })),
+            Some(_) => {}
+        }
+    }
+    blockers
 }
 
 fn compare_codex(root: &Path, arguments: &[String]) -> CliOutput {
@@ -1175,10 +1317,24 @@ fn continue_codex(root: &Path, arguments: &[String]) -> CliOutput {
         Ok(diff) => diff,
         Err(error) => return CliOutput::error(error.to_string()),
     };
-    if continuation_completed
-        && let Err(error) = store.bind_candidate(migration.child_id(), migration.child_cwd())
-    {
-        return CliOutput::error(error.to_string());
+    if continuation_completed {
+        let Some(observed_child_goal) = migration.child_goal().objective() else {
+            return CliOutput::blocked(
+                "completed child has no observed native goal; candidate was not bound",
+            );
+        };
+        if observed_child_goal != approved_goal {
+            return CliOutput::blocked(
+                "completed child native goal differs from the approved goal; candidate was not bound",
+            );
+        }
+        if let Err(error) = store.bind_candidate(
+            migration.child_id(),
+            migration.child_cwd(),
+            observed_child_goal,
+        ) {
+            return CliOutput::error(error.to_string());
+        }
     }
     let mut blockers = Vec::new();
     if !continuation_completed {

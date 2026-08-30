@@ -44,7 +44,18 @@ driftctl verify \
   --json -- <verification-command> [args...]
 ```
 
-`verify --run` records command, verifier, candidate, stdout, and stderr digests while retaining raw output only in private local artifacts. Passing evidence is appended to that requirement's durable history. If the candidate changes, a later bound check invalidates prior candidate-bound evidence and reopens the requirement. `--candidate <path>` remains available for a standalone check but does not update a run. Requirement evidence alone is not the full regression, integration, scope, goal-alignment, and review closure gate.
+`verify --run` records command, verifier, candidate, stdout, and stderr digests while retaining raw output only in private local artifacts. Passing evidence is appended to that requirement's durable history. If the candidate changes, a later bound check invalidates prior candidate-bound evidence and reopens the requirement. `--candidate <path>` remains available for a standalone check but does not update a run.
+
+Full closure also requires four explicit commands against the same candidate checkpoint:
+
+```bash
+driftctl verify --run <run-id> --gate regression --json -- <regression-command>
+driftctl verify --run <run-id> --gate integration --json -- <integration-command>
+driftctl verify --run <run-id> --gate protected_scope --json -- <scope-command>
+driftctl verify --run <run-id> --gate review --json -- <review-command>
+```
+
+The review command must exit nonzero when any unresolved `Critical` or `Required` finding exists. Review is one-shot per candidate digest: after it records a failure, the candidate must change before another review, which also makes prior requirement and gate evidence stale. `verified_completion` becomes true only when every active requirement has current evidence, all four gates pass on the same candidate digest, no conflict or overflow remains, and the continued child has the exact goal binding already proved during migration.
 
 Driftctl has no service and no telemetry. Provider calls use the user's existing Codex authentication and usage allowance. Source session, source worktree, and parent native goal are read-only; candidate edits occur in an isolated workspace. Isolation is workspace-only: inherited host-wide or YOLO permissions remain outside Driftctl's containment guarantee.
 
