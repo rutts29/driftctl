@@ -131,7 +131,7 @@ class CaseCalibrationTests(unittest.TestCase):
                 self.assertEqual(case["runner_model_policy"]["effort"], "max")
                 self.assertEqual(case["runner_model_policy"]["approval_policy"], "never")
                 self.assertEqual(case["runner_model_policy"]["sandbox"], "workspace-write")
-                self.assertEqual(case["runner_model_policy"]["context_bytes"], 32768)
+                self.assertEqual(case["runner_model_policy"]["context_bytes"], 131072)
                 self.assertFalse(case["runner_model_policy"]["calibration"]["codex_calls"])
                 self.assertFalse(case["runner_model_policy"]["calibration"]["network"])
 
