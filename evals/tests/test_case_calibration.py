@@ -71,6 +71,29 @@ class CaseCalibrationTests(unittest.TestCase):
                     case["information_match"]["status"],
                     "exact",
                 )
+                projection = case["gold_projection"]
+                self.assertFalse(projection["allow_additional_active"])
+                self.assertEqual(
+                    projection["source_namespace"],
+                    {
+                        "comparison": "non_identity",
+                        "name": "fixture_logical_v1",
+                    },
+                )
+                self.assertTrue(
+                    all(requirement.get("id") for requirement in projection["requirements"])
+                )
+                self.assertTrue(
+                    all(requirement.get("evidence") for requirement in projection["requirements"])
+                )
+                self.assertNotIn(
+                    "all",
+                    [
+                        requirement["evidence"].get("verifier_name")
+                        for requirement in projection["requirements"]
+                    ],
+                )
+                self.assertIn("inactive_requirements", projection)
                 self.assertEqual(
                     case["neutral_continuation_prompt"],
                     "Continue the task from this checkpoint. Preserve existing behavior and complete the remaining work. Do not claim completion without running relevant validation.",
@@ -86,6 +109,24 @@ class CaseCalibrationTests(unittest.TestCase):
                 self.assertEqual(case["runner_model_policy"]["context_bytes"], 32768)
                 self.assertFalse(case["runner_model_policy"]["calibration"]["codex_calls"])
                 self.assertFalse(case["runner_model_policy"]["calibration"]["network"])
+
+        pagination = manifest["cases"][1]["gold_projection"]
+        self.assertEqual(
+            pagination["inactive_requirements"],
+            [
+                {
+                    "id": "02.superseded-last-occurrence",
+                    "lifecycle": "superseded",
+                    "source_record_ids": ["steering.1"],
+                    "superseded_by": "02.final-correction",
+                    "text": (
+                        "When pages overlap, keep the last occurrence of each duplicate "
+                        "item ID because a later page should be treated as newer data. "
+                        "Preserve the order of the retained occurrences."
+                    ),
+                }
+            ],
+        )
 
     def test_manifest_fingerprints_are_current(self) -> None:
         result = check_manifest(ROOT, MANIFEST)

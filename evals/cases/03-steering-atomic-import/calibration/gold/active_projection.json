@@ -1,4 +1,5 @@
 {
+  "allow_additional_active": false,
   "allowed_paths": [
     {
       "path": "import_users.py",
@@ -13,19 +14,30 @@
     "source_record_ids": ["initial.goal"],
     "text": "Add CSV user import to the admin service."
   },
+  "inactive_requirements": [],
   "requirements": [
     {
+      "id": "03.valid-import",
+      "evidence": {"kind": "external_verifier", "verifier_name": "unit"},
       "source_record_ids": ["initial.requirement.1"],
       "text": "Import valid email and name CSV rows into UserStore and return the number of users imported."
     },
     {
+      "id": "03.scope",
+      "evidence": {"kind": "mutation_scope"},
       "source_record_ids": ["initial.requirement.2"],
       "text": "Change only import_users.py and tests/test_unit_import.py; do not create or modify any other path."
     },
     {
+      "id": "03.atomic-rollback",
+      "evidence": {"kind": "external_verifier", "verifier_name": "integration"},
       "source_record_ids": ["steering.1"],
       "text": "Validate the complete import before mutating the store, raise ValueError for malformed rows or duplicate emails, and leave existing users exactly unchanged when any row is invalid."
     }
   ],
-  "schema_version": 1
+  "schema_version": 1,
+  "source_namespace": {
+    "comparison": "non_identity",
+    "name": "fixture_logical_v1"
+  }
 }

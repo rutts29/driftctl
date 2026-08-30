@@ -15,6 +15,7 @@ import sys
 import tempfile
 import time
 from typing import Any, Mapping, Sequence
+import unicodedata
 
 try:
     from .run_baseline import (
@@ -69,10 +70,19 @@ class AppServerRequestError(RunnerError):
 
 
 class AppServer:
-    def __init__(self, codex_bin: str) -> None:
+    def __init__(self, codex_bin: str, worker_effort: str | None = None) -> None:
+        command = [codex_bin, "app-server", "--stdio"]
+        if worker_effort is not None:
+            command = [
+                codex_bin,
+                "-c",
+                f"model_reasoning_effort={json.dumps(worker_effort)}",
+                "app-server",
+                "--stdio",
+            ]
         try:
             self.process = subprocess.Popen(
-                [codex_bin, "app-server", "--stdio"],
+                command,
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
@@ -444,8 +454,12 @@ def run_case(
         source_clean = git_clean(workspace)
         if not source_clean:
             raise RunnerError("planning-only source turns changed the source workspace")
-        projection_generation = invoke_inspect(
+        projection_generation, observed_projection = invoke_inspect(
             driftctl_bin, workspace, session_id, environment
+        )
+        gold_projection, gold_projection_digest = load_gold_projection(case_directory)
+        projection_fidelity = score_projection_fidelity(
+            observed_projection, gold_projection, gold_projection_digest
         )
         require_evaluation_fingerprint(case_directory, fingerprint)
         comparison = invoke_compare(driftctl_bin, workspace, session_id, environment)
@@ -475,6 +489,7 @@ def run_case(
                 private_artifact,
                 worker_policy,
                 projection_generation,
+                gold_projection,
             )
             for mode in ("baseline", "workflow")
         }
@@ -508,6 +523,7 @@ def run_case(
                 private_artifact,
                 worker_policy,
                 projection_generation,
+                gold_projection,
             )
             results["plain_summary"]["control_context"] = {
                 "kind": "flat_plain_summary",
@@ -523,6 +539,8 @@ def run_case(
         "case_id": definition.case_id,
         "evaluation_kind": LONG_SESSION_LABEL,
         "result_files": paths,
+        "projection_fidelity": projection_fidelity,
+        "projection_generation": projection_generation,
         "statistical_claim": NO_SIGNIFICANCE_LABEL,
         "status": "completed",
     }
@@ -608,7 +626,7 @@ def run_plain_summary_control(
     worker_policy: Mapping[str, str],
     expected_source_messages: int,
 ) -> dict[str, Any]:
-    server = AppServer(codex_bin)
+    server = AppServer(codex_bin, worker_policy["effort"])
     try:
         server.initialize(experimental=True)
         return server.run_control_turn(
@@ -751,7 +769,7 @@ def invoke_inspect(
     workspace: Path,
     session_id: str,
     environment: Mapping[str, str],
-) -> dict[str, Any]:
+) -> tuple[dict[str, Any], Mapping[str, Any]]:
     completed = invoke(
         [driftctl_bin, "inspect", "codex", "--session", session_id, "--json"],
         workspace,
@@ -766,10 +784,12 @@ def invoke_inspect(
     except json.JSONDecodeError as error:
         raise RunnerError(f"native inspect emitted invalid JSON: {error}") from error
     resolver = document.get("resolver") if isinstance(document, Mapping) else None
+    projection = document.get("projection") if isinstance(document, Mapping) else None
     usage = resolver.get("usage") if isinstance(resolver, Mapping) else None
     if (
         not isinstance(resolver, Mapping)
         or not isinstance(usage, Mapping)
+        or not isinstance(projection, Mapping)
         or document.get("status") != "usable"
     ):
         raise RunnerError("native inspect did not return usable resolver evidence")
@@ -801,7 +821,188 @@ def invoke_inspect(
         for name in ("effort", "model")
     ):
         raise RunnerError("native inspect returned malformed resolver evidence")
-    return fields
+    return fields, projection
+
+
+def load_gold_projection(case_directory: Path) -> tuple[Mapping[str, Any], str]:
+    path = case_directory / "calibration" / "gold" / "active_projection.json"
+    try:
+        data = path.read_bytes()
+        projection = json.loads(data)
+    except (OSError, json.JSONDecodeError) as error:
+        raise RunnerError(f"could not read frozen gold projection: {error}") from error
+    if not isinstance(projection, Mapping):
+        raise RunnerError("frozen gold projection must contain an object")
+    return projection, "sha256:" + hashlib.sha256(data).hexdigest()
+
+
+def normalize_fidelity_text(value: Any) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError("fidelity text must be nonempty")
+    return unicodedata.normalize("NFC", value.replace("\r\n", "\n")).strip()
+
+
+def score_projection_fidelity(
+    observed: Mapping[str, Any], gold: Mapping[str, Any], gold_digest: str
+) -> dict[str, Any]:
+    """Compare exact active text and provenance without equating source namespaces."""
+
+    base = {
+        "schema_version": 1,
+        "method": "strict_text_provenance_fidelity_v1",
+        "gold_projection_sha256": gold_digest,
+        "inspect_projection_schema_version": observed.get("schema_version"),
+    }
+    try:
+        if observed.get("schema_version") != 1 or gold.get("schema_version") != 1:
+            raise ValueError("unsupported projection schema")
+        if gold.get("allow_additional_active") is not False:
+            raise ValueError("gold projection is not closed-world")
+        if gold.get("source_namespace") != {
+            "comparison": "non_identity",
+            "name": "fixture_logical_v1",
+        }:
+            raise ValueError("gold source namespace is invalid")
+        gold_goal = gold.get("goal")
+        observed_goal = observed.get("goal")
+        if not isinstance(gold_goal, Mapping) or not isinstance(observed_goal, Mapping):
+            raise ValueError("projection goal is malformed")
+        gold_goal_sources = gold_goal.get("source_record_ids")
+        native_goal_sources = observed_goal.get("source_record_ids")
+        if not isinstance(gold_goal_sources, list) or not gold_goal_sources:
+            raise ValueError("gold goal provenance is missing")
+        if not isinstance(native_goal_sources, list):
+            raise ValueError("native goal provenance is malformed")
+        goal_exact = normalize_fidelity_text(observed_goal.get("text")) == (
+            normalize_fidelity_text(gold_goal.get("text"))
+        )
+        active_items: list[tuple[str, Mapping[str, Any]]] = []
+        for bucket in ("preserve", "frontier", "validation"):
+            items = observed.get(bucket)
+            if not isinstance(items, list):
+                raise ValueError(f"native projection {bucket} is malformed")
+            for item in items:
+                if not isinstance(item, Mapping):
+                    raise ValueError(f"native projection {bucket} item is malformed")
+                normalize_fidelity_text(item.get("text"))
+                sources = item.get("source_record_ids")
+                if not isinstance(sources, list):
+                    raise ValueError("native item provenance is malformed")
+                active_items.append((bucket, item))
+        gold_requirements = gold.get("requirements")
+        inactive_requirements = gold.get("inactive_requirements")
+        if not isinstance(gold_requirements, list) or not gold_requirements:
+            raise ValueError("gold active requirements are malformed")
+        if not isinstance(inactive_requirements, list):
+            raise ValueError("gold inactive requirements are malformed")
+        expected_by_text: dict[str, Mapping[str, Any]] = {}
+        for requirement in gold_requirements:
+            if not isinstance(requirement, Mapping):
+                raise ValueError("gold requirement is malformed")
+            requirement_id = requirement.get("id")
+            sources = requirement.get("source_record_ids")
+            if (
+                not isinstance(requirement_id, str)
+                or not requirement_id
+                or not isinstance(sources, list)
+                or not sources
+            ):
+                raise ValueError("gold requirement identity or provenance is malformed")
+            normalized = normalize_fidelity_text(requirement.get("text"))
+            if normalized in expected_by_text:
+                raise ValueError("gold requirements contain duplicate text")
+            expected_by_text[normalized] = requirement
+        observed_by_text: dict[str, list[tuple[str, Mapping[str, Any]]]] = {}
+        for bucket, item in active_items:
+            observed_by_text.setdefault(
+                normalize_fidelity_text(item.get("text")), []
+            ).append((bucket, item))
+        matches = []
+        missing = []
+        duplicates = []
+        provenance_complete = 0
+        for normalized, requirement in expected_by_text.items():
+            candidates = observed_by_text.get(normalized, [])
+            requirement_id = str(requirement["id"])
+            if not candidates:
+                missing.append(requirement_id)
+                continue
+            if len(candidates) != 1:
+                duplicates.append(requirement_id)
+                continue
+            bucket, item = candidates[0]
+            sources = item["source_record_ids"]
+            provenance_nonempty = bool(sources)
+            provenance_complete += int(provenance_nonempty)
+            matches.append(
+                {
+                    "gold_requirement_id": requirement_id,
+                    "native_item_id": item.get("id"),
+                    "bucket": bucket,
+                    "native_source_record_count": len(sources),
+                    "text_exact": True,
+                    "native_provenance_nonempty": provenance_nonempty,
+                }
+            )
+        unexpected = [
+            item.get("id")
+            for _, item in active_items
+            if normalize_fidelity_text(item.get("text")) not in expected_by_text
+        ]
+        inactive_texts = {
+            normalize_fidelity_text(requirement.get("text"))
+            for requirement in inactive_requirements
+            if isinstance(requirement, Mapping)
+        }
+        if len(inactive_texts) != len(inactive_requirements):
+            raise ValueError("gold inactive requirements are malformed")
+        leaked = [
+            item.get("id")
+            for _, item in active_items
+            if normalize_fidelity_text(item.get("text")) in inactive_texts
+        ]
+        native_goal_provenance = bool(native_goal_sources)
+        matched_count = len(matches)
+        overall = (
+            goal_exact
+            and native_goal_provenance
+            and matched_count == len(gold_requirements)
+            and provenance_complete == len(gold_requirements)
+            and not missing
+            and not duplicates
+            and not unexpected
+            and not leaked
+        )
+        return base | {
+            "status": "passed" if overall else "failed",
+            "goal": {
+                "text_exact": goal_exact,
+                "gold_source_label_count": len(gold_goal_sources),
+                "native_source_record_count": len(native_goal_sources),
+                "native_provenance_nonempty": native_goal_provenance,
+            },
+            "requirements": {
+                "expected_count": len(gold_requirements),
+                "matched_count": matched_count,
+                "provenance_complete_count": provenance_complete,
+                "missing_gold_requirement_ids": missing,
+                "unexpected_active_items": unexpected,
+                "duplicate_matches": duplicates,
+                "matches": matches,
+            },
+            "inactive_requirements": {
+                "expected_count": len(inactive_requirements),
+                "leaked_active_items": leaked,
+                "passed": not leaked,
+            },
+            "overall_pass": overall,
+        }
+    except (KeyError, TypeError, ValueError) as error:
+        return base | {
+            "status": "invalid",
+            "reason": str(error),
+            "overall_pass": False,
+        }
 
 
 def require_comparison_fairness(
@@ -843,6 +1044,7 @@ def arm_result(
     private_artifact: str | None,
     worker_policy: Mapping[str, str],
     projection_generation: Mapping[str, Any],
+    gold_projection: Mapping[str, Any],
 ) -> dict[str, Any]:
     candidate = Path(str(arm["child_cwd"]))
     if not candidate.is_dir():
@@ -854,6 +1056,11 @@ def arm_result(
     agent_succeeded = arm.get("turn_status") == "completed"
     changed_paths = arm.get("changed_paths", [])
     scope = mutation_scope(changed_paths, definition.allowed_changed_paths)
+    requirement_evidence = map_requirement_evidence(
+        gold_projection, verifiers, scope
+    )
+    passed_requirements = sum(item["passed"] is True for item in requirement_evidence)
+    requirement_pass_rate = passed_requirements / len(requirement_evidence)
     verified = (
         agent_succeeded
         and all(item["passed"] for item in verifiers)
@@ -881,6 +1088,12 @@ def arm_result(
             "phase": "continuation" if agent_succeeded else None,
         },
         "projection_generation": dict(projection_generation),
+        "requirement_evidence": requirement_evidence,
+        "requirement_pass_rate": requirement_pass_rate,
+        "review": {
+            "status": "not_evaluated",
+            "unresolved_critical_or_required": None,
+        },
         "recovery_context": "intact_native_session",
         "source_session_sha256": digest_text(source_session_id),
         "scope": scope,
@@ -907,6 +1120,73 @@ def arm_result(
     if private_artifact is not None:
         result["private_artifact"] = private_artifact
     return result
+
+
+def map_requirement_evidence(
+    gold_projection: Mapping[str, Any],
+    verifiers: Sequence[Mapping[str, Any]],
+    scope: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    requirements = gold_projection.get("requirements")
+    if not isinstance(requirements, list) or not requirements:
+        raise RunnerError("gold projection has no requirement evidence map")
+    verifiers_by_name = {
+        outcome.get("name"): outcome
+        for outcome in verifiers
+        if isinstance(outcome.get("name"), str)
+    }
+    records = []
+    for requirement in requirements:
+        if not isinstance(requirement, Mapping):
+            raise RunnerError("gold requirement evidence map is malformed")
+        requirement_id = requirement.get("id")
+        evidence = requirement.get("evidence")
+        if not isinstance(requirement_id, str) or not isinstance(evidence, Mapping):
+            raise RunnerError("gold requirement evidence map is malformed")
+        kind = evidence.get("kind")
+        if kind == "external_verifier":
+            verifier_name = evidence.get("verifier_name")
+            outcome = verifiers_by_name.get(verifier_name)
+            if not isinstance(verifier_name, str) or outcome is None:
+                raise RunnerError(
+                    f"gold requirement {requirement_id} names a missing verifier"
+                )
+            records.append(
+                {
+                    "requirement_id": requirement_id,
+                    "gold_requirement_id": requirement_id,
+                    "evidence_kind": kind,
+                    "verifier_name": verifier_name,
+                    "passed": outcome.get("passed") is True,
+                    "artifact_id": outcome.get("artifact_id"),
+                    "command_digest": outcome.get("command_digest"),
+                    "verifier_digest": outcome.get("verifier_digest"),
+                    "candidate_before_digest": outcome.get(
+                        "candidate_before_digest"
+                    ),
+                    "candidate_after_digest": outcome.get("candidate_after_digest"),
+                }
+            )
+        elif kind == "mutation_scope":
+            records.append(
+                {
+                    "requirement_id": requirement_id,
+                    "gold_requirement_id": requirement_id,
+                    "evidence_kind": kind,
+                    "verifier_name": None,
+                    "passed": scope.get("passed") is True,
+                    "artifact_id": None,
+                    "allowed_changed_paths": scope.get("allowed_changed_paths"),
+                    "unexpected_changed_paths": scope.get(
+                        "unexpected_changed_paths"
+                    ),
+                }
+            )
+        else:
+            raise RunnerError(
+                f"gold requirement {requirement_id} has an invalid evidence kind"
+            )
+    return records
 
 
 def verify_arm(

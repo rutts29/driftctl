@@ -205,6 +205,7 @@ def build_case_manifest(root: Path, case_directory: Path) -> dict[str, Any]:
     grader_files = relative_files(grader)
     gold_path = case_directory / "calibration" / "gold" / "active_projection.json"
     gold_projection = read_object(gold_path, "gold projection")
+    validate_gold_projection(gold_projection)
     expected_summary = plain_summary_for_projection(gold_projection)
     plain_summary_path = case_directory / "calibration" / "gold" / "plain_summary.txt"
     plain_summary = read_text(plain_summary_path, "plain summary")
@@ -629,6 +630,7 @@ def validate_case_fingerprints(root: Path, case: Mapping[str, Any]) -> None:
     if case.get("plain_summary_sha256") != digest_text(summary):
         raise CalibrationError(f"case {case_id} plain summary hash drifted")
     projection = required_manifest_mapping(case, "gold_projection")
+    validate_gold_projection(projection)
     gold_projection_path = safe_join(
         case_directory, artifacts["gold_projection"], "gold projection"
     )
@@ -710,6 +712,67 @@ def plain_summary_for_case(case: Mapping[str, Any], projection: Mapping[str, Any
 
     del case
     return plain_summary_for_projection(projection)
+
+
+def validate_gold_projection(projection: Mapping[str, Any]) -> None:
+    """Require stable IDs, closed-world actives, and logical provenance labels."""
+
+    if projection.get("schema_version") != 1:
+        raise CalibrationError("gold projection schema_version must be 1")
+    if projection.get("allow_additional_active") is not False:
+        raise CalibrationError("gold projection must reject additional active intent")
+    if projection.get("source_namespace") != {
+        "comparison": "non_identity",
+        "name": "fixture_logical_v1",
+    }:
+        raise CalibrationError("gold projection source namespace is invalid")
+    goal = required_manifest_mapping(projection, "goal")
+    required_manifest_string(goal, "text")
+    required_manifest_string_list(goal, "source_record_ids")
+    requirements = projection.get("requirements")
+    inactive = projection.get("inactive_requirements")
+    if not isinstance(requirements, list) or not requirements:
+        raise CalibrationError("gold projection requirements must be a nonempty array")
+    if not isinstance(inactive, list):
+        raise CalibrationError("gold projection inactive_requirements must be an array")
+    active_ids: set[str] = set()
+    for requirement in requirements:
+        if not isinstance(requirement, Mapping):
+            raise CalibrationError("gold projection requirement must be an object")
+        requirement_id = required_manifest_string(requirement, "id")
+        if requirement_id in active_ids:
+            raise CalibrationError("gold projection requirement IDs must be unique")
+        active_ids.add(requirement_id)
+        required_manifest_string(requirement, "text")
+        required_manifest_string_list(requirement, "source_record_ids")
+        evidence = required_manifest_mapping(requirement, "evidence")
+        evidence_kind = required_manifest_string(evidence, "kind")
+        if evidence_kind == "external_verifier":
+            if required_manifest_string(evidence, "verifier_name") not in {
+                "unit",
+                "integration",
+            }:
+                raise CalibrationError("gold verifier evidence mapping is invalid")
+        elif evidence_kind == "mutation_scope":
+            if "verifier_name" in evidence:
+                raise CalibrationError("mutation-scope evidence cannot name a verifier")
+        else:
+            raise CalibrationError("gold requirement evidence kind is invalid")
+    inactive_ids: set[str] = set()
+    for requirement in inactive:
+        if not isinstance(requirement, Mapping):
+            raise CalibrationError("gold inactive requirement must be an object")
+        requirement_id = required_manifest_string(requirement, "id")
+        if requirement_id in active_ids or requirement_id in inactive_ids:
+            raise CalibrationError("gold projection requirement IDs must be unique")
+        inactive_ids.add(requirement_id)
+        required_manifest_string(requirement, "text")
+        required_manifest_string_list(requirement, "source_record_ids")
+        if requirement.get("lifecycle") != "superseded":
+            raise CalibrationError("gold inactive requirement lifecycle must be superseded")
+        superseded_by = required_manifest_string(requirement, "superseded_by")
+        if superseded_by not in active_ids:
+            raise CalibrationError("gold inactive requirement superseded_by is not active")
 
 
 def plain_summary_for_projection(projection: Mapping[str, Any]) -> str:
