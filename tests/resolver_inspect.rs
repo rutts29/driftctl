@@ -97,6 +97,10 @@ except FileNotFoundError:
     call_index = 0
 with open(count_path, "w", encoding="utf-8") as count:
     count.write(str(call_index + 1))
+break_source = os.environ.get("DRIFTCTL_FAKE_BREAK_SOURCE_CURSOR")
+if break_source:
+    os.remove(break_source)
+    os.mkdir(break_source)
 if os.environ.get("DRIFTCTL_FAKE_DYNAMIC_CHUNKS") == "1":
     if prompt_document["protocol"] == "driftctl.semantic-proposal.v1":
         records = prompt_document["records"]
@@ -273,6 +277,21 @@ impl Fixture {
             .collect();
         paths.sort();
         paths
+    }
+
+    fn state_file(&self, name: &str) -> PathBuf {
+        let mut pending = vec![self.state_home.clone()];
+        while let Some(directory) = pending.pop() {
+            for entry in fs::read_dir(&directory).expect("read state directory") {
+                let path = entry.expect("state entry").path();
+                if path.is_dir() {
+                    pending.push(path);
+                } else if path.file_name().is_some_and(|candidate| candidate == name) {
+                    return path;
+                }
+            }
+        }
+        panic!("state file {name} was not found")
     }
 }
 
@@ -537,6 +556,107 @@ fn pending_goal_change_survives_cached_inspect_without_mutating_the_accepted_goa
             })
     );
     assert!(!bundle_document.to_string().contains(&fixture.session_id));
+    fixture.assert_unchanged();
+}
+
+#[test]
+fn interrupted_goal_proposal_commit_recovers_without_another_model_call() {
+    let mut fixture = Fixture::new(vec![base_proposal()]);
+    let first = fixture.run(&["--json"]);
+    assert_eq!(first.status.code(), Some(0), "{first:?}");
+    let first_document: Value = serde_json::from_slice(&first.stdout).expect("initial JSON");
+    let revision = first_document["projection"]["revision"]
+        .as_u64()
+        .expect("projection revision");
+    let active_ids = first_document["projection"]["preserve"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .chain(
+            first_document["projection"]["frontier"]
+                .as_array()
+                .into_iter()
+                .flatten(),
+        )
+        .chain(
+            first_document["projection"]["validation"]
+                .as_array()
+                .into_iter()
+                .flatten(),
+        )
+        .map(|item| item["id"].clone())
+        .collect::<Vec<_>>();
+    let proposal = json!({
+        "schema_version":1,
+        "base_projection_revision":revision,
+        "base_event_sequence":revision,
+        "classification":"goal_change",
+        "accounted_active_intent_ids":active_ids,
+        "accounted_source_record_ids":["u4:0"],
+        "operations":[],
+        "proposed_goal":{
+            "text":"Recover the interrupted replacement objective",
+            "source_record_ids":["u4:0"]
+        }
+    });
+    let canonical = fixture.root.canonicalize().expect("canonical source");
+    fixture.environment.insert(
+        "DRIFTCTL_FAKE_READ",
+        session(
+            &fixture.session_id,
+            &canonical,
+            &[
+                ("u1", "private raw goal that public output must not echo"),
+                ("u2", "private additive steering"),
+                ("u3", "private explicit supersession"),
+                ("u4", "replace the overall goal after this interruption"),
+            ],
+        )
+        .to_string(),
+    );
+    fixture.environment.insert(
+        "DRIFTCTL_FAKE_PROPOSALS",
+        json!([base_proposal(), proposal]).to_string(),
+    );
+
+    let source_path = fixture.state_file("source.json");
+    let accepted_source = fs::read(&source_path).expect("read accepted source cursor");
+    fixture.environment.insert(
+        "DRIFTCTL_FAKE_BREAK_SOURCE_CURSOR",
+        source_path.display().to_string(),
+    );
+    let interrupted = fixture.run(&["--json"]);
+    assert_eq!(interrupted.status.code(), Some(1), "{interrupted:?}");
+    assert!(
+        source_path.is_dir(),
+        "fake boundary interrupted cursor commit"
+    );
+
+    fs::remove_dir(&source_path).expect("remove interrupted cursor directory");
+    fs::write(&source_path, accepted_source).expect("restore last durable cursor");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&source_path, fs::Permissions::from_mode(0o600))
+            .expect("restore private cursor mode");
+    }
+    fixture
+        .environment
+        .remove("DRIFTCTL_FAKE_BREAK_SOURCE_CURSOR");
+
+    let recovered = fixture.run(&["--json"]);
+    assert_eq!(recovered.status.code(), Some(2), "{recovered:?}");
+    let recovered_document: Value =
+        serde_json::from_slice(&recovered.stdout).expect("recovered JSON");
+    assert_eq!(
+        recovered_document["goal_change"]["proposed_goal"],
+        "Recover the interrupted replacement objective"
+    );
+    assert_eq!(fixture.calls().len(), 2, "recovery must not call the model");
+
+    let cached = fixture.run(&["--json"]);
+    assert_eq!(cached.status.code(), Some(2), "{cached:?}");
+    assert_eq!(fixture.calls().len(), 2);
     fixture.assert_unchanged();
 }
 
