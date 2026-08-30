@@ -12,6 +12,7 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -456,13 +457,6 @@ impl RunStore {
     }
 }
 
-impl Drop for RunStore {
-    fn drop(&mut self) {
-        let lock = self.path.join(LOCK_FILE);
-        let _ = fs::remove_file(lock);
-    }
-}
-
 /// Return a stable SHA-256 repository identity based on its canonical local
 /// path.  The path itself is not persisted in the state layout.
 pub fn repository_id(repository: impl AsRef<Path>) -> Result<String, RunStoreError> {
@@ -574,12 +568,16 @@ fn verify_run_directory(path: &Path) -> Result<(), RunStoreError> {
 fn acquire_lock(run_path: &Path) -> Result<File, RunStoreError> {
     let lock = run_path.join(LOCK_FILE);
     ensure_regular_or_missing(&lock)?;
-    match OpenOptions::new().write(true).create_new(true).open(&lock) {
-        Ok(file) => Ok(file),
-        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
-            ensure_regular_or_missing(&lock)?;
-            Err(RunStoreError::Busy)
-        }
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&lock)
+        .map_err(|error| io_error("open writer lock", &lock, error))?;
+    match file.try_lock_exclusive() {
+        Ok(()) => Ok(file),
+        Err(error) if error.kind() == io::ErrorKind::WouldBlock => Err(RunStoreError::Busy),
         Err(error) => Err(io_error("acquire writer lock", &lock, error)),
     }
 }
