@@ -38,6 +38,8 @@ except ImportError:
 
 LONG_SESSION_LABEL = "native_long_session"
 NO_SIGNIFICANCE_LABEL = "descriptive_only_no_significance"
+DEFAULT_WORKER_MODEL = "gpt-5.6-luna"
+DEFAULT_WORKER_EFFORT = "max"
 
 
 class AppServer:
@@ -160,6 +162,8 @@ def main(arguments: Sequence[str]) -> int:
     parser.add_argument("--driftctl-bin", default="driftctl")
     parser.add_argument("--codex-bin", default="codex")
     parser.add_argument("--context-bytes", type=int, default=32768)
+    parser.add_argument("--worker-model", default=DEFAULT_WORKER_MODEL)
+    parser.add_argument("--worker-effort", default=DEFAULT_WORKER_EFFORT)
     parser.add_argument("--artifacts", type=Path)
     namespace = parser.parse_args(arguments)
     try:
@@ -170,6 +174,8 @@ def main(arguments: Sequence[str]) -> int:
             namespace.codex_bin,
             namespace.context_bytes,
             namespace.artifacts,
+            namespace.worker_model,
+            namespace.worker_effort,
         )
     except RunnerError as error:
         print(
@@ -187,9 +193,19 @@ def run_case(
     codex_bin: str,
     context_bytes: int = 32768,
     artifact_directory: Path | None = None,
+    worker_model: str = DEFAULT_WORKER_MODEL,
+    worker_effort: str = DEFAULT_WORKER_EFFORT,
 ) -> dict[str, Any]:
     if context_bytes < 0 or context_bytes > 512 * 1024:
         raise RunnerError("context bytes must be between 0 and 524288")
+    if not worker_model.strip() or not worker_effort.strip():
+        raise RunnerError("worker model and effort must be nonempty")
+    worker_policy = {
+        "approval_policy": "never",
+        "effort": worker_effort,
+        "model": worker_model,
+        "sandbox": "workspace-write",
+    }
     started = time.monotonic()
     case_directory = case_directory.resolve()
     definition = load_case(case_directory)
@@ -212,7 +228,7 @@ def run_case(
             "XDG_STATE_HOME": str(state_directory),
         }
         session_id, source_turns, injection = seed_native_session(
-            codex_bin, workspace, definition, context_bytes
+            codex_bin, workspace, definition, context_bytes, worker_policy
         )
         source_clean = git_clean(workspace)
         if not source_clean:
@@ -239,6 +255,7 @@ def run_case(
                 source_clean,
                 session_id,
                 private_artifact,
+                worker_policy,
             )
             for mode in ("baseline", "workflow")
         }
@@ -258,13 +275,25 @@ def run_case(
 
 
 def seed_native_session(
-    codex_bin: str, workspace: Path, definition: CaseDefinition, context_bytes: int
+    codex_bin: str,
+    workspace: Path,
+    definition: CaseDefinition,
+    context_bytes: int,
+    worker_policy: Mapping[str, str],
 ) -> tuple[str, list[str], dict[str, Any]]:
     server = AppServer(codex_bin)
     try:
         server.initialize()
         started = server.request(
-            "thread/start", {"cwd": str(workspace), "ephemeral": False}
+            "thread/start",
+            {
+                "approvalPolicy": worker_policy["approval_policy"],
+                "cwd": str(workspace),
+                "effort": worker_policy["effort"],
+                "ephemeral": False,
+                "model": worker_policy["model"],
+                "sandbox": worker_policy["sandbox"],
+            },
         )
         thread = started.get("thread")
         thread_id = thread.get("id") if isinstance(thread, Mapping) else None
@@ -358,6 +387,7 @@ def arm_result(
     source_clean: bool,
     source_session_id: str,
     private_artifact: str | None,
+    worker_policy: Mapping[str, str],
 ) -> dict[str, Any]:
     candidate = Path(str(arm["child_cwd"]))
     if not candidate.is_dir():
@@ -405,6 +435,7 @@ def arm_result(
         "verifier_fingerprint_sha256": fingerprint,
         "verified_completion": verified,
         "verifiers": verifiers,
+        "worker_policy": dict(worker_policy),
     }
     if private_artifact is not None:
         result["private_artifact"] = private_artifact
