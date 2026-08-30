@@ -86,12 +86,19 @@ class NativeLongSessionRunnerTests(unittest.TestCase):
                     "turn/start",
                     "thread/inject_items",
                     "turn/start",
+                    "thread/settings/update",
                 ],
             )
-            self.assertIn(
+            self.assertIn("Goal:", requests[3]["params"]["input"][0]["text"])
+            self.assertNotIn(
                 "Do not edit files", requests[3]["params"]["input"][0]["text"]
             )
             self.assertIn("Late steering", requests[5]["params"]["input"][0]["text"])
+            self.assertEqual(requests[3]["params"]["collaborationMode"]["mode"], "plan")
+            self.assertEqual(requests[5]["params"]["collaborationMode"]["mode"], "plan")
+            self.assertEqual(
+                requests[6]["params"]["collaborationMode"]["mode"], "default"
+            )
             self.assertEqual(requests[2]["params"]["model"], "gpt-5.6-luna")
             self.assertEqual(requests[2]["params"]["effort"], "max")
             self.assertEqual(requests[2]["params"]["sandbox"], "workspace-write")
@@ -107,11 +114,17 @@ class NativeLongSessionRunnerTests(unittest.TestCase):
             self.assertEqual(len(verify_calls), 6)
             self.assertTrue(all("--" in item["arguments"] for item in verify_calls))
             private = next(
-                (fixture / "artifacts").glob("01-steering-retry-native-*.json")
+                (fixture / "artifacts").glob(
+                    "01-steering-retry-native-run-*/artifacts/*.json"
+                )
             )
             self.assertIn("source-thread", private.read_text(encoding="utf-8"))
             self.assertEqual(stat.S_IMODE(private.parent.stat().st_mode), 0o700)
             self.assertEqual(stat.S_IMODE(private.stat().st_mode), 0o600)
+            private_run = private.parent.parent
+            self.assertEqual(stat.S_IMODE(private_run.stat().st_mode), 0o700)
+            self.assertTrue((private_run / "source-workspace").is_dir())
+            self.assertTrue((private_run / "state").is_dir())
 
     def test_continues_when_context_injection_is_not_supported(self) -> None:
         with temporary_fixture() as fixture:
@@ -218,6 +231,8 @@ for raw in sys.stdin:
         continue
     elif method == "thread/inject_items":
         result = {"accepted": True}
+    elif method == "thread/settings/update":
+        result = {}
     else:
         print(json.dumps({"id": request["id"], "error": {"message": "unexpected"}}), flush=True)
         continue
