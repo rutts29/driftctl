@@ -48,7 +48,11 @@ class ConflictGateRunnerTests(unittest.TestCase):
                 check=False,
             )
 
-            self.assertEqual(completed.returncode, 0, completed.stderr)
+            self.assertEqual(
+                completed.returncode,
+                0,
+                completed.stderr or completed.stdout,
+            )
             result = json.loads(result_path.read_text(encoding="utf-8"))
             self.assertEqual(result["status"], "verified")
             self.assertTrue(result["unsafe_continuation_blocked"])
@@ -121,7 +125,7 @@ for raw in sys.stdin:
     elif method == "thread/start":
         result = {"thread": {"id": "source-thread", "cwd": request["params"]["cwd"], "ephemeral": False}}
     elif method == "turn/start":
-        turns.append({"items": [{"type": "userMessage", "text": request["params"]["input"][0]["text"]}]})
+        turns.append({"items": [{"id": "item-" + str(len(turns) + 1), "type": "userMessage", "content": request["params"]["input"]}]})
         result = {"turn": {"id": "turn-" + str(len(turns)), "status": "inProgress"}}
     elif method == "turn/interrupt":
         result = {}
