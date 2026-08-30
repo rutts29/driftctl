@@ -41,6 +41,8 @@ LONG_SESSION_LABEL = "native_long_session"
 NO_SIGNIFICANCE_LABEL = "descriptive_only_no_significance"
 DEFAULT_WORKER_MODEL = "gpt-5.6-luna"
 DEFAULT_WORKER_EFFORT = "max"
+DURABLE_READ_ATTEMPTS = 100
+DURABLE_READ_INTERVAL_SECONDS = 0.05
 
 
 class AppServerRequestError(RunnerError):
@@ -149,13 +151,13 @@ class AppServer:
         return turn_id
 
     def require_user_message_count(self, thread_id: str, expected: int) -> None:
-        for _ in range(20):
+        for _ in range(DURABLE_READ_ATTEMPTS):
             try:
                 result = self.request(
                     "thread/read", {"threadId": thread_id, "includeTurns": True}
                 )
             except AppServerRequestError:
-                time.sleep(0.05)
+                time.sleep(DURABLE_READ_INTERVAL_SECONDS)
                 continue
             thread = result.get("thread")
             turns = thread.get("turns") if isinstance(thread, Mapping) else None
@@ -171,7 +173,7 @@ class AppServer:
                     return
                 if count > expected:
                     break
-            time.sleep(0.05)
+            time.sleep(DURABLE_READ_INTERVAL_SECONDS)
         raise RunnerError(
             f"native source did not durably retain exactly {expected} user messages"
         )
