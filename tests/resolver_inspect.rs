@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -34,6 +35,11 @@ fn git(root: &Path, arguments: &[&str]) {
         .output()
         .expect("run git");
     assert!(output.status.success(), "git failed: {output:?}");
+}
+
+fn driftctl_bin() -> OsString {
+    std::env::var_os("DRIFTCTL_E2E_BIN")
+        .unwrap_or_else(|| OsString::from(env!("CARGO_BIN_EXE_driftctl")))
 }
 
 fn clean_repository(root: &Path) {
@@ -135,6 +141,10 @@ if "app-server" in sys.argv and "--stdio" in sys.argv:
             child_goal = request["params"]["objective"]
             result = {"goal":{"threadId":request["params"]["threadId"],"objective":child_goal}}
         elif method == "turn/start":
+            source_path = os.environ.get("DRIFTCTL_FAKE_MUTATE_SOURCE_PATH")
+            if source_path:
+                with open(source_path, "w", encoding="utf-8") as source_file:
+                    source_file.write("mutated by child turn\n")
             result = {"turn":{"id":"continued-turn-" + request["params"]["threadId"],"items":[],"status":os.environ.get("DRIFTCTL_FAKE_TURN_STATUS", "completed")}}
         else:
             print(json.dumps({"id":request["id"],"error":{"code":-32601,"message":"unexpected"}}), flush=True)
@@ -300,7 +310,7 @@ impl Fixture {
     fn run(&self, options: &[&str]) -> Output {
         let mut arguments = vec!["inspect", "codex", "--session", &self.session_id];
         arguments.extend_from_slice(options);
-        let mut command = Command::new(env!("CARGO_BIN_EXE_driftctl"));
+        let mut command = Command::new(driftctl_bin());
         command.current_dir(&self.root).args(arguments);
         command.env(
             "OPENAI_API_KEY",
@@ -314,7 +324,7 @@ impl Fixture {
     }
 
     fn run_bundle(&self, run_id: &str) -> Output {
-        let mut command = Command::new(env!("CARGO_BIN_EXE_driftctl"));
+        let mut command = Command::new(driftctl_bin());
         command
             .current_dir(&self.root)
             .args(["bundle", "--run", run_id, "--json"]);
@@ -327,7 +337,7 @@ impl Fixture {
     fn run_continue(&self, options: &[&str]) -> Output {
         let mut arguments = vec!["continue", "codex", "--session", &self.session_id];
         arguments.extend_from_slice(options);
-        let mut command = Command::new(env!("CARGO_BIN_EXE_driftctl"));
+        let mut command = Command::new(driftctl_bin());
         command.current_dir(&self.root).args(arguments);
         for (name, value) in &self.environment {
             command.env(name, value);
@@ -338,7 +348,7 @@ impl Fixture {
     fn run_compare(&self, options: &[&str]) -> Output {
         let mut arguments = vec!["compare", "codex", "--session", &self.session_id];
         arguments.extend_from_slice(options);
-        let mut command = Command::new(env!("CARGO_BIN_EXE_driftctl"));
+        let mut command = Command::new(driftctl_bin());
         command.current_dir(&self.root).args(arguments);
         for (name, value) in &self.environment {
             command.env(name, value);
@@ -599,6 +609,38 @@ fn compare_runs_equal_isolated_children_with_only_the_projection_added() {
     }));
     assert_eq!(fixture.calls().len(), 1);
     fixture.assert_unchanged();
+}
+
+#[test]
+fn compare_blocks_when_a_child_mutates_the_source_after_isolation() {
+    let mut fixture = Fixture::new(vec![base_proposal()]);
+    fixture.environment.insert(
+        "DRIFTCTL_FAKE_MUTATE_SOURCE_PATH",
+        fixture.root.join("README.md").display().to_string(),
+    );
+
+    let compared = fixture.run_compare(&["--json"]);
+    assert_eq!(compared.status.code(), Some(2), "{compared:?}");
+    assert!(
+        String::from_utf8_lossy(&compared.stderr).contains("source workspace changed"),
+        "{compared:?}"
+    );
+}
+
+#[test]
+fn continue_blocks_when_the_child_mutates_the_source_after_isolation() {
+    let mut fixture = Fixture::new(vec![base_proposal()]);
+    fixture.environment.insert(
+        "DRIFTCTL_FAKE_MUTATE_SOURCE_PATH",
+        fixture.root.join("README.md").display().to_string(),
+    );
+
+    let continued = fixture.run_continue(&["--json"]);
+    assert_eq!(continued.status.code(), Some(2), "{continued:?}");
+    assert!(
+        String::from_utf8_lossy(&continued.stderr).contains("source workspace changed"),
+        "{continued:?}"
+    );
 }
 
 #[test]

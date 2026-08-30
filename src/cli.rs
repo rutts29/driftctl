@@ -674,6 +674,10 @@ fn compare_codex(root: &Path, arguments: &[String]) -> CliOutput {
     if let Err(error) = codex_source::verify_unchanged(root, &imported) {
         return CliOutput::blocked(error.to_string());
     }
+    if let Err(error) = crate::workspace::verify_source_unchanged(root, pair.source_pre_manifest())
+    {
+        return CliOutput::blocked(error.to_string());
+    }
     let baseline_diff = match crate::workspace::candidate_diff(baseline.child_cwd()) {
         Ok(diff) => diff,
         Err(error) => return CliOutput::error(error.to_string()),
@@ -922,6 +926,10 @@ fn continue_codex(root: &Path, arguments: &[String]) -> CliOutput {
         Err(error) => return CliOutput::blocked(error.to_string()),
     };
     if let Err(error) = codex_source::verify_unchanged(root, &imported) {
+        return CliOutput::blocked(error.to_string());
+    }
+    if let Err(error) = crate::workspace::verify_source_unchanged(root, pair.source_pre_manifest())
+    {
         return CliOutput::blocked(error.to_string());
     }
 

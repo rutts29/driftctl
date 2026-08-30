@@ -330,6 +330,20 @@ pub fn isolate_workspace(
     })
 }
 
+/// Re-read the source workspace after external work and require exact equality
+/// with the manifest captured before isolation.
+pub fn verify_source_unchanged(
+    source: impl AsRef<Path>,
+    expected: &WorkspaceManifest,
+) -> Result<(), WorkspaceError> {
+    let observed = capture(source.as_ref())?;
+    if &observed.manifest == expected {
+        Ok(())
+    } else {
+        Err(WorkspaceError::SourceChanged)
+    }
+}
+
 struct CapturedWorkspace {
     source_root: PathBuf,
     manifest: WorkspaceManifest,
