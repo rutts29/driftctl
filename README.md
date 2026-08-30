@@ -43,11 +43,15 @@ Older `start`, `steer`, `resume`, `verify`, and `close` commands remain availabl
 
 ## Evidence and limits
 
-The archived five-case result is hard-transcript-loss fault-injection evidence only: the workflow verified 5/5 cases and the worktree-only baseline 3/5. It does not measure intact native-session continuation, ordinary compaction, or a statistically significant effect; the archived files predate the current exact mutation-scope scorer and are retained rather than rescored as current native evidence.
+The frozen intact-session suite ran once at 128 KiB of post-steering context. Four cases reached behavioral comparison: baseline verified 3/4 and Driftctl verified 2/4. The one plain-summary control tied both other arms. Case 05 blocked before coding on a source-linked unresolved conflict and is reported separately from completion rates. This is descriptive negative evidence: it does not show that Driftctl improves coding outcomes.
 
-The eligible native evidence is one case-02 pair at 800 KiB of post-steering context. Both arms recorded native compaction, passed the external and exact-scope checks, and completed in 528.933 seconds. This is compaction-boundary parity/no-harm evidence only. It does not prove an intact-session efficacy improvement, and there are not five intact native pairs.
+All nine coding candidates passed the fixed verifiers and exact scope before independent review. One blind, read-only review per candidate found three Required defects and blocked closure without a feedback/fix loop. The useful measured behavior was refusal to claim verified completion, not an efficacy gain from the projection. See [`evals/results/native-suite-20260830/summary.json`](evals/results/native-suite-20260830/summary.json) and [`IMPROVEMENT-CHANGELOG.md`](IMPROVEMENT-CHANGELOG.md).
+
+An earlier case-02 pair at 800 KiB recorded native compaction in both arms, passed the external and exact-scope checks, and completed in 528.933 seconds. This remains separate compaction-boundary parity/no-harm evidence.
 
 One separate no-TTY conflict safety case passed: `continue` exited blocked before child creation and preserved the source session and workspace. That single case demonstrates fail-closed handling of its unresolved conflict, not coding-quality improvement or significance. See [`evals/results/conflict-gate.json`](evals/results/conflict-gate.json), [`IMPROVEMENT-CHANGELOG.md`](IMPROVEMENT-CHANGELOG.md), and [`REPRODUCING.md`](REPRODUCING.md).
+
+The archived five-case hard-loss result remains historical fault-injection evidence only: workflow 5/5 versus worktree-only baseline 3/5. It predates the current exact-scope and independent-review gates and is not combined with the intact-session result.
 
 The native runner uses `gpt-5.6-luna` at `max` reasoning by default. Recorded environment versions include Rust/Cargo 1.97.1, Python 3.14.4 (3.11+ required), Git 2.53.0, and `codex-cli 0.150.1`; live behavior, timing, and usage depend on the executing user's Codex account and configuration.
 

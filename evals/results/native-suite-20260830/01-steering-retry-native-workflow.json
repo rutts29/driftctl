@@ -1,0 +1,183 @@
+{
+  "agent_succeeded": true,
+  "case_id": "01-steering-retry",
+  "changed_paths": [
+    "service_client.py",
+    "tests/test_unit_client.py"
+  ],
+  "elapsed_scope": "paired_case_wall_time",
+  "elapsed_seconds": 805.54,
+  "evaluation_kind": "native_long_session",
+  "mode": "workflow",
+  "native_checkpoint": {
+    "injection": {
+      "accepted": true,
+      "attempted": true,
+      "bytes": 131072,
+      "chunks": 4,
+      "position": "after_last_user_turn"
+    },
+    "source_turn_labels": [
+      "initial",
+      "steering-1"
+    ],
+    "source_user_turn_count": 2,
+    "source_workspace_clean": true
+  },
+  "premature_completion": {
+    "available": true,
+    "detected": false,
+    "phase": "continuation"
+  },
+  "projection_generation": {
+    "cached_input_tokens": 0,
+    "calls": 1,
+    "effort": "max",
+    "elapsed_ms": 27876,
+    "input_tokens": 13649,
+    "model": "gpt-5.6-luna",
+    "output_tokens": 1293,
+    "reasoning_output_tokens": 1024
+  },
+  "recovery_context": "intact_native_session",
+  "requirement_evidence": [
+    {
+      "artifact_id": "verification-3855864-1788072227194-1",
+      "candidate_after_digest": "sha256:90bd7a46a68a3eb4867dcc45b145d9a7fce73b62104ae0febb1fb0951be8f9ef",
+      "candidate_before_digest": "sha256:90bd7a46a68a3eb4867dcc45b145d9a7fce73b62104ae0febb1fb0951be8f9ef",
+      "command_digest": "sha256:87b17b420377e1fe61bd1848a505b322c02a39f86b13709cc9fe1d90d40cd5a8",
+      "evidence_kind": "external_verifier",
+      "gold_requirement_id": "01.retry-transient",
+      "passed": true,
+      "requirement_id": "01.retry-transient",
+      "verifier_digest": "sha256:1d5ffabf67c321b37970ff47d9113978648b9b7ee54062b5c228240b530b11f5",
+      "verifier_name": "unit"
+    },
+    {
+      "allowed_changed_paths": [
+        "service_client.py",
+        "tests/test_unit_client.py"
+      ],
+      "artifact_id": null,
+      "evidence_kind": "mutation_scope",
+      "gold_requirement_id": "01.scope",
+      "passed": true,
+      "requirement_id": "01.scope",
+      "unexpected_changed_paths": [],
+      "verifier_name": null
+    },
+    {
+      "artifact_id": "verification-3855873-1788072227348-1",
+      "candidate_after_digest": "sha256:90bd7a46a68a3eb4867dcc45b145d9a7fce73b62104ae0febb1fb0951be8f9ef",
+      "candidate_before_digest": "sha256:90bd7a46a68a3eb4867dcc45b145d9a7fce73b62104ae0febb1fb0951be8f9ef",
+      "command_digest": "sha256:14f10fee124968b83cbdbf8f3dce7dbc833d523ab64ada583fe7f6033ee423e4",
+      "evidence_kind": "external_verifier",
+      "gold_requirement_id": "01.auth-non-retry",
+      "passed": true,
+      "requirement_id": "01.auth-non-retry",
+      "verifier_digest": "sha256:1ff013310d2de72459c884a17018a18185ef2943484fb28908c15d61b88c6468",
+      "verifier_name": "integration"
+    }
+  ],
+  "requirement_pass_rate": 1.0,
+  "review": {
+    "advisory_count": 0,
+    "attempt": 1,
+    "candidate_after_digest": "sha256:dba084f5f53b74a72860e8efb8c99493c940940a44d87b92b75943720f57afdf",
+    "candidate_before_digest": "sha256:dba084f5f53b74a72860e8efb8c99493c940940a44d87b92b75943720f57afdf",
+    "candidate_unchanged": true,
+    "coverage_complete": true,
+    "critical_count": 0,
+    "findings": [
+      {
+        "category": "correctness",
+        "finding_digest": "sha256:b21f009af44c6aafb559d842347d3e5384aa1be1403753e6547373d687179553",
+        "id": "F-001",
+        "line": 30,
+        "path": "service_client.py",
+        "requirement_ids": [
+          "01.retry-transient"
+        ],
+        "severity": "Required"
+      }
+    ],
+    "prompt_sha256": "sha256:70b1be5adaab75b4dcfb963da3bea601587e843ea8d6a8e375c60c81671ad62c",
+    "raw_private_retained": true,
+    "required_count": 1,
+    "requirements_sha256": "sha256:a4772f142e865803587b7e02d8b4e525d83e5bc130776eb349cc111e226fa14b",
+    "review_passed": false,
+    "reviewer_policy": {
+      "approval_policy": "never",
+      "effort": "max",
+      "model": "gpt-5.6-luna",
+      "sandbox": "read-only"
+    },
+    "schema_version": 1,
+    "status": "completed"
+  },
+  "scope": {
+    "allowed_changed_paths": [
+      "service_client.py",
+      "tests/test_unit_client.py"
+    ],
+    "passed": true,
+    "unexpected_changed_paths": []
+  },
+  "statistical_claim": "descriptive_only_no_significance",
+  "status": "completed",
+  "title": "Retry transient service failures without replaying authentication failures",
+  "token_usage": {
+    "available": false,
+    "cached_input_tokens": 0,
+    "input_tokens": 0,
+    "output_tokens": 0,
+    "total_tokens": 0
+  },
+  "turn_status": "completed",
+  "verified_completion": false,
+  "verifier_fingerprint_sha256": "b75e5e91240a1f4dff3a94d8bd3f7fe05ff69feb1760b4e539a3ed49973bd65a",
+  "verifiers": [
+    {
+      "artifact_id": "verification-3855864-1788072227194-1",
+      "candidate_after_digest": "sha256:90bd7a46a68a3eb4867dcc45b145d9a7fce73b62104ae0febb1fb0951be8f9ef",
+      "candidate_before_digest": "sha256:90bd7a46a68a3eb4867dcc45b145d9a7fce73b62104ae0febb1fb0951be8f9ef",
+      "command_digest": "sha256:87b17b420377e1fe61bd1848a505b322c02a39f86b13709cc9fe1d90d40cd5a8",
+      "elapsed_ms": 128,
+      "name": "unit",
+      "passed": true,
+      "requirement_id": "01-steering-retry:unit",
+      "status": "passed",
+      "verifier_digest": "sha256:1d5ffabf67c321b37970ff47d9113978648b9b7ee54062b5c228240b530b11f5"
+    },
+    {
+      "artifact_id": "verification-3855873-1788072227348-1",
+      "candidate_after_digest": "sha256:90bd7a46a68a3eb4867dcc45b145d9a7fce73b62104ae0febb1fb0951be8f9ef",
+      "candidate_before_digest": "sha256:90bd7a46a68a3eb4867dcc45b145d9a7fce73b62104ae0febb1fb0951be8f9ef",
+      "command_digest": "sha256:14f10fee124968b83cbdbf8f3dce7dbc833d523ab64ada583fe7f6033ee423e4",
+      "elapsed_ms": 125,
+      "name": "integration",
+      "passed": true,
+      "requirement_id": "01-steering-retry:integration",
+      "status": "passed",
+      "verifier_digest": "sha256:1ff013310d2de72459c884a17018a18185ef2943484fb28908c15d61b88c6468"
+    },
+    {
+      "artifact_id": "verification-3855881-1788072227502-1",
+      "candidate_after_digest": "sha256:90bd7a46a68a3eb4867dcc45b145d9a7fce73b62104ae0febb1fb0951be8f9ef",
+      "candidate_before_digest": "sha256:90bd7a46a68a3eb4867dcc45b145d9a7fce73b62104ae0febb1fb0951be8f9ef",
+      "command_digest": "sha256:ec3c262088ca829519ca9d5f965afd88cfe8844f0b7b033180957ab3abda83fb",
+      "elapsed_ms": 268,
+      "name": "all",
+      "passed": true,
+      "requirement_id": "01-steering-retry:all",
+      "status": "passed",
+      "verifier_digest": "sha256:dedd2ae3370fd942c4a9612bbd1bc73d1265debc008b3fbd87e30e23d5a8b8cb"
+    }
+  ],
+  "worker_policy": {
+    "approval_policy": "never",
+    "effort": "max",
+    "model": "gpt-5.6-luna",
+    "sandbox": "workspace-write"
+  }
+}

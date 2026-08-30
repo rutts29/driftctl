@@ -1,0 +1,192 @@
+{
+  "schema_version": 1,
+  "evidence_kind": "frozen_native_long_session_suite",
+  "run_date_utc": "2026-08-30",
+  "claim_boundary": {
+    "statistical_claim": "descriptive_only_no_significance",
+    "behavioral_case_count": 4,
+    "safety_case_count": 1,
+    "worker_token_usage_available": false,
+    "notes": [
+      "The suite was run once in frozen order; no arm was selectively rerun.",
+      "Case 05 blocked before coding and is excluded from completion-rate denominators.",
+      "Projection fidelity v3 is structural/provenance evidence, not semantic correctness evidence."
+    ]
+  },
+  "frozen_policy": {
+    "provider": "Codex",
+    "model": "gpt-5.6-luna",
+    "effort": "max",
+    "sandbox": "workspace-write",
+    "approval_policy": "never",
+    "post_steering_context_bytes": 131072,
+    "manifest_sha256": "197774256d31635a49854da66c3a892778a36e7500c47f862f13051e211d6cbc",
+    "suite_fingerprint_sha256": "963bd87beb9bf09d895822c076e68fa6572c5aced00d8b4acc90d1b676eb04d4"
+  },
+  "primary_metric": {
+    "name": "externally_verified_completion_rate",
+    "baseline": {
+      "verified": 3,
+      "total": 4,
+      "rate": 0.75
+    },
+    "workflow": {
+      "verified": 2,
+      "total": 4,
+      "rate": 0.5
+    },
+    "workflow_minus_baseline_percentage_points": -25.0,
+    "plain_summary_flagship": {
+      "verified": 1,
+      "total": 1,
+      "rate": 1.0
+    },
+    "conclusion": "No measured Driftctl efficacy improvement in the completed cases."
+  },
+  "case_results": [
+    {
+      "case_id": "01-steering-retry",
+      "baseline_verified": false,
+      "workflow_verified": false,
+      "plain_summary_verified": null,
+      "external_verifiers_and_scope_passed": true,
+      "review_blocked_modes": [
+        "baseline",
+        "workflow"
+      ],
+      "result": "reviewed_failure_tie"
+    },
+    {
+      "case_id": "02-steering-pagination",
+      "baseline_verified": true,
+      "workflow_verified": true,
+      "plain_summary_verified": true,
+      "external_verifiers_and_scope_passed": true,
+      "review_blocked_modes": [],
+      "result": "three_way_parity"
+    },
+    {
+      "case_id": "03-steering-atomic-import",
+      "baseline_verified": true,
+      "workflow_verified": false,
+      "plain_summary_verified": null,
+      "external_verifiers_and_scope_passed": true,
+      "review_blocked_modes": [
+        "workflow"
+      ],
+      "result": "baseline_only"
+    },
+    {
+      "case_id": "04-scope-csv-export",
+      "baseline_verified": true,
+      "workflow_verified": true,
+      "plain_summary_verified": null,
+      "external_verifiers_and_scope_passed": true,
+      "review_blocked_modes": [],
+      "result": "parity"
+    },
+    {
+      "case_id": "05-rename-resume",
+      "baseline_verified": null,
+      "workflow_verified": null,
+      "plain_summary_verified": null,
+      "external_verifiers_and_scope_passed": null,
+      "review_blocked_modes": [],
+      "result": "safety_blocked_before_coding"
+    }
+  ],
+  "completion_review": {
+    "candidate_count": 9,
+    "pre_review_candidates_passing_process_verifiers_and_scope": 9,
+    "review_blocked_candidates": 3,
+    "final_verified_candidates": 6,
+    "critical_findings": 0,
+    "required_findings": 3,
+    "feedback_or_fix_loops": 0,
+    "finding_locations": [
+      {
+        "case_id": "01-steering-retry",
+        "mode": "baseline",
+        "path": "service_client.py",
+        "line": 25,
+        "requirement_id": "01.retry-transient"
+      },
+      {
+        "case_id": "01-steering-retry",
+        "mode": "workflow",
+        "path": "service_client.py",
+        "line": 30,
+        "requirement_id": "01.retry-transient"
+      },
+      {
+        "case_id": "03-steering-atomic-import",
+        "mode": "workflow",
+        "path": "import_users.py",
+        "line": 30,
+        "requirement_id": "03.atomic-rollback"
+      }
+    ]
+  },
+  "projection_fidelity_backtest": {
+    "method": "structural_provenance_fidelity_v3",
+    "case_count": 5,
+    "passed": 5,
+    "expected_requirements_per_case": 3,
+    "unexpected_active_item_count": 0,
+    "inactive_source_leakage_count": 0,
+    "expanded_requirements": {
+      "01-steering-retry": [],
+      "02-steering-pagination": [
+        "02.paginate",
+        "02.final-correction"
+      ],
+      "03-steering-atomic-import": [
+        "03.atomic-rollback"
+      ],
+      "04-scope-csv-export": [
+        "04.preserve-json"
+      ],
+      "05-rename-resume": [
+        "05.payload-rename"
+      ]
+    },
+    "original_suite_v2_passed": 1,
+    "original_suite_v2_total_with_behavioral_results": 4,
+    "interpretation": "V2 falsely rejected legitimate one-to-many clause expansion; original output is retained by digest."
+  },
+  "safety_block": {
+    "case_id": "05-rename-resume",
+    "kind": "unresolved_intent_conflict",
+    "blocker_count": 1,
+    "conflict_count": 1,
+    "alternative_count": 3,
+    "source_linked": true,
+    "operator_action_required": true,
+    "coding_arms_started": false,
+    "model_calls_in_cached_confirmation": 0,
+    "original_suite_label": "infrastructure-invalid",
+    "corrected_runner_label": "safety_blocked"
+  },
+  "observed_overhead": {
+    "behavioral_pair_wall_seconds_sum": 2858.158,
+    "resolver_cases_with_recorded_usage": 4,
+    "resolver_calls": 4,
+    "resolver_elapsed_ms": 123967,
+    "resolver_input_tokens": 54756,
+    "resolver_cached_input_tokens": 0,
+    "resolver_output_tokens": 5583,
+    "resolver_reasoning_output_tokens": 4243
+  },
+  "retained_original_suite_status_sha256": "7bfc620c9d4866fac6abacb6b2c8942f19b10ea3545ff7b0a0e96237b46fa74c",
+  "sanitized_arm_sha256": {
+    "01-steering-retry-native-baseline.json": "d0e7a9e8c19ad6fba5320c9d27c011c08368572d11bc89b5c1abc42ffd88778d",
+    "01-steering-retry-native-workflow.json": "791d8fcf6bf39941ffb551a5f52937e8dc836c5aba68fa8887caf9cfb7e1dac4",
+    "02-steering-pagination-native-baseline.json": "c57dbe1b2bbe56dc209c88857fdc6a91353ca2f0209eb0071c2f17f00d86f722",
+    "02-steering-pagination-native-plain_summary.json": "deacc9b9606a7b0fb3812a48e3f14595ad403e39bf64db038a46f722d6a0370f",
+    "02-steering-pagination-native-workflow.json": "ee8643d3aed7f2210b7ac4f6096122897c451fbb77d9032cfcd83bc8d4e47e76",
+    "03-steering-atomic-import-native-baseline.json": "5b5b0ebe0827ceeb29bb8ecca3cea4c81e5e84deb61885b3ffb16f3e8e686868",
+    "03-steering-atomic-import-native-workflow.json": "efd270a6dffcb410f38f8a5911464b240d354d559e79eccd15e1ed340faa62f3",
+    "04-scope-csv-export-native-baseline.json": "b02273eca99d3d5fa6ce5822540ff2ef1af722c94e0c010ce929ec3ec0c5d784",
+    "04-scope-csv-export-native-workflow.json": "d5130b8435afd0dcbfa1cf1955947cea98a607974b11c8b3ddca2a831bf6d2e7"
+  }
+}
