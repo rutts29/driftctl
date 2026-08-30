@@ -474,16 +474,15 @@ impl Fixture {
     }
 
     fn run_ab_report(&self, run_id: &str, verifier: &Path) -> Output {
+        self.run_ab_report_command(run_id, verifier.as_os_str())
+    }
+
+    fn run_ab_report_command(&self, run_id: &str, verifier: &std::ffi::OsStr) -> Output {
         let mut command = Command::new(driftctl_bin());
-        command.current_dir(&self.root).args([
-            "ab",
-            "report",
-            "--run",
-            run_id,
-            "--json",
-            "--",
-            verifier.to_str().expect("UTF-8 verifier path"),
-        ]);
+        command
+            .current_dir(&self.root)
+            .args(["ab", "report", "--run", run_id, "--json", "--"]);
+        command.arg(verifier);
         for (name, value) in &self.environment {
             command.env(name, value);
         }
@@ -749,6 +748,10 @@ fn prospective_ab_cli_prepares_idle_forks_then_reports_the_explicitly_managed_ar
     assert_eq!(reported["enrollment"]["workflow"], "attached_exact");
     assert_eq!(reported["baseline"]["verified_completion"], true);
     assert_eq!(reported["workflow"]["verified_completion"], true);
+    assert_eq!(
+        reported["baseline"]["verifier_digest"],
+        reported["workflow"]["verifier_digest"]
+    );
     assert_eq!(reported["baseline"]["post_checkpoint_user_prompts"], 1);
     assert_eq!(reported["workflow"]["post_checkpoint_user_prompts"], 1);
     assert_eq!(reported["baseline"]["post_checkpoint_records"], 1);
@@ -825,6 +828,61 @@ fn prospective_ab_prepare_retains_an_explicit_blocked_partial_run() {
             .iter()
             .any(|request| request["method"] == "turn/start")
     );
+    fixture.assert_unchanged();
+}
+
+#[cfg(unix)]
+#[test]
+fn prospective_ab_report_rejects_different_candidate_resolved_verifiers() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let fixture = Fixture::new(vec![base_proposal(), base_proposal()]);
+    let prepared = fixture.run_ab_prepare();
+    assert_eq!(prepared.status.code(), Some(0), "{prepared:?}");
+    let prepared: Value = serde_json::from_slice(&prepared.stdout).expect("prepared A/B JSON");
+    let run_id = prepared["run_id"].as_str().expect("A/B run ID");
+    let baseline_id = prepared["baseline"]["session_id"]
+        .as_str()
+        .expect("baseline child ID");
+    let workflow_id = prepared["workflow"]["session_id"]
+        .as_str()
+        .expect("workflow child ID");
+    let baseline_cwd = PathBuf::from(prepared["baseline"]["cwd"].as_str().expect("baseline cwd"));
+    let workflow_cwd = PathBuf::from(prepared["workflow"]["cwd"].as_str().expect("workflow cwd"));
+    let activated = fixture.run_hook(&workflow_cwd, workflow_id, "workflow-on", "$driftctl on");
+    assert_eq!(activated.status.code(), Some(0), "{activated:?}");
+    fixture.append_child_items(
+        baseline_id,
+        vec![json!({"type":"userMessage","id":"baseline-u4","content":[{"type":"text","text":"Finish the checkpoint task"}]})],
+    );
+    fixture.append_child_items(
+        workflow_id,
+        vec![
+            json!({"type":"userMessage","id":"workflow-on","content":[{"type":"text","text":"$driftctl on"}]}),
+            json!({"type":"userMessage","id":"workflow-u4","content":[{"type":"text","text":"Finish the checkpoint task"}]}),
+        ],
+    );
+
+    let baseline_verifier = baseline_cwd.join("candidate-verifier.sh");
+    let workflow_verifier = workflow_cwd.join("candidate-verifier.sh");
+    fs::write(&baseline_verifier, "#!/bin/sh\nexit 0\n").expect("write baseline verifier");
+    fs::write(&workflow_verifier, "#!/bin/sh\n# different code\nexit 0\n")
+        .expect("write workflow verifier");
+    fs::set_permissions(&baseline_verifier, fs::Permissions::from_mode(0o755))
+        .expect("make baseline verifier executable");
+    fs::set_permissions(&workflow_verifier, fs::Permissions::from_mode(0o755))
+        .expect("make workflow verifier executable");
+
+    let rejected =
+        fixture.run_ab_report_command(run_id, std::ffi::OsStr::new("./candidate-verifier.sh"));
+    assert_eq!(rejected.status.code(), Some(1), "{rejected:?}");
+    assert!(
+        String::from_utf8_lossy(&rejected.stderr)
+            .contains("A/B verifier program must resolve to one external regular file")
+    );
+
+    let detached = fixture.run_hook(&workflow_cwd, workflow_id, "workflow-off", "$driftctl off");
+    assert_eq!(detached.status.code(), Some(0), "{detached:?}");
     fixture.assert_unchanged();
 }
 

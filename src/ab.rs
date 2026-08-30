@@ -1,5 +1,6 @@
 //! Private state and execution boundaries for prospective paired A/B runs.
 
+use std::env;
 use std::ffi::OsString;
 use std::fs::{self, File, OpenOptions};
 use std::io::Write as _;
@@ -316,6 +317,7 @@ pub(crate) fn report(run_id: &str, command: Vec<OsString>) -> Result<AbOutput, A
     if command.is_empty() || command.iter().any(|argument| argument.is_empty()) {
         return Err(AbFailure::error("ab report requires a verifier command"));
     }
+    let command = canonicalize_verifier_command(command)?;
     let requested_command_digest = crate::verification::command_digest(&command);
     let mut store = ExperimentStore::open(run_id)?;
     if let Some(document) = store.state.report.clone() {
@@ -352,6 +354,7 @@ pub(crate) fn report(run_id: &str, command: Vec<OsString>) -> Result<AbOutput, A
         .ok_or_else(|| AbFailure::blocked("A/B run has no workflow arm"))?;
     let baseline_cwd = validate_arm_path(&store.path, &baseline)?;
     let workflow_cwd = validate_arm_path(&store.path, &workflow)?;
+    reject_candidate_resolved_verifier_inputs(&command, &baseline_cwd, &workflow_cwd)?;
 
     if crate::enrollment::load(&baseline.session_id)
         .map_err(|error| AbFailure::error(error.to_string()))?
@@ -521,6 +524,20 @@ pub(crate) fn report(run_id: &str, command: Vec<OsString>) -> Result<AbOutput, A
             .baseline_verification = Some(result);
         store.persist()?;
     }
+    let baseline_verification = store
+        .state
+        .report_progress
+        .as_ref()
+        .and_then(|progress| progress.baseline_verification.as_ref())
+        .expect("baseline verification persisted");
+    if baseline_verification.status
+        == crate::verification::VerificationStatus::ProtectedInputChanged
+    {
+        return Err(AbFailure::blocked(
+            "the external A/B verifier changed during baseline verification",
+        ));
+    }
+    let pinned_verifier_digest = baseline_verification.verifier_digest.clone();
     if store
         .state
         .report_progress
@@ -528,6 +545,13 @@ pub(crate) fn report(run_id: &str, command: Vec<OsString>) -> Result<AbOutput, A
         .and_then(|progress| progress.workflow_verification.as_ref())
         .is_none()
     {
+        let current_verifier_digest = crate::verification::verifier_digest(&workflow_cwd, &command)
+            .map_err(|error| AbFailure::error(error.to_string()))?;
+        if current_verifier_digest != pinned_verifier_digest {
+            return Err(AbFailure::blocked(
+                "the external A/B verifier changed between arm executions",
+            ));
+        }
         let request = crate::verification::VerificationRequest::new(
             &workflow_cwd,
             "ab-paired-completion",
@@ -558,6 +582,16 @@ pub(crate) fn report(run_id: &str, command: Vec<OsString>) -> Result<AbOutput, A
         .workflow_verification
         .as_ref()
         .expect("workflow verification persisted");
+    if workflow_result.status == crate::verification::VerificationStatus::ProtectedInputChanged {
+        return Err(AbFailure::blocked(
+            "the external A/B verifier changed during workflow verification",
+        ));
+    }
+    if baseline_result.verifier_digest != workflow_result.verifier_digest {
+        return Err(AbFailure::blocked(
+            "the A/B arms did not execute the same verifier content",
+        ));
+    }
     let document = json!({
         "schema_version":SCHEMA_VERSION,
         "experiment_kind":EXPERIMENT_KIND,
@@ -569,7 +603,8 @@ pub(crate) fn report(run_id: &str, command: Vec<OsString>) -> Result<AbOutput, A
             "starting_candidate_digest_equal":true,
             "inherited_goal_equal":true,
             "worker_policy_equal":true,
-            "same_verifier_command":baseline_result.command_digest == workflow_result.command_digest,
+            "same_verifier_command":baseline_result.command_digest == workflow_result.command_digest
+                && baseline_result.verifier_digest == workflow_result.verifier_digest,
             "verifier_execution_order":["baseline","workflow"],
         },
         "enrollment":{
@@ -603,6 +638,54 @@ pub(crate) fn report(run_id: &str, command: Vec<OsString>) -> Result<AbOutput, A
     store.state.status = ExperimentStatus::Evaluated;
     store.persist()?;
     Ok(report_output(document, false))
+}
+
+fn canonicalize_verifier_command(mut command: Vec<OsString>) -> Result<Vec<OsString>, AbFailure> {
+    let invocation_directory = env::current_dir()
+        .map_err(|error| AbFailure::error(format!("read report directory: {error}")))?;
+    let program = PathBuf::from(&command[0]);
+    let resolved = if program.is_absolute() {
+        program
+    } else {
+        invocation_directory.join(program)
+    };
+    let canonical = resolved.canonicalize().map_err(|_| {
+        AbFailure::error(
+            "A/B verifier program must resolve to one external regular file from the report invocation directory",
+        )
+    })?;
+    let metadata = fs::symlink_metadata(&canonical).map_err(|_| {
+        AbFailure::error("A/B verifier program must resolve to one external regular file")
+    })?;
+    if !metadata.file_type().is_file() {
+        return Err(AbFailure::error(
+            "A/B verifier program must resolve to one external regular file",
+        ));
+    }
+    command[0] = canonical.into_os_string();
+    Ok(command)
+}
+
+fn reject_candidate_resolved_verifier_inputs(
+    command: &[OsString],
+    baseline: &Path,
+    workflow: &Path,
+) -> Result<(), AbFailure> {
+    for (index, argument) in command.iter().enumerate() {
+        let path = Path::new(argument);
+        let resolves_inside_candidate = if path.is_absolute() {
+            path.starts_with(baseline) || path.starts_with(workflow)
+        } else {
+            baseline.join(path).exists() || workflow.join(path).exists()
+        };
+        if resolves_inside_candidate {
+            let kind = if index == 0 { "program" } else { "input" };
+            return Err(AbFailure::error(format!(
+                "A/B verifier {kind} must remain outside both candidate workspaces"
+            )));
+        }
+    }
+    Ok(())
 }
 
 fn arm_report(

@@ -181,7 +181,10 @@ impl fmt::Display for VerificationError {
 
 impl std::error::Error for VerificationError {}
 
-fn verifier_digest(candidate: &Path, command: &[OsString]) -> Result<String, VerificationError> {
+pub(crate) fn verifier_digest(
+    candidate: &Path,
+    command: &[OsString],
+) -> Result<String, VerificationError> {
     let mut hasher = Sha256::new();
     hasher.update(b"driftctl.verifier.v1\0");
     for argument in command {

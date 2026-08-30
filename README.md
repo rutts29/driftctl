@@ -42,7 +42,7 @@ driftctl integrate codex status
 The packaged Linux release is checksum-verified by `scripts/install.sh`:
 
 ```bash
-./scripts/install.sh --version v0.4.0
+./scripts/install.sh --version v0.4.1
 driftctl integrate codex install
 ```
 
@@ -96,7 +96,7 @@ Resume each reported session from its reported directory. Continue the baseline 
 driftctl ab report --run <run-id> --json -- ./verify-candidate.sh
 ```
 
-Report requires a detached baseline, the exact enrolled workflow fork, an unchanged source, and the recorded equal starting state. It runs the same verifier once per arm, rejects candidate/verifier mutation, and caches an identical retry. Verified completion is primary; post-checkpoint prompts, records, verifier time, and measured keeper overhead are secondary evidence.
+Report requires a detached baseline, the exact enrolled workflow fork, an unchanged source, and the recorded equal starting state. It resolves the verifier program once from the report invocation directory, requires that canonical regular file to remain outside both candidates, hashes its content, and rejects candidate-resolved inputs or verifier mutation. The same verifier runs once per arm; an identical retry is cached. Verified completion is primary; post-checkpoint prompts, records, verifier time, and measured keeper overhead are secondary evidence.
 
 This command prepares and measures the experiment; it does not drive either coding session or adopt either candidate.
 

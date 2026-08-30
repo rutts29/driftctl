@@ -119,7 +119,7 @@ persisted midpoint session
   → persist private experiment manifest
   → A: normal resume
   → B: normal resume → exact $driftctl on
-  → same external verifier against A and B
+  → canonicalize and content-pin one external verifier outside A and B
   → validate enrollment/source/candidate boundaries
   → persist immutable report + print outcome and secondary metrics
 ```
