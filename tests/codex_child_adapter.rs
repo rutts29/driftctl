@@ -54,7 +54,12 @@ for raw in sys.stdin:
     elif method == "thread/goal/get":
         thread_id = request["params"]["threadId"]
         if thread_id == parent:
-            result = {"goal": {"threadId": parent, "objective": "parent objective"}}
+            parent_gets = globals().get("parent_gets", 0) + 1
+            globals()["parent_gets"] = parent_gets
+            objective = "parent objective"
+            if scenario == "parent-changed-after" and parent_gets > 1:
+                objective = "unexpected changed parent objective"
+            result = {"goal": {"threadId": parent, "objective": objective}}
         else:
             child_gets = globals().get("child_gets", 0) + 1
             globals()["child_gets"] = child_gets
@@ -157,6 +162,7 @@ fn creates_a_persisted_isolated_child_and_migrates_only_its_goal_transactionally
             Some("thread/goal/clear"),
             Some("thread/goal/set"),
             Some("thread/goal/get"),
+            Some("thread/goal/get"),
         ]
     );
     assert_eq!(requests[2]["params"], json!({"threadId":"parent-thread"}));
@@ -166,7 +172,7 @@ fn creates_a_persisted_isolated_child_and_migrates_only_its_goal_transactionally
             "threadId":"parent-thread", "cwd": child_cwd.canonicalize().expect("canonical cwd"), "ephemeral":false
         })
     );
-    for request in &requests[4..] {
+    for request in &requests[4..8] {
         if request["method"]
             .as_str()
             .is_some_and(|method| method.starts_with("thread/goal/"))
@@ -190,6 +196,7 @@ fn rejects_unverifiable_or_partial_child_goal_migrations_without_mutating_the_pa
         "partial-set",
         "missing-readback",
         "mismatched-readback",
+        "parent-changed-after",
     ] {
         let root = temporary_directory(&format!("child-goal-{scenario}"));
         let child_cwd = root.join("isolated-child");
@@ -199,7 +206,11 @@ fn rejects_unverifiable_or_partial_child_goal_migrations_without_mutating_the_pa
         let error = adapter
             .fork_and_migrate(request(&child_cwd, "Approved objective"))
             .expect_err("invalid migration must fail");
-        assert!(error.to_string().contains("child") || error.to_string().contains("goal"));
+        assert!(
+            error.to_string().contains("child")
+                || error.to_string().contains("goal")
+                || error.to_string().contains("parent")
+        );
         let requests = captured_requests(&root);
         for request in requests.iter().filter(|request| {
             matches!(
