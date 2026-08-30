@@ -43,4 +43,4 @@
 - [x] U04 exact `$driftctl status` reports exact-session state without creating enrollment or invoking the keeper.
 - [x] U05 exact `$driftctl off` detaches only the invoking session; later hooks stay no-op.
 - [x] U06 control prompts remain source-accounted but never become semantic intent, including detach and reactivation.
-- [ ] U07 installed bundle contains the skill and hooks; packaged binary passes the isolated entrypoint flow without changing the active Codex profile.
+- [x] U07 installed bundle contains the skill and hooks; packaged binary passes the isolated entrypoint flow without changing the active Codex profile.
