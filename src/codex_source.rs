@@ -11,7 +11,7 @@ use sha2::{Digest, Sha256};
 use crate::intent_history::{SourceProvider, SourceRole};
 use crate::session_bundle::{BundleRecord, NativeGoal, NeutralSessionBundle};
 
-const MAX_PROTOCOL_LINE_BYTES: usize = 64 * 1024 * 1024;
+const MAX_PROTOCOL_LINE_BYTES: usize = 128 * 1024 * 1024;
 const MAX_THREAD_LIST_PAGES: usize = 100;
 const THREAD_SOURCE_KINDS: [&str; 10] = [
     "cli",
@@ -33,6 +33,7 @@ pub(crate) struct ImportedSession {
     native_goal: NativeGoal,
     thread_snapshot: Value,
     records: Vec<ImportedRecord>,
+    allow_ancestor_cwd: bool,
 }
 
 impl ImportedSession {
@@ -112,7 +113,10 @@ impl fmt::Debug for ImportedRecord {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum SessionSelection<'a> {
     Last,
-    Explicit(&'a str),
+    Explicit {
+        id: &'a str,
+        allow_ancestor_cwd: bool,
+    },
 }
 
 #[derive(Debug)]
@@ -145,13 +149,22 @@ pub(crate) fn inspect(
     let mut server = AppServer::start()?;
     let result = (|| {
         server.initialize()?;
-        let selected_id = match selection {
-            SessionSelection::Last => server.latest_thread_id(canonical_root)?,
-            SessionSelection::Explicit(id) => validate_explicit_session_id(id)?,
+        let (selected_id, allow_ancestor_cwd) = match selection {
+            SessionSelection::Last => (server.latest_thread_id(canonical_root)?, false),
+            SessionSelection::Explicit {
+                id,
+                allow_ancestor_cwd,
+            } => (validate_explicit_session_id(id)?, allow_ancestor_cwd),
         };
         let thread = server.read_thread(&selected_id)?;
         let native_goal = server.observe_goal(&selected_id)?;
-        let imported = parse_imported_session(thread, canonical_root, &selected_id, native_goal)?;
+        let imported = parse_imported_session(
+            thread,
+            canonical_root,
+            &selected_id,
+            native_goal,
+            allow_ancestor_cwd,
+        )?;
         // Convert at the provider boundary. This validates the exact neutral
         // handoff without classifying intent or changing public inspect output.
         imported.neutral_bundle()?;
@@ -164,7 +177,13 @@ pub(crate) fn inspect(
 /// Re-import the exact selected parent after a paid resolver call and reject
 /// a stale result without exposing the private session locator.
 pub(crate) fn verify_unchanged(root: &Path, expected: &ImportedSession) -> Result<(), SourceError> {
-    let observed = inspect(root, SessionSelection::Explicit(&expected.session_id))?;
+    let observed = inspect(
+        root,
+        SessionSelection::Explicit {
+            id: &expected.session_id,
+            allow_ancestor_cwd: expected.allow_ancestor_cwd,
+        },
+    )?;
     if &observed == expected {
         Ok(())
     } else {
@@ -395,7 +414,7 @@ impl AppServer {
         }
         if line.last() != Some(&b'\n') {
             return Err(SourceError::new(if line.len() > MAX_PROTOCOL_LINE_BYTES {
-                "Codex App Server response exceeds the 64 MiB size limit"
+                "Codex App Server response exceeds the 128 MiB size limit"
             } else {
                 "Codex App Server response is truncated"
             }));
@@ -463,6 +482,7 @@ fn parse_imported_session(
     canonical_root: &str,
     requested_id: &str,
     native_goal: NativeGoal,
+    allow_ancestor_cwd: bool,
 ) -> Result<ImportedSession, SourceError> {
     let thread = response
         .get("thread")
@@ -472,12 +492,28 @@ fn parse_imported_session(
         return Err(SourceError::new("thread/read returned a different session"));
     }
     let cwd = required_string(thread, "cwd", "thread/read.result.thread")?;
-    if cwd != canonical_root {
-        return Err(SourceError::new(
-            "Codex session does not belong to the current repository",
-        ));
-    }
     let turns = required_array(thread, "turns", "thread/read.result.thread")?;
+    if cwd != canonical_root {
+        if !allow_ancestor_cwd {
+            return Err(SourceError::new(
+                "Codex session does not belong to the current repository; explicit ancestor binding requires --allow-ancestor-cwd",
+            ));
+        }
+        let repository = Path::new(canonical_root);
+        let session_cwd = Path::new(&cwd).canonicalize().map_err(|_| {
+            SourceError::new("Codex session does not belong to the current repository")
+        })?;
+        if !repository.starts_with(&session_cwd) {
+            return Err(SourceError::new(
+                "Codex session does not belong to the current repository",
+            ));
+        }
+        if !has_repository_command_evidence(turns, repository)? {
+            return Err(SourceError::new(
+                "Codex session does not have command evidence for the current repository",
+            ));
+        }
+    }
     let mut records = Vec::new();
     for (turn_index, turn) in turns.iter().enumerate() {
         let turn_location = format!("thread/read.result.thread.turns[{turn_index}]");
@@ -509,7 +545,36 @@ fn parse_imported_session(
         native_goal,
         thread_snapshot: thread.clone(),
         records,
+        allow_ancestor_cwd,
     })
+}
+
+fn has_repository_command_evidence(
+    turns: &[Value],
+    repository: &Path,
+) -> Result<bool, SourceError> {
+    for (turn_index, turn) in turns.iter().enumerate() {
+        let turn_location = format!("thread/read.result.thread.turns[{turn_index}]");
+        let items = required_array(turn, "items", &turn_location)?;
+        for (item_index, item) in items.iter().enumerate() {
+            let item_location = format!("{turn_location}.items[{item_index}]");
+            if item.get("type").and_then(Value::as_str) != Some("commandExecution") {
+                continue;
+            }
+            let command_cwd = required_string(item, "cwd", &item_location)?;
+            let command_cwd = Path::new(&command_cwd);
+            if command_cwd == repository {
+                return Ok(true);
+            }
+            if command_cwd
+                .canonicalize()
+                .is_ok_and(|path| path == repository)
+            {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
 }
 
 fn parse_user_message(

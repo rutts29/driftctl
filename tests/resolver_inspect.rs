@@ -214,7 +214,7 @@ if break_source:
     os.remove(break_source)
     os.mkdir(break_source)
 if os.environ.get("DRIFTCTL_FAKE_DYNAMIC_CHUNKS") == "1":
-    if prompt_document["protocol"] == "driftctl.semantic-proposal.v1":
+    if prompt_document["protocol"] == "driftctl.semantic-proposal.v2":
         records = prompt_document["records"]
         response = {
             "schema_version": 1,
@@ -1850,7 +1850,7 @@ fn initial_inspect_chunks_a_large_session_before_any_provider_call() {
     assert_eq!(calls.len(), 3);
     assert_eq!(
         calls[0]["prompt"]["protocol"],
-        "driftctl.semantic-proposal.v1"
+        "driftctl.semantic-proposal.v2"
     );
     assert_eq!(
         calls[1]["prompt"]["protocol"],
@@ -2199,6 +2199,57 @@ fn invalid_reference_is_repaired_once_and_two_invalid_results_stop() {
     );
     assert!(!document.to_string().contains("private raw goal"));
     failed.assert_unchanged();
+}
+
+#[test]
+fn repair_receives_the_precise_failure_prior_proposal_and_authoritative_source_list() {
+    let mut missing_source = base_proposal();
+    missing_source["accounted_source_record_ids"] = json!(["u1:0", "u2:0"]);
+    missing_source["operations"][1]["source_record_ids"] = json!(["u2:0"]);
+    let fixture = Fixture::new(vec![missing_source.clone(), base_proposal()]);
+
+    let output = fixture.run(&["--json"]);
+
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let calls = fixture.calls();
+    assert_eq!(calls.len(), 2);
+    let repair = &calls[1]["prompt"];
+    assert_eq!(repair["protocol"], "driftctl.semantic-proposal.v2");
+    assert_eq!(repair["mode"], "repair");
+    assert_eq!(repair["previous_failure"], "source_accounting_or_authority");
+    assert_eq!(repair["previous_proposal"], missing_source);
+    assert_eq!(
+        repair["authoritative_source_record_ids"],
+        json!(["u1:0", "u2:0", "u3:0"])
+    );
+    assert!(
+        repair["repair_instructions"]
+            .as_str()
+            .expect("repair instructions")
+            .contains("every authoritative source")
+    );
+    fixture.assert_unchanged();
+}
+
+#[test]
+fn invalid_semantic_key_repair_receives_the_missing_key_contract() {
+    let mut invalid_key = base_proposal();
+    invalid_key["operations"][0]["key"] = json!("");
+    let fixture = Fixture::new(vec![invalid_key, base_proposal()]);
+
+    let output = fixture.run(&["--json"]);
+
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let calls = fixture.calls();
+    assert_eq!(calls.len(), 2);
+    let repair = &calls[1]["prompt"];
+    assert_eq!(repair["previous_failure"], "invalid_semantic_key");
+    let instructions = repair["repair_instructions"]
+        .as_str()
+        .expect("repair instructions");
+    assert!(instructions.contains("add, supersede, and conflict"));
+    assert!(instructions.contains("non-empty unique key"));
+    fixture.assert_unchanged();
 }
 
 #[test]
