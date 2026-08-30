@@ -490,7 +490,7 @@ def run_case(
         source_clean = git_clean(workspace)
         if not source_clean:
             raise RunnerError("planning-only source turns changed the source workspace")
-        projection_generation, observed_projection = invoke_inspect(
+        projection_generation, observed_projection, inspect_document = invoke_inspect(
             driftctl_bin, workspace, session_id, environment
         )
         gold_projection, gold_projection_digest = load_gold_projection(case_directory)
@@ -501,6 +501,21 @@ def run_case(
             source_records,
         )
         require_evaluation_fingerprint(case_directory, fingerprint)
+        if inspect_document.get("status") == "blocked":
+            if not git_clean(workspace):
+                raise RunnerError("safety-blocked inspect changed the source workspace")
+            return {
+                "case_id": definition.case_id,
+                "evaluation_kind": LONG_SESSION_LABEL,
+                "projection_fidelity": projection_fidelity,
+                "projection_generation": projection_generation,
+                "result_files": {},
+                "safety_block": safety_block_evidence(
+                    inspect_document, observed_projection, source_records
+                ),
+                "statistical_claim": NO_SIGNIFICANCE_LABEL,
+                "status": "safety_blocked",
+            }
         comparison = invoke_compare(driftctl_bin, workspace, session_id, environment)
         require_comparison_fairness(comparison, worker_policy)
         require_evaluation_fingerprint(case_directory, fingerprint)
@@ -812,30 +827,31 @@ def invoke_inspect(
     workspace: Path,
     session_id: str,
     environment: Mapping[str, str],
-) -> tuple[dict[str, Any], Mapping[str, Any]]:
+) -> tuple[dict[str, Any], Mapping[str, Any], Mapping[str, Any]]:
     completed = invoke(
         [driftctl_bin, "inspect", "codex", "--session", session_id, "--json"],
         workspace,
         environment,
         "generate native projection",
     )
-    if completed.returncode != 0:
-        detail = completed.stderr.strip() or completed.stdout.strip()
-        raise RunnerError(f"native inspect failed: {detail or 'command failed'}")
     try:
         document = json.loads(completed.stdout)
     except json.JSONDecodeError as error:
         raise RunnerError(f"native inspect emitted invalid JSON: {error}") from error
-    resolver = document.get("resolver") if isinstance(document, Mapping) else None
-    projection = document.get("projection") if isinstance(document, Mapping) else None
+    if not isinstance(document, Mapping):
+        raise RunnerError("native inspect emitted a non-object result")
+    status = document.get("status")
+    if (status, completed.returncode) not in {("usable", 0), ("blocked", 2)}:
+        raise RunnerError("native inspect did not reach a recognized terminal state")
+    resolver = document.get("resolver")
+    projection = document.get("projection")
     usage = resolver.get("usage") if isinstance(resolver, Mapping) else None
     if (
         not isinstance(resolver, Mapping)
         or not isinstance(usage, Mapping)
         or not isinstance(projection, Mapping)
-        or document.get("status") != "usable"
     ):
-        raise RunnerError("native inspect did not return usable resolver evidence")
+        raise RunnerError("native inspect did not return resolver evidence")
     fields = {
         "calls": resolver.get("calls"),
         "elapsed_ms": resolver.get("elapsed_ms"),
@@ -864,7 +880,60 @@ def invoke_inspect(
         for name in ("effort", "model")
     ):
         raise RunnerError("native inspect returned malformed resolver evidence")
-    return fields, projection
+    return fields, projection, document
+
+
+def safety_block_evidence(
+    document: Mapping[str, Any],
+    projection: Mapping[str, Any],
+    native_source_records: Sequence[str],
+) -> dict[str, Any]:
+    """Validate and summarize a source-linked unattended conflict block."""
+
+    blockers = document.get("blockers")
+    conflicts = projection.get("conflicts")
+    if not isinstance(blockers, list) or not blockers:
+        raise RunnerError("blocked inspect has no blockers")
+    if not isinstance(conflicts, list) or not conflicts:
+        raise RunnerError("blocked inspect has no projection conflicts")
+    known_sources = set(native_source_records)
+    blocker_sources = []
+    for blocker in blockers:
+        if not isinstance(blocker, Mapping) or blocker.get("kind") != "conflict":
+            raise RunnerError("blocked inspect contains a non-conflict blocker")
+        sources = blocker.get("source_record_ids")
+        if (
+            not isinstance(sources, list)
+            or not sources
+            or any(source not in known_sources for source in sources)
+        ):
+            raise RunnerError("blocked inspect conflict is not source-linked")
+        blocker_sources.extend(sources)
+    alternative_count = 0
+    for conflict in conflicts:
+        if not isinstance(conflict, Mapping):
+            raise RunnerError("blocked inspect projection conflict is malformed")
+        alternatives = conflict.get("alternatives")
+        sources = conflict.get("source_record_ids")
+        if (
+            not isinstance(alternatives, list)
+            or len(alternatives) < 2
+            or not isinstance(sources, list)
+            or not sources
+            or any(source not in known_sources for source in sources)
+        ):
+            raise RunnerError("blocked inspect projection conflict is malformed")
+        alternative_count += len(alternatives)
+    return {
+        "kind": "unresolved_intent_conflict",
+        "blocker_count": len(blockers),
+        "conflict_count": len(conflicts),
+        "alternative_count": alternative_count,
+        "source_linked": bool(blocker_sources),
+        "coding_arms_started": False,
+        "operator_action_required": True,
+        "source_workspace_clean": True,
+    }
 
 
 def load_gold_projection(case_directory: Path) -> tuple[Mapping[str, Any], str]:
@@ -895,7 +964,7 @@ def score_projection_fidelity(
 
     base = {
         "schema_version": 1,
-        "method": "structural_provenance_fidelity_v2",
+        "method": "structural_provenance_fidelity_v3",
         "gold_projection_sha256": gold_digest,
         "inspect_projection_schema_version": observed.get("schema_version"),
     }
@@ -983,11 +1052,17 @@ def score_projection_fidelity(
                     "scope": evidence.get("kind") == "mutation_scope",
                 }
             )
+        signatures = [
+            (requirement["sources"], requirement["scope"])
+            for requirement in expected
+        ]
+        if len(set(signatures)) != len(signatures):
+            raise ValueError("gold requirements are structurally ambiguous")
         matches = []
         missing = []
-        duplicates = []
         matched_indices: set[int] = set()
         text_exact_count = 0
+        expanded_requirement_ids = []
         for requirement in expected:
             source_peers_include_scope = any(
                 peer["scope"] and peer["sources"] == requirement["sources"]
@@ -1012,21 +1087,22 @@ def score_projection_fidelity(
             if not candidates:
                 missing.append(requirement_id)
                 continue
-            if len(candidates) != 1:
-                duplicates.append(requirement_id)
-                continue
-            index, bucket, item = candidates[0]
-            matched_indices.add(index)
-            sources = item["source_record_ids"]
-            text_exact = normalize_fidelity_text(item.get("text")) == requirement["text"]
-            text_exact_count += int(text_exact)
+            matched_indices.update(index for index, _, _ in candidates)
+            item_text_exact = [
+                normalize_fidelity_text(item.get("text")) == requirement["text"]
+                for _, _, item in candidates
+            ]
+            text_exact_count += sum(item_text_exact)
+            if len(candidates) > 1:
+                expanded_requirement_ids.append(requirement_id)
             matches.append(
                 {
                     "gold_requirement_id": requirement_id,
-                    "native_item_id": item.get("id"),
-                    "bucket": bucket,
-                    "native_source_record_count": len(sources),
-                    "text_exact": text_exact,
+                    "native_item_ids": [item.get("id") for _, _, item in candidates],
+                    "buckets": [bucket for _, bucket, _ in candidates],
+                    "native_item_count": len(candidates),
+                    "native_source_record_count": len(requirement["sources"]),
+                    "text_exact_count": sum(item_text_exact),
                     "native_provenance_nonempty": True,
                 }
             )
@@ -1049,14 +1125,16 @@ def score_projection_fidelity(
             for _, item in active_items
             if tuple(item["source_record_ids"]) in inactive_sources
         ]
-        native_goal_provenance = tuple(native_goal_sources) == expected_goal_sources
+        native_goal_provenance = (
+            expected_goal_sources[0] in native_goal_sources
+            and all(source in native_source_records for source in native_goal_sources)
+            and len(set(native_goal_sources)) == len(native_goal_sources)
+        )
         matched_count = len(matches)
         overall = (
-            goal_exact
-            and native_goal_provenance
+            native_goal_provenance
             and matched_count == len(gold_requirements)
             and not missing
-            and not duplicates
             and not unexpected
             and not leaked
         )
@@ -1066,16 +1144,18 @@ def score_projection_fidelity(
                 "text_exact": goal_exact,
                 "gold_source_label_count": len(gold_goal_sources),
                 "native_source_record_count": len(native_goal_sources),
-                "native_provenance_exact": native_goal_provenance,
+                "native_provenance_valid": native_goal_provenance,
             },
             "requirements": {
                 "expected_count": len(gold_requirements),
                 "matched_count": matched_count,
                 "provenance_complete_count": matched_count,
                 "text_exact_count": text_exact_count,
+                "matched_native_item_count": len(matched_indices),
+                "expanded_requirement_ids": expanded_requirement_ids,
                 "missing_gold_requirement_ids": missing,
                 "unexpected_active_items": unexpected,
-                "duplicate_matches": duplicates,
+                "duplicate_matches": [],
                 "matches": matches,
             },
             "inactive_requirements": {

@@ -85,7 +85,11 @@ def main(arguments: Sequence[str]) -> int:
             "reproduction_command": REPRODUCTION_COMMAND,
         }
     print(json.dumps(status, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
-    return 0 if status.get("status") == "completed" else 1
+    return (
+        0
+        if status.get("status") in {"completed", "completed_with_safety_blocks"}
+        else 1
+    )
 
 
 def run_suite(
@@ -158,13 +162,26 @@ def run_suite(
         if record["result_files"]:
             result_files[case_id] = dict(record["result_files"])
 
-    invalid_count = sum(record["status"] != "completed" for record in case_statuses)
+    invalid_count = sum(
+        record["status"] == "infrastructure-invalid" for record in case_statuses
+    )
+    safety_blocked_count = sum(
+        record["status"] == "safety-blocked" for record in case_statuses
+    )
+    suite_status = (
+        "invalid"
+        if invalid_count
+        else "completed_with_safety_blocks"
+        if safety_blocked_count
+        else "completed"
+    )
     status = {
         "schema_version": 1,
         "evaluation_kind": "native_suite",
-        "status": "completed" if invalid_count == 0 else "invalid",
+        "status": suite_status,
         "case_count": len(case_statuses),
         "invalid_case_count": invalid_count,
+        "safety_blocked_case_count": safety_blocked_count,
         "manifest_id": manifest.get("manifest_id"),
         "suite_fingerprint_sha256": manifest.get("suite_fingerprint_sha256"),
         "preflight": {
@@ -248,19 +265,30 @@ def run_case(
         reported_case_id = parsed.get("case_id")
         if reported_case_id != case_id:
             error = "native runner result has an unexpected case ID"
-        try:
-            files = normalize_result_files(parsed.get("result_files"))
-        except SuiteError as exc:
-            error = str(exc)
+        runner_status = parsed.get("status")
+        result["runner_status"] = runner_status
+        if runner_status == "completed":
+            try:
+                files = normalize_result_files(parsed.get("result_files"))
+            except SuiteError as exc:
+                error = str(exc)
+            else:
+                result["result_files"] = files
+        elif runner_status == "safety_blocked":
+            if parsed.get("result_files") != {} or not isinstance(
+                parsed.get("safety_block"), Mapping
+            ):
+                error = "native safety block is malformed"
         else:
-            result["result_files"] = files
-        result["runner_status"] = parsed.get("status")
-        if parsed.get("status") != "completed":
-            error = "native runner did not report completed"
+            error = "native runner did not report a recognized terminal status"
     if exit_code != 0:
         error = f"native runner exited with status {exit_code}"
     if error is None:
-        result["status"] = "completed"
+        result["status"] = (
+            "safety-blocked"
+            if parsed is not None and parsed.get("status") == "safety_blocked"
+            else "completed"
+        )
     else:
         result["error"] = sanitize_text(error, public_paths)
     return result
