@@ -20,6 +20,31 @@ SCORER = ROOT / "evals" / "runner" / "score_results.py"
 
 
 class NativeLongSessionRunnerTests(unittest.TestCase):
+    def test_rejects_context_above_the_bounded_stress_limit(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="driftctl-native-limit-test-") as temporary:
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    str(RUNNER),
+                    "--case",
+                    str(CASE),
+                    "--results-dir",
+                    str(Path(temporary) / "results"),
+                    "--context-bytes",
+                    str(1024 * 1024 + 1),
+                ],
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+
+            self.assertEqual(completed.returncode, 1)
+            self.assertIn(
+                "context bytes must be between 0 and 1048576",
+                json.loads(completed.stdout)["error"],
+            )
+
     def test_seeds_intact_session_compares_and_writes_scoreable_arms(self) -> None:
         with temporary_fixture() as fixture:
             result, outputs = run_fixture(fixture)
