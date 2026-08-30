@@ -24,7 +24,16 @@ driftctl verify --run <run-id> \
   --requirement <requirement-id> --json -- <program> [args...]
 ```
 
-A passing check appends candidate-bound evidence to the requirement. A later bound check detects candidate drift, invalidates stale evidence, and reopens the requirement. This command reports requirement-evidence completeness; it does not by itself claim the remaining aggregate closure gates passed.
+A passing check appends candidate-bound evidence to the requirement. A later bound check detects candidate drift, invalidates stale evidence, and reopens the requirement. Run each aggregate gate with its own deterministic command:
+
+```bash
+driftctl verify --run <run-id> --gate regression --json -- <program> [args...]
+driftctl verify --run <run-id> --gate integration --json -- <program> [args...]
+driftctl verify --run <run-id> --gate protected_scope --json -- <program> [args...]
+driftctl verify --run <run-id> --gate review --json -- <program> [args...]
+```
+
+The review program must fail when an unresolved `Critical` or `Required` finding exists. A recorded review cannot be rerun on the unchanged candidate; change the candidate first, then rebuild the evidence made stale by that change. The final JSON reports `verified_completion` and concrete missing, failed, stale, or projection blockers. All passing gate records must match the current candidate digest; the child goal binding was established by the verified clear/set/read-back transaction before its turn started.
 
 ## Deterministic checks
 

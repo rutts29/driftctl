@@ -5,7 +5,7 @@
 //! [`crate::intent_history::History`] and [`crate::projection::ActiveProjection`]
 //! remain the authorities for event and projection validity.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::fmt;
 use std::fs::{self, File, OpenOptions};
@@ -27,16 +27,19 @@ const HISTORY_DIRECTORY: &str = "history";
 const PROJECTION_FILE: &str = "projection.json";
 const SOURCE_FILE: &str = "source.json";
 const CANDIDATE_FILE: &str = "candidate.json";
+const COMPLETION_GATES_FILE: &str = "completion-gates.json";
 const PENDING_FILE: &str = "pending.jsonl";
 const LOCK_FILE: &str = ".writer.lock";
 const TEMP_PROJECTION_PREFIX: &str = ".projection.json.tmp-";
 const TEMP_SOURCE_PREFIX: &str = ".source.json.tmp-";
 const TEMP_CANDIDATE_PREFIX: &str = ".candidate.json.tmp-";
+const TEMP_COMPLETION_GATES_PREFIX: &str = ".completion-gates.json.tmp-";
 const MAX_SOURCE_CURSOR_IDENTIFIER_BYTES: usize = 16 * 1024;
 
 /// Exact schema accepted for the private source cursor state.
 pub const SOURCE_CURSOR_SCHEMA_VERSION: u32 = 1;
 pub const CANDIDATE_BINDING_SCHEMA_VERSION: u32 = 1;
+pub const COMPLETION_GATE_STATE_SCHEMA_VERSION: u32 = 1;
 
 static TEMPORARY_FILE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
@@ -361,6 +364,7 @@ pub enum RunStoreError {
     PrivateStatePermissions {
         path: PathBuf,
     },
+    ReviewAlreadyRecorded,
     ProjectionMismatch,
     Io {
         action: &'static str,
@@ -404,6 +408,9 @@ impl fmt::Display for RunStoreError {
                     path.display()
                 )
             }
+            Self::ReviewAlreadyRecorded => formatter.write_str(
+                "review is already recorded for this candidate checkpoint; change the candidate before reviewing again",
+            ),
             Self::ProjectionMismatch => {
                 formatter.write_str("stored projection does not match validated history")
             }
@@ -461,6 +468,7 @@ pub struct CandidateBinding {
     schema_version: u32,
     child_thread_id: String,
     candidate_path: PathBuf,
+    approved_goal_digest: String,
 }
 
 impl fmt::Debug for CandidateBinding {
@@ -483,6 +491,77 @@ impl CandidateBinding {
     #[must_use]
     pub fn candidate_path_private(&self) -> &Path {
         &self.candidate_path
+    }
+
+    #[must_use]
+    pub fn approved_goal_digest(&self) -> &str {
+        &self.approved_goal_digest
+    }
+}
+
+/// Required run-level evidence gates beyond per-requirement checks.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CompletionGate {
+    Regression,
+    Integration,
+    ProtectedScope,
+    Review,
+}
+
+impl CompletionGate {
+    pub const ALL: [Self; 4] = [
+        Self::Regression,
+        Self::Integration,
+        Self::ProtectedScope,
+        Self::Review,
+    ];
+
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Regression => "regression",
+            Self::Integration => "integration",
+            Self::ProtectedScope => "protected_scope",
+            Self::Review => "review",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CompletionGateRecord {
+    pub gate: CompletionGate,
+    pub passed: bool,
+    pub status: String,
+    pub candidate_digest: String,
+    pub artifact_id: String,
+    pub command_digest: String,
+    pub verifier_digest: String,
+    pub stdout_digest: String,
+    pub stderr_digest: String,
+    pub started_at_unix_ms: u128,
+    pub elapsed_ms: u128,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CompletionGateState {
+    schema_version: u32,
+    records: BTreeMap<CompletionGate, CompletionGateRecord>,
+}
+
+impl CompletionGateState {
+    fn empty() -> Self {
+        Self {
+            schema_version: COMPLETION_GATE_STATE_SCHEMA_VERSION,
+            records: BTreeMap::new(),
+        }
+    }
+
+    #[must_use]
+    pub fn record(&self, gate: CompletionGate) -> Option<&CompletionGateRecord> {
+        self.records.get(&gate)
     }
 }
 
@@ -621,6 +700,7 @@ impl RunStore {
         &self,
         child_thread_id: impl Into<String>,
         candidate: impl AsRef<Path>,
+        approved_goal: &str,
     ) -> Result<CandidateBinding, RunStoreError> {
         let child_thread_id = child_thread_id.into();
         if child_thread_id.trim().is_empty()
@@ -643,10 +723,19 @@ impl RunStore {
         if candidate == workspace_root || !candidate.starts_with(&workspace_root) {
             return Err(RunStoreError::InvalidStateComponent { path: candidate });
         }
+        if approved_goal.trim().is_empty() {
+            return Err(RunStoreError::InvalidStateComponent {
+                path: PathBuf::from("approved child goal"),
+            });
+        }
+        let mut goal_hasher = Sha256::new();
+        goal_hasher.update(b"driftctl.approved-child-goal.v1\0");
+        goal_hasher.update(approved_goal.as_bytes());
         let binding = CandidateBinding {
             schema_version: CANDIDATE_BINDING_SCHEMA_VERSION,
             child_thread_id,
             candidate_path: candidate,
+            approved_goal_digest: format!("sha256:{:x}", goal_hasher.finalize()),
         };
         self.write_candidate_binding(&binding)?;
         Ok(binding)
@@ -674,6 +763,7 @@ impl RunStore {
             || binding.child_thread_id.trim().is_empty()
             || binding.child_thread_id.len() > MAX_SOURCE_CURSOR_IDENTIFIER_BYTES
             || binding.child_thread_id.chars().any(char::is_control)
+            || !binding.approved_goal_digest.starts_with("sha256:")
         {
             return Err(RunStoreError::InvalidStateComponent {
                 path: candidate_path,
@@ -702,6 +792,49 @@ impl RunStore {
             });
         }
         Ok(Some(binding))
+    }
+
+    pub fn record_completion_gate(
+        &self,
+        record: CompletionGateRecord,
+    ) -> Result<CompletionGateState, RunStoreError> {
+        validate_completion_gate_record(&record, &self.completion_gates_path())?;
+        let mut state = self.completion_gate_state()?;
+        if record.gate == CompletionGate::Review
+            && state
+                .record(CompletionGate::Review)
+                .is_some_and(|prior| prior.candidate_digest == record.candidate_digest)
+        {
+            return Err(RunStoreError::ReviewAlreadyRecorded);
+        }
+        state.records.insert(record.gate, record);
+        self.write_completion_gate_state(&state)?;
+        Ok(state)
+    }
+
+    pub fn completion_gate_state(&self) -> Result<CompletionGateState, RunStoreError> {
+        let path = self.completion_gates_path();
+        match fs::symlink_metadata(&path) {
+            Ok(_) => ensure_private_regular(&path)?,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                return Ok(CompletionGateState::empty());
+            }
+            Err(error) => return Err(io_error("inspect completion gates", &path, error)),
+        }
+        let input = fs::read_to_string(&path)
+            .map_err(|error| io_error("read completion gates", &path, error))?;
+        let state: CompletionGateState = serde_json::from_str(&input)
+            .map_err(|error| RunStoreError::Serialization(error.to_string()))?;
+        if state.schema_version != COMPLETION_GATE_STATE_SCHEMA_VERSION {
+            return Err(RunStoreError::InvalidStateComponent { path });
+        }
+        for (gate, record) in &state.records {
+            if *gate != record.gate {
+                return Err(RunStoreError::InvalidStateComponent { path });
+            }
+            validate_completion_gate_record(record, &path)?;
+        }
+        Ok(state)
     }
 
     /// Append one validated event to the current unrotated JSONL delta.
@@ -847,6 +980,21 @@ impl RunStore {
         sync_directory(&self.path)
     }
 
+    fn write_completion_gate_state(
+        &self,
+        state: &CompletionGateState,
+    ) -> Result<(), RunStoreError> {
+        let path = self.completion_gates_path();
+        ensure_private_regular_or_missing(&path)?;
+        let bytes = serde_json::to_vec(state)
+            .map_err(|error| RunStoreError::Serialization(error.to_string()))?;
+        let temporary = self.temporary_completion_gates_path();
+        write_new_private_file_bytes(&temporary, &bytes, "write temporary completion gates")?;
+        fs::rename(&temporary, &path)
+            .map_err(|error| io_error("replace completion gates", &path, error))?;
+        sync_directory(&self.path)
+    }
+
     fn read_history_segments(&self) -> Result<Vec<EventRecord>, RunStoreError> {
         let history = self.history_path();
         ensure_private_directory(&history)?;
@@ -927,6 +1075,10 @@ impl RunStore {
         self.path.join(CANDIDATE_FILE)
     }
 
+    fn completion_gates_path(&self) -> PathBuf {
+        self.path.join(COMPLETION_GATES_FILE)
+    }
+
     fn pending_path(&self) -> PathBuf {
         self.path.join(PENDING_FILE)
     }
@@ -954,6 +1106,47 @@ impl RunStore {
             std::process::id()
         ))
     }
+
+    fn temporary_completion_gates_path(&self) -> PathBuf {
+        let sequence = TEMPORARY_FILE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        self.path.join(format!(
+            "{TEMP_COMPLETION_GATES_PREFIX}{}-{sequence}",
+            std::process::id()
+        ))
+    }
+}
+
+fn validate_completion_gate_record(
+    record: &CompletionGateRecord,
+    path: &Path,
+) -> Result<(), RunStoreError> {
+    let fields = [
+        record.status.as_str(),
+        record.candidate_digest.as_str(),
+        record.artifact_id.as_str(),
+        record.command_digest.as_str(),
+        record.verifier_digest.as_str(),
+        record.stdout_digest.as_str(),
+        record.stderr_digest.as_str(),
+    ];
+    let valid_status = matches!(
+        record.status.as_str(),
+        "passed" | "failed" | "protected_input_changed" | "candidate_changed"
+    );
+    if !valid_status
+        || record.passed != (record.status == "passed")
+        || fields.iter().any(|field| {
+            field.trim().is_empty()
+                || field.len() > MAX_SOURCE_CURSOR_IDENTIFIER_BYTES
+                || field.chars().any(char::is_control)
+        })
+        || !record.candidate_digest.starts_with("sha256:")
+    {
+        return Err(RunStoreError::InvalidStateComponent {
+            path: path.to_path_buf(),
+        });
+    }
+    Ok(())
 }
 
 /// Return a stable SHA-256 repository identity based on its canonical local

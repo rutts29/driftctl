@@ -409,6 +409,17 @@ impl Fixture {
         command.output().expect("run bound driftctl verifier")
     }
 
+    fn run_bound_gate(&self, run_id: &str, gate: &str, verifier: &str) -> Output {
+        let mut command = Command::new(driftctl_bin());
+        command.current_dir(&self.root).args([
+            "verify", "--run", run_id, "--gate", gate, "--json", "--", verifier,
+        ]);
+        for (name, value) in &self.environment {
+            command.env(name, value);
+        }
+        command.output().expect("run bound driftctl gate")
+    }
+
     fn calls(&self) -> Vec<Value> {
         fs::read_to_string(&self.capture)
             .expect("read exec capture")
@@ -757,6 +768,36 @@ fn run_bound_verification_attaches_evidence_and_candidate_change_reopens_it() {
     assert_eq!(passed_document["status"], "passed");
     assert_eq!(passed_document["evidence_attached"], true);
     assert_eq!(passed_document["requirement_evidence_complete"], true);
+    assert_eq!(passed_document["verified_completion"], false);
+    assert_eq!(
+        passed_document["completion_blockers"]
+            .as_array()
+            .expect("completion blockers")
+            .len(),
+        4
+    );
+
+    for gate in ["regression", "integration", "protected_scope", "review"] {
+        let gated = fixture.run_bound_gate(run_id, gate, "/bin/true");
+        assert_eq!(gated.status.code(), Some(0), "{gate}: {gated:?}");
+        let gated_document: Value =
+            serde_json::from_slice(&gated.stdout).expect("gate verification JSON");
+        assert_eq!(gated_document["gate"], gate);
+        assert_eq!(gated_document["gate_evidence_recorded"], true);
+        assert_eq!(gated_document["verified_completion"], gate == "review");
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        assert_eq!(
+            fs::metadata(fixture.state_file("completion-gates.json"))
+                .expect("completion gate metadata")
+                .permissions()
+                .mode()
+                & 0o077,
+            0
+        );
+    }
 
     let satisfied = fixture.run(&["--json"]);
     assert_eq!(satisfied.status.code(), Some(0), "{satisfied:?}");
@@ -778,14 +819,52 @@ fn run_bound_verification_attaches_evidence_and_candidate_change_reopens_it() {
         "candidate changed after evidence\n",
     )
     .expect("mutate only the isolated candidate");
+    let rejected_review = fixture.run_bound_gate(run_id, "review", "/bin/false");
+    assert_eq!(
+        rejected_review.status.code(),
+        Some(2),
+        "{rejected_review:?}"
+    );
+    let rejected_review_document: Value =
+        serde_json::from_slice(&rejected_review.stdout).expect("failed review JSON");
+    assert_eq!(rejected_review_document["gate_evidence_recorded"], false);
+    assert_eq!(rejected_review_document["verified_completion"], false);
+    assert_eq!(rejected_review_document["invalidated_evidence_count"], 1);
+    assert!(
+        rejected_review_document["completion_blockers"]
+            .as_array()
+            .expect("failed-review blockers")
+            .iter()
+            .any(|blocker| {
+                blocker["kind"] == "failed_completion_gate" && blocker["gate"] == "review"
+            })
+    );
+    let rejected_review_retry = fixture.run_bound_gate(run_id, "review", "/bin/true");
+    assert_eq!(
+        rejected_review_retry.status.code(),
+        Some(1),
+        "{rejected_review_retry:?}"
+    );
+    assert!(
+        String::from_utf8_lossy(&rejected_review_retry.stderr)
+            .contains("review is already recorded for this candidate checkpoint")
+    );
     let failed = fixture.run_bound_verify(run_id, requirement_id, "/bin/false");
     assert_eq!(failed.status.code(), Some(2), "{failed:?}");
     let failed_document: Value =
         serde_json::from_slice(&failed.stdout).expect("failed bound verification JSON");
     assert_eq!(failed_document["status"], "failed");
     assert_eq!(failed_document["evidence_attached"], false);
-    assert_eq!(failed_document["invalidated_evidence_count"], 1);
+    assert_eq!(failed_document["invalidated_evidence_count"], 0);
     assert_eq!(failed_document["requirement_evidence_complete"], false);
+    assert_eq!(failed_document["verified_completion"], false);
+    assert!(
+        failed_document["completion_blockers"]
+            .as_array()
+            .expect("post-mutation completion blockers")
+            .iter()
+            .any(|blocker| blocker["kind"] == "stale_completion_gate")
+    );
 
     let reopened = fixture.run(&["--json"]);
     assert_eq!(reopened.status.code(), Some(0), "{reopened:?}");
