@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use serde_json::json;
 
 use crate::agent::{display_path, run_codex};
+use crate::codex_source::{self, SessionSelection};
 use crate::{ClosureError, Ledger, Snapshot};
 
 const USAGE: &str = "driftctl — durable continuity for coding-agent tasks\n\n\
@@ -13,6 +14,7 @@ Usage:\n\
   driftctl satisfy --id <requirement-id> --evidence <text>\n\
   driftctl status [--json]\n\
   driftctl resume [--json]\n\
+  driftctl inspect codex (--last | --session <id>) [--json]\n\
   driftctl run codex\n\
   driftctl close";
 
@@ -68,6 +70,7 @@ pub fn execute(root: &Path, arguments: impl IntoIterator<Item = String>) -> CliO
         "steer" => steer(root, &arguments),
         "satisfy" => satisfy(root, &arguments),
         "status" | "resume" => status(root, &arguments),
+        "inspect" => return inspect(root, &arguments),
         "run" => run(root, &arguments),
         "close" => return close(root, &arguments),
         _ => Err(format!("unknown command: {command}\n\n{USAGE}")),
@@ -77,6 +80,80 @@ pub fn execute(root: &Path, arguments: impl IntoIterator<Item = String>) -> CliO
         Ok(output) => CliOutput::success(output),
         Err(message) => CliOutput::error(message),
     }
+}
+
+fn inspect(root: &Path, arguments: &[String]) -> CliOutput {
+    let parsed = parse_inspect_arguments(arguments);
+    let Ok((selection, json)) = parsed else {
+        return CliOutput::error(parsed.expect_err("checked error"));
+    };
+    match codex_source::inspect(root, selection) {
+        Ok(imported) => {
+            let output = if json {
+                serde_json::to_string(&json!({
+                    "schema_version": 1,
+                    "provider": "codex",
+                    "session": imported.redacted_session(),
+                    "imported_user_records": imported.imported_user_record_count(),
+                    "source_digest": imported.source_digest(),
+                    "blocker": "projection_not_built",
+                }))
+                .unwrap_or_else(|_| "{\"schema_version\":1}".to_owned())
+            } else {
+                format!(
+                    "provider: codex\nsession: {}\nimported user records: {}\nsource digest: {}\nblocker: projection_not_built",
+                    imported.redacted_session(),
+                    imported.imported_user_record_count(),
+                    imported.source_digest(),
+                )
+            };
+            CliOutput {
+                exit_code: 2,
+                stdout: output,
+                stderr: String::new(),
+            }
+        }
+        Err(error) => CliOutput::error(error.to_string()),
+    }
+}
+
+fn parse_inspect_arguments(arguments: &[String]) -> Result<(SessionSelection<'_>, bool), String> {
+    let Some(provider) = arguments.first() else {
+        return Err("inspect requires provider `codex`".to_owned());
+    };
+    if provider != "codex" {
+        return Err("inspect currently supports exactly: driftctl inspect codex".to_owned());
+    }
+    let mut selection = None;
+    let mut json = false;
+    let mut index = 1;
+    while index < arguments.len() {
+        match arguments[index].as_str() {
+            "--last" if selection.is_none() => {
+                selection = Some(SessionSelection::Last);
+                index += 1;
+            }
+            "--session" if selection.is_none() => {
+                let Some(id) = arguments.get(index + 1) else {
+                    return Err("missing value for --session".to_owned());
+                };
+                selection = Some(SessionSelection::Explicit(id));
+                index += 2;
+            }
+            "--json" if !json => {
+                json = true;
+                index += 1;
+            }
+            "--last" | "--session" => {
+                return Err("inspect requires exactly one of --last or --session <id>".to_owned());
+            }
+            "--json" => return Err("--json may only be supplied once".to_owned()),
+            option => return Err(format!("unknown inspect option: {option}")),
+        }
+    }
+    selection
+        .map(|selection| (selection, json))
+        .ok_or_else(|| "inspect requires exactly one of --last or --session <id>".to_owned())
 }
 
 fn start(root: &Path, arguments: &[String]) -> Result<String, String> {
