@@ -39,7 +39,7 @@ existing local session
 - Case 05 stopped before coding on an unresolved, source-linked conflict; it is a safety outcome, not a completion failure.
 - All nine coding candidates passed fixed tests and exact scope; one blind review blocked three candidates with `Required` defects.
 - Published arms ran baseline-first. This possible order effect is retained as a limitation. The reproducible runner now alternates baseline-first and workflow-first and records the order; published outcomes were not rerun.
-- The scored sessions were deliberately constructed benchmarks. A separate organic local session—13,191,721 bytes, 5,703 items, 40 user messages, and 16 native compaction markers—proved import and bounded compaction behavior only, not coding efficacy.
+- The scored sessions were deliberately constructed benchmarks. A separate 13,191,721-byte organic session proved import/compaction transport with a deterministic proposal. A second immutable organic snapshot with 42 user records ran the real default Luna Max resolver: two strict-validation failures were retained, then one validated projection safely blocked on three conflicts, native-goal mismatch, and projection overflow. Neither organic run proves coding efficacy because no eligible A/C continuation completed.
 
 Evidence: [`evals/results/native-suite-20260830/summary.json`](evals/results/native-suite-20260830/summary.json), [`evals/results/native-suite-20260830`](evals/results/native-suite-20260830), and [`IMPROVEMENT-CHANGELOG.md`](IMPROVEMENT-CHANGELOG.md).
 

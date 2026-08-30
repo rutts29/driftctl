@@ -37,11 +37,11 @@ Usage:\n\
   driftctl satisfy --id <requirement-id> --evidence <text>\n\
   driftctl status [--json]\n\
   driftctl resume [--json]\n\
-  driftctl inspect codex (--last | --session <id>) [--json] [--compactor luna|terra|sol] [--reasoning high|medium]\n\
+  driftctl inspect codex (--last | --session <id> [--allow-ancestor-cwd]) [--json] [--compactor luna|terra|sol] [--reasoning high|medium]\n\
   driftctl inspect bundle (--file <path> | --stdin) [--json] [--compactor luna|terra|sol] [--reasoning high|medium]\n\
   driftctl bundle --run <run-id> --json\n\
-  driftctl compare codex (--last | --session <id>) [--arm-order baseline-first|workflow-first] [--json]\n\
-  driftctl continue codex (--last | --session <id>) [--resolve-conflict <conflict-id> <alternative-id> | --approve-goal | --edit-goal <text> | --retain-goal | --cancel] [--json]\n\
+  driftctl compare codex (--last | --session <id> [--allow-ancestor-cwd]) [--arm-order baseline-first|workflow-first] [--json]\n\
+  driftctl continue codex (--last | --session <id> [--allow-ancestor-cwd]) [--resolve-conflict <conflict-id> <alternative-id> | --approve-goal | --edit-goal <text> | --retain-goal | --cancel] [--json]\n\
   driftctl verify (--run <run-id> | --candidate <path>) (--requirement <id> | --gate regression|integration|protected_scope|review) [--json] -- <program> [args...]\n\
   driftctl run codex\n\
   driftctl close";
@@ -1210,7 +1210,10 @@ fn compare_codex(root: &Path, arguments: &[String]) -> CliOutput {
     let Some(cursor) = recovered.source_cursor.as_ref() else {
         return CliOutput::error("stored inspect run has no accepted source cursor");
     };
-    let imported = match codex_source::inspect(root, options.selection.as_borrowed()) {
+    let imported = match codex_source::inspect(
+        root,
+        options.selection.as_borrowed(options.allow_ancestor_cwd),
+    ) {
         Ok(imported) => imported,
         Err(error) => return CliOutput::error(error.to_string()),
     };
@@ -1552,7 +1555,10 @@ fn continue_codex(root: &Path, arguments: &[String]) -> CliOutput {
         }
     };
 
-    let imported = match codex_source::inspect(root, options.selection.as_borrowed()) {
+    let imported = match codex_source::inspect(
+        root,
+        options.selection.as_borrowed(options.allow_ancestor_cwd),
+    ) {
         Ok(imported) => imported,
         Err(error) => return CliOutput::error(error.to_string()),
     };
@@ -1986,6 +1992,7 @@ impl CompareArmOrder {
 
 struct CompareOptions {
     selection: OwnedSessionSelection,
+    allow_ancestor_cwd: bool,
     json: bool,
     arm_order: CompareArmOrder,
 }
@@ -2000,6 +2007,9 @@ impl CompareOptions {
                 arguments.push(id.clone());
             }
         }
+        if self.allow_ancestor_cwd {
+            arguments.push("--allow-ancestor-cwd".to_owned());
+        }
         arguments.push("--json".to_owned());
         arguments
     }
@@ -2011,6 +2021,7 @@ fn parse_compare_arguments(arguments: &[String]) -> Result<CompareOptions, Strin
     }
     let mut selection = None;
     let mut arm_order = None;
+    let mut allow_ancestor_cwd = false;
     let mut json = false;
     let mut index = 1;
     while index < arguments.len() {
@@ -2031,30 +2042,40 @@ fn parse_compare_arguments(arguments: &[String]) -> Result<CompareOptions, Strin
                     .ok_or_else(|| "--arm-order requires a value".to_owned())?;
                 arm_order = Some(CompareArmOrder::parse(value)?);
             }
+            "--allow-ancestor-cwd" if !allow_ancestor_cwd => allow_ancestor_cwd = true,
             "--json" if !json => json = true,
             option => return Err(format!("unsupported or repeated compare option: {option}")),
         }
         index += 1;
     }
+    let selection =
+        selection.ok_or_else(|| "compare requires --last or --session <id>".to_owned())?;
+    if allow_ancestor_cwd && matches!(selection, OwnedSessionSelection::Last) {
+        return Err("--allow-ancestor-cwd requires an explicit --session <id>".to_owned());
+    }
     Ok(CompareOptions {
-        selection: selection
-            .ok_or_else(|| "compare requires --last or --session <id>".to_owned())?,
+        selection,
+        allow_ancestor_cwd,
         json,
         arm_order: arm_order.unwrap_or(CompareArmOrder::BaselineFirst),
     })
 }
 
 impl OwnedSessionSelection {
-    fn as_borrowed(&self) -> SessionSelection<'_> {
+    fn as_borrowed(&self, allow_ancestor_cwd: bool) -> SessionSelection<'_> {
         match self {
             Self::Last => SessionSelection::Last,
-            Self::Session(id) => SessionSelection::Explicit(id),
+            Self::Session(id) => SessionSelection::Explicit {
+                id,
+                allow_ancestor_cwd,
+            },
         }
     }
 }
 
 struct ContinueOptions {
     selection: OwnedSessionSelection,
+    allow_ancestor_cwd: bool,
     action: Option<ContinueAction>,
     json: bool,
 }
@@ -2069,6 +2090,9 @@ impl ContinueOptions {
                 arguments.push(id.clone());
             }
         }
+        if self.allow_ancestor_cwd {
+            arguments.push("--allow-ancestor-cwd".to_owned());
+        }
         arguments.push("--json".to_owned());
         arguments
     }
@@ -2081,6 +2105,9 @@ impl ContinueOptions {
                 arguments.push("--session".to_owned());
                 arguments.push(id.clone());
             }
+        }
+        if self.allow_ancestor_cwd {
+            arguments.push("--allow-ancestor-cwd".to_owned());
         }
         if self.json {
             arguments.push("--json".to_owned());
@@ -2095,6 +2122,7 @@ fn parse_continue_arguments(arguments: &[String]) -> Result<ContinueOptions, Str
     }
     let mut selection = None;
     let mut action = None;
+    let mut allow_ancestor_cwd = false;
     let mut json = false;
     let mut index = 1;
     while index < arguments.len() {
@@ -2134,14 +2162,20 @@ fn parse_continue_arguments(arguments: &[String]) -> Result<ContinueOptions, Str
                 index += 2;
             }
             "--cancel" if action.is_none() => action = Some(ContinueAction::Cancel),
+            "--allow-ancestor-cwd" if !allow_ancestor_cwd => allow_ancestor_cwd = true,
             "--json" if !json => json = true,
             option => return Err(format!("unsupported or repeated continue option: {option}")),
         }
         index += 1;
     }
+    let selection =
+        selection.ok_or_else(|| "continue requires --last or --session <id>".to_owned())?;
+    if allow_ancestor_cwd && matches!(selection, OwnedSessionSelection::Last) {
+        return Err("--allow-ancestor-cwd requires an explicit --session <id>".to_owned());
+    }
     Ok(ContinueOptions {
-        selection: selection
-            .ok_or_else(|| "continue requires --last or --session <id>".to_owned())?,
+        selection,
+        allow_ancestor_cwd,
         action,
         json,
     })
@@ -2229,6 +2263,7 @@ fn parse_inspect_arguments(arguments: &[String]) -> Result<InspectOptions<'_>, S
     let mut json = false;
     let mut compactor = None;
     let mut reasoning = None;
+    let mut allow_ancestor_cwd = false;
     let mut index = 1;
     while index < arguments.len() {
         match arguments[index].as_str() {
@@ -2240,8 +2275,15 @@ fn parse_inspect_arguments(arguments: &[String]) -> Result<InspectOptions<'_>, S
                 let Some(id) = arguments.get(index + 1) else {
                     return Err("missing value for --session".to_owned());
                 };
-                selection = Some(SessionSelection::Explicit(id));
+                selection = Some(SessionSelection::Explicit {
+                    id,
+                    allow_ancestor_cwd: false,
+                });
                 index += 2;
+            }
+            "--allow-ancestor-cwd" if !allow_ancestor_cwd => {
+                allow_ancestor_cwd = true;
+                index += 1;
             }
             "--json" if !json => {
                 json = true;
@@ -2267,11 +2309,24 @@ fn parse_inspect_arguments(arguments: &[String]) -> Result<InspectOptions<'_>, S
             "--json" => return Err("--json may only be supplied once".to_owned()),
             "--compactor" => return Err("--compactor may only be supplied once".to_owned()),
             "--reasoning" => return Err("--reasoning may only be supplied once".to_owned()),
+            "--allow-ancestor-cwd" => {
+                return Err("--allow-ancestor-cwd may only be supplied once".to_owned());
+            }
             option => return Err(format!("unknown inspect option: {option}")),
         }
     }
     let selection = selection
         .ok_or_else(|| "inspect requires exactly one of --last or --session <id>".to_owned())?;
+    let selection = match selection {
+        SessionSelection::Last if allow_ancestor_cwd => {
+            return Err("--allow-ancestor-cwd requires an explicit --session <id>".to_owned());
+        }
+        SessionSelection::Last => SessionSelection::Last,
+        SessionSelection::Explicit { id, .. } => SessionSelection::Explicit {
+            id,
+            allow_ancestor_cwd,
+        },
+    };
     let compactor = CompactorConfig::new(compactor.unwrap_or("luna"), reasoning)?;
     Ok(InspectOptions {
         selection,

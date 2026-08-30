@@ -8,7 +8,9 @@ Recorded versions are Git 2.53.0, Rust/Cargo 1.97.1, Python 3.14.4 (Python 3.11+
 
 The current local product flow is Codex-native: `inspect`, `bundle`, `compare`, then `continue`. State for that flow is private XDG state at `${XDG_STATE_HOME:-$HOME/.local/state}/driftctl`, not a repository ledger. `bundle` emits a versioned sanitized projection/blocker handoff; no non-Codex native adapter is claimed. Source session, source workspace, parent native goal, and existing harness instructions/configuration remain unchanged. Candidate workspaces are isolated, but inherited host-wide/YOLO permission is outside the containment guarantee.
 
-Codex `thread/read` is bounded at 64 MiB. The importer validates documented item shapes, keeps ordered record IDs/roles/digests in private state, and sends only explicit user text plus coalesced digest evidence to the semantic resolver. `contextCompaction` is counted as a boundary, not accepted as user intent. Appending only assistant/tool evidence updates provenance with zero semantic calls.
+Codex `thread/read` is bounded at 128 MiB. The importer validates documented item shapes, keeps ordered record IDs/roles/digests in private state, and sends only explicit user text plus coalesced digest evidence to the semantic resolver. `contextCompaction` is counted as a boundary, not accepted as user intent. Appending only assistant/tool evidence updates provenance with zero semantic calls.
+
+`--last` requires an exact canonical repository CWD. To inspect a known historical session launched from an ancestor directory, pass both `--session <id>` and `--allow-ancestor-cwd`; Driftctl additionally requires an imported command-execution CWD that exactly matches the current repository. The flag is not accepted with `--last`.
 
 Unsupported harnesses can provide the schema-v1 neutral session document specified in [`SPEC.md`](SPEC.md):
 

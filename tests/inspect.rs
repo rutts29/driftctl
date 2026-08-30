@@ -410,6 +410,86 @@ fn inspect_explicit_session_reads_only_that_session_and_keeps_text_out_of_human_
 }
 
 #[test]
+fn explicit_session_can_bind_an_ancestor_cwd_when_command_evidence_names_the_repository() {
+    let root = temporary_directory("inspect-explicit-ancestor");
+    clean_repository(&root);
+    let canonical_root = root.canonicalize().expect("canonical test root");
+    let session_root = canonical_root.parent().expect("session ancestor");
+    let selected_id = "thread-private-ancestor-identifier";
+    let mut read = read_result(selected_id, &session_root.display().to_string());
+    read["thread"]["turns"][0]["items"][2]["cwd"] = json!(canonical_root.display().to_string());
+    let (environment, _) = fake_environment(
+        &root,
+        vec![json!({"data": [], "nextCursor": null, "backwardsCursor": null})],
+        read,
+        false,
+    );
+
+    let not_opted_in = run(
+        &root,
+        &["inspect", "codex", "--session", selected_id, "--json"],
+        &environment,
+    );
+    assert_eq!(not_opted_in.status.code(), Some(1), "{not_opted_in:?}");
+    assert!(String::from_utf8_lossy(&not_opted_in.stderr).contains("--allow-ancestor-cwd"));
+    assert!(!Path::new(&environment["DRIFTCTL_FAKE_PROMPTS"]).exists());
+
+    let output = run(
+        &root,
+        &[
+            "inspect",
+            "codex",
+            "--session",
+            selected_id,
+            "--allow-ancestor-cwd",
+            "--json",
+        ],
+        &environment,
+    );
+
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let document: Value = serde_json::from_slice(&output.stdout).expect("inspect JSON");
+    assert_eq!(document["status"], "usable");
+    assert_repository_unchanged(&root);
+}
+
+#[test]
+fn explicit_session_rejects_an_ancestor_cwd_without_repository_command_evidence() {
+    let root = temporary_directory("inspect-explicit-unrelated");
+    clean_repository(&root);
+    let canonical_root = root.canonicalize().expect("canonical test root");
+    let session_root = canonical_root.parent().expect("session ancestor");
+    let selected_id = "thread-private-unrelated-identifier";
+    let (environment, _) = fake_environment(
+        &root,
+        vec![json!({"data": [], "nextCursor": null, "backwardsCursor": null})],
+        read_result(selected_id, &session_root.display().to_string()),
+        false,
+    );
+
+    let output = run(
+        &root,
+        &[
+            "inspect",
+            "codex",
+            "--session",
+            selected_id,
+            "--allow-ancestor-cwd",
+            "--json",
+        ],
+        &environment,
+    );
+
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("does not have command evidence for the current repository")
+    );
+    assert!(!Path::new(&environment["DRIFTCTL_FAKE_PROMPTS"]).exists());
+    assert_repository_unchanged(&root);
+}
+
+#[test]
 fn inspect_rejects_malformed_provider_content_and_truncated_json_without_mutating_source() {
     let root = temporary_directory("inspect-invalid");
     clean_repository(&root);
