@@ -20,8 +20,9 @@ fn temporary_directory(case: &str) -> PathBuf {
 
 fn write_fake_app_server(root: &Path) -> PathBuf {
     let program = root.join("fake-codex.py");
+    let staging = root.join("fake-codex.py.tmp");
     fs::write(
-        &program,
+        &staging,
         r#"#!/usr/bin/env python3
 import json
 import os
@@ -119,15 +120,16 @@ for raw in sys.stdin:
 "#,
     )
     .expect("write fake Codex App Server");
-    fs::File::open(&program)
+    fs::File::open(&staging)
         .expect("open fake Codex App Server")
         .sync_all()
         .expect("sync fake Codex App Server");
-    let mut permissions = fs::metadata(&program)
+    let mut permissions = fs::metadata(&staging)
         .expect("read fake metadata")
         .permissions();
     permissions.set_mode(0o755);
-    fs::set_permissions(&program, permissions).expect("make fake executable");
+    fs::set_permissions(&staging, permissions).expect("make fake executable");
+    fs::rename(&staging, &program).expect("publish fake Codex App Server");
     program
 }
 
@@ -199,6 +201,10 @@ fn creates_a_persisted_isolated_child_and_migrates_only_its_goal_transactionally
         ]
     );
     assert_eq!(requests[2]["params"], json!({"threadId":"parent-thread"}));
+    assert_eq!(
+        requests[0]["params"]["capabilities"],
+        json!({"experimentalApi":true,"requestAttestation":false})
+    );
     assert_eq!(
         requests[3]["params"],
         json!({
