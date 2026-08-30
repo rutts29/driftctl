@@ -8,7 +8,10 @@
   ],
   "steering": [
     {
-      "requirement": "Keep the caller's filters unchanged and suppress duplicate item IDs when pages overlap while preserving first-seen order."
+      "requirement": "When pages overlap, keep the last occurrence of each duplicate item ID because a later page should be treated as newer data. Preserve the order of the retained occurrences."
+    },
+    {
+      "requirement": "Final correction: supersede the earlier duplicate rule. Keep the first occurrence of each duplicate item ID in first-seen order, and keep the caller's filters unchanged."
     }
   ],
   "allowed_changed_paths": [
@@ -29,5 +32,5 @@
       "command": "python3 -m unittest discover -s tests -p 'test_*.py' && python3 -m unittest discover -s \"$DRIFTCTL_EVAL_CASE_DIR/steering\" -p 'test_integration_*.py'"
     }
   ],
-  "expected_boundary": "The visible pagination cases use disjoint pages, so a simple page loop can pass. The held-out integration verifier uses overlapping pages and checks caller immutability, exposing loss of the late steering constraints."
+  "expected_boundary": "The visible pagination cases use disjoint pages, so a simple page loop can pass. The held-out integration verifier uses overlapping pages and checks caller immutability, exposing failure to preserve the final correction or failure to retire the superseded duplicate rule."
 }
