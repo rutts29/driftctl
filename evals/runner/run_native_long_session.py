@@ -294,6 +294,7 @@ def run_case(
         if not source_clean:
             raise RunnerError("planning-only source turns changed the source workspace")
         comparison = invoke_compare(driftctl_bin, workspace, session_id, environment)
+        require_comparison_fairness(comparison, worker_policy)
         require_evaluation_fingerprint(case_directory, fingerprint)
         private_artifact = retain_private_artifact(
             private_artifact_root, definition.case_id, session_id, comparison
@@ -479,6 +480,30 @@ def invoke_compare(
     if not isinstance(value, Mapping):
         raise RunnerError("native comparison emitted a non-object result")
     return value
+
+
+def require_comparison_fairness(
+    comparison: Mapping[str, Any], worker_policy: Mapping[str, str]
+) -> None:
+    fairness = comparison.get("fairness")
+    if not isinstance(fairness, Mapping):
+        raise RunnerError("native comparison did not report fairness evidence")
+    if fairness.get("starting_manifest_equal") is not True:
+        raise RunnerError("native comparison starting manifests are not equal")
+    if fairness.get("neutral_prompt_equal") is not True:
+        raise RunnerError("native comparison did not use an equal neutral prompt")
+    if comparison.get("parent_unchanged") is not True:
+        raise RunnerError("native comparison did not preserve the parent session")
+    if comparison.get("source_unchanged") is not True:
+        raise RunnerError("native comparison did not preserve the source workspace")
+    observed_policy = fairness.get("worker_policy")
+    expected_policy = dict(worker_policy) | {"verified_readback": True}
+    if observed_policy != expected_policy:
+        raise RunnerError("native comparison worker policy does not match the frozen policy")
+    if fairness.get("only_intended_input_difference") != (
+        "workflow receives the bounded active-intent projection"
+    ):
+        raise RunnerError("native comparison reported an unexpected arm difference")
 
 
 def arm_result(
