@@ -101,7 +101,15 @@ if sys.argv[1:3] == ["app-server", "--stdio"]:
         elif method == "thread/resume":
             with open(rpc_capture + ".children", encoding="utf-8") as child_file:
                 children = json.load(child_file)
-            result = {"thread":children[request["params"]["threadId"]]}
+            child = children[request["params"]["threadId"]]
+            result = {
+                "approvalPolicy":request["params"]["approvalPolicy"],
+                "cwd":child["cwd"],
+                "model":request["params"]["model"],
+                "reasoningEffort":"max",
+                "sandbox":{"type":"workspaceWrite"},
+                "thread":child
+            }
         elif method == "thread/settings/update":
             with open(rpc_capture + ".children", encoding="utf-8") as child_file:
                 children = json.load(child_file)

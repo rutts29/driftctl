@@ -452,11 +452,26 @@ impl AppServer {
     }
 
     fn resume_child(&mut self, request: &ChildTurnRequest) -> Result<(), ChildAdapterError> {
+        self.resume_and_verify(
+            &request.child_thread_id,
+            &request.child_cwd,
+            &request.worker_policy,
+            false,
+        )
+    }
+
+    fn resume_and_verify(
+        &mut self,
+        child_id: &str,
+        child_cwd: &Path,
+        policy: &WorkerPolicy,
+        verify_policy: bool,
+    ) -> Result<(), ChildAdapterError> {
         let response = self.request(
             "thread/resume",
             json!({
-                "threadId":request.child_thread_id,
-                "model":request.worker_policy.model,
+                "threadId":child_id,
+                "model":policy.model,
                 "sandbox":"workspace-write",
                 "approvalPolicy":"never",
             }),
@@ -464,15 +479,29 @@ impl AppServer {
         let thread = response.get("thread").ok_or_else(|| {
             ChildAdapterError::protocol("thread/resume response has no child thread")
         })?;
-        let child_id = required_string(thread, "id", "thread/resume.result.thread")?;
-        let child_cwd = required_string(thread, "cwd", "thread/resume.result.thread")?;
-        if child_id != request.child_thread_id
-            || child_cwd != request.child_cwd.to_string_lossy()
+        let observed_child_id = required_string(thread, "id", "thread/resume.result.thread")?;
+        let observed_child_cwd = required_string(thread, "cwd", "thread/resume.result.thread")?;
+        if observed_child_id != child_id
+            || observed_child_cwd != child_cwd.to_string_lossy()
             || thread.get("ephemeral").and_then(Value::as_bool) != Some(false)
         {
             return Err(ChildAdapterError::protocol(
                 "thread/resume did not load the expected persisted child and cwd",
             ));
+        }
+        if verify_policy {
+            let sandbox = response.pointer("/sandbox/type").and_then(Value::as_str);
+            if response.get("model").and_then(Value::as_str) != Some(policy.model())
+                || response.get("reasoningEffort").and_then(Value::as_str) != Some(policy.effort())
+                || response.get("approvalPolicy").and_then(Value::as_str) != Some("never")
+                || sandbox != Some("workspaceWrite")
+                || response.get("cwd").and_then(Value::as_str)
+                    != Some(child_cwd.to_string_lossy().as_ref())
+            {
+                return Err(ChildAdapterError::protocol(
+                    "child worker policy read-back does not exactly match the requested policy",
+                ));
+            }
         }
         Ok(())
     }
@@ -493,45 +522,7 @@ impl AppServer {
                 "sandboxPolicy":{"type":"workspaceWrite"},
             }),
         )?;
-        self.request(
-            "thread/read",
-            json!({"threadId":child_id,"includeTurns":false}),
-        )?;
-        let notification = self
-            .notifications
-            .iter()
-            .rev()
-            .find(|notification| {
-                notification.get("method").and_then(Value::as_str)
-                    == Some("thread/settings/updated")
-                    && notification
-                        .pointer("/params/threadId")
-                        .and_then(Value::as_str)
-                        == Some(child_id)
-            })
-            .ok_or_else(|| {
-                ChildAdapterError::protocol(
-                    "child worker policy update had no verifiable settings notification",
-                )
-            })?;
-        let settings = notification
-            .pointer("/params/threadSettings")
-            .ok_or_else(|| ChildAdapterError::protocol("child worker settings are missing"))?;
-        let observed_cwd = settings.get("cwd").and_then(Value::as_str);
-        let sandbox = settings
-            .pointer("/sandboxPolicy/type")
-            .and_then(Value::as_str);
-        if settings.get("model").and_then(Value::as_str) != Some(policy.model())
-            || settings.get("effort").and_then(Value::as_str) != Some(policy.effort())
-            || settings.get("approvalPolicy").and_then(Value::as_str) != Some("never")
-            || sandbox != Some("workspaceWrite")
-            || observed_cwd != Some(child_cwd.to_string_lossy().as_ref())
-        {
-            return Err(ChildAdapterError::protocol(
-                "child worker policy read-back does not exactly match the requested policy",
-            ));
-        }
-        Ok(())
+        self.resume_and_verify(child_id, child_cwd, policy, true)
     }
 
     fn clear_goal(&mut self, child_id: &str) -> Result<(), ChildAdapterError> {

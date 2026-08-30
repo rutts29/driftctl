@@ -53,26 +53,19 @@ for raw in sys.stdin:
     elif method == "thread/fork":
         result = {"thread": {"id": child if scenario != "wrong-child" else parent, "cwd": target_cwd if scenario != "wrong-cwd" else "/wrong", "ephemeral": scenario == "ephemeral"}}
     elif method == "thread/resume":
-        result = {"thread": {"id": child, "cwd": target_cwd, "ephemeral": False}}
+        observed_model = "gpt-5.6-sol" if scenario == "policy-mismatch" else request["params"]["model"]
+        result = {
+            "approvalPolicy":request["params"]["approvalPolicy"],
+            "cwd":target_cwd,
+            "model":observed_model,
+            "reasoningEffort":request["params"].get("effort", "max"),
+            "sandbox":{"type":"workspaceWrite"},
+            "thread":{"id":child,"cwd":target_cwd,"ephemeral":False}
+        }
+        if scenario == "policy-missing":
+            result.pop("reasoningEffort")
     elif method == "thread/settings/update":
         result = {}
-        if scenario != "policy-missing":
-            observed_model = "gpt-5.6-sol" if scenario == "policy-mismatch" else request["params"]["model"]
-            print(json.dumps({"method":"thread/settings/updated","params":{
-                "threadId":child,
-                "threadSettings":{
-                    "approvalPolicy":request["params"]["approvalPolicy"],
-                    "approvalsReviewer":"user",
-                    "collaborationMode":{"mode":"default","settings":{"model":observed_model}},
-                    "cwd":target_cwd,
-                    "effort":request["params"]["effort"],
-                    "model":observed_model,
-                    "modelProvider":"openai",
-                    "sandboxPolicy":request["params"]["sandboxPolicy"]
-                }
-            }}), flush=True)
-    elif method == "thread/read":
-        result = {"thread":{"id":child,"cwd":target_cwd,"ephemeral":False,"turns":[]}}
     elif method == "thread/goal/get":
         thread_id = request["params"]["threadId"]
         if thread_id == parent:
@@ -192,7 +185,7 @@ fn creates_a_persisted_isolated_child_and_migrates_only_its_goal_transactionally
             Some("thread/goal/get"),
             Some("thread/fork"),
             Some("thread/settings/update"),
-            Some("thread/read"),
+            Some("thread/resume"),
             Some("thread/goal/get"),
             Some("thread/goal/clear"),
             Some("thread/goal/set"),
@@ -339,7 +332,7 @@ fn starts_a_child_turn_with_one_explicit_verified_worker_policy() {
         })
     );
     assert_eq!(requests[3]["method"], "thread/settings/update");
-    assert_eq!(requests[4]["method"], "thread/read");
+    assert_eq!(requests[4]["method"], "thread/resume");
     assert_eq!(requests[5]["method"], "turn/start");
     assert_eq!(
         requests[5]["params"],
