@@ -82,7 +82,7 @@ DRIFTCTL_BASE_URL="file://$DRIFTCTL_REHEARSAL/releases" \
 "$DRIFTCTL_REHEARSAL/bin/driftctl" --help
 ```
 
-The installer requires an explicit version, verifies the archive SHA-256, rejects unexpected archive entries, stages the executable, and invokes `--help` before replacement. The default public release URL is not usable until the repository publishes matching release artifacts; Homebrew remains unverified and unshipped. The installed command uses the user's Codex authentication only when a live provider command runs.
+The installer requires an explicit version, verifies the archive SHA-256, rejects unexpected archive entries, stages the executable, and invokes `--help` before replacement. The supported MVP target is `x86_64-unknown-linux-gnu`; every other explicit or detected target fails before download/build. The default public release URL is not usable until the repository publishes matching release artifacts. Homebrew remains blocked: no macOS binary or real `brew` boundary has run, and the current internal name collides with an existing formula. The installed command uses the user's Codex authentication only when a live provider command runs.
 
 ## Frozen five-case native suite
 

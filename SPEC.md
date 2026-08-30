@@ -268,6 +268,11 @@ complete history
 
 ## Open Decisions
 
-- Public name and license.
+- Public name and license. `driftctl` is internal-only because it collides with an existing CLI and Homebrew formula.
 - Exact projection byte budget after stress measurement.
-- Final release target matrix after clean-run timing.
+
+## Release Target
+
+- MVP: `x86_64-unknown-linux-gnu` archive plus SHA-256 sidecar and pinned installer.
+- Unsupported targets: reject before build or download.
+- Homebrew: deferred until a public rename, macOS artifact, and real `brew` boundary exist.

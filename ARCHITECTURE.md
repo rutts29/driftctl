@@ -477,5 +477,5 @@ The runner rejects unequal manifests, prompts, worker policy, tool policy, or pr
 | YOLO support | child-only preauthorization | parent mutation | autonomy with recoverability |
 | Evaluation | checkpoint branch comparison | retrospective outcome backtest | counterfactual validity |
 | Main case count | five strong cases | ten shallow cases | weekend quality constraint |
-| Distribution | release + verified curl + Homebrew | npm MVP | native binary fit |
+| Distribution | x86_64 Linux release + verified curl | Homebrew, npm MVP, unbuilt targets | only the shipped binary/install boundary is claimed |
 | Security | source isolation and explicit limits | full security harness | product focus and schedule |

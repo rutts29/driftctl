@@ -44,14 +44,11 @@ if [ -z "$target" ]; then
   system=$(uname -s)
   case "$system:$machine" in
     Linux:x86_64) target=x86_64-unknown-linux-gnu ;;
-    Linux:aarch64|Linux:arm64) target=aarch64-unknown-linux-gnu ;;
-    Darwin:x86_64) target=x86_64-apple-darwin ;;
-    Darwin:arm64|Darwin:aarch64) target=aarch64-apple-darwin ;;
     *) echo "unsupported platform: $system $machine" >&2; exit 1 ;;
   esac
 fi
 case "$target" in
-  x86_64-unknown-linux-gnu|aarch64-unknown-linux-gnu|x86_64-apple-darwin|aarch64-apple-darwin) ;;
+  x86_64-unknown-linux-gnu) ;;
   *) echo "unsupported release target: $target" >&2; exit 1 ;;
 esac
 
