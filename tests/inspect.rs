@@ -114,7 +114,7 @@ fn read_result(id: &str, cwd: &str) -> Value {
             "turns": [{
                 "items": [
                     {"type": "userMessage", "id": "user-1", "content": [
-                        {"type": "text", "text": "private user intent must not be echoed"},
+                        {"type": "text", "text": "private user intent\r\nmust not be echoed"},
                         {"type": "image", "url": "https://example.invalid/private.png"}
                     ]},
                     {"type": "agentMessage", "id": "assistant-1", "text": "private assistant draft must not be authority"},
@@ -310,6 +310,45 @@ fn inspect_rejects_malformed_provider_content_and_truncated_json_without_mutatin
     );
     assert_eq!(truncated.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&truncated.stderr).contains("truncated"));
+    assert_repository_unchanged(&root);
+}
+
+#[test]
+fn inspect_rejects_duplicate_codex_record_ids_at_the_neutral_bundle_boundary() {
+    let root = temporary_directory("inspect-duplicate-records");
+    clean_repository(&root);
+    let canonical_root = root.canonicalize().expect("canonical test root");
+    let selected_id = "thread-private-duplicate-records";
+    let duplicate_records = json!({
+        "thread": {
+            "id": selected_id,
+            "cwd": canonical_root,
+            "turns": [{
+                "items": [
+                    {"type": "userMessage", "id": "duplicate-message", "content": [{"type": "text", "text": "private first request"}]},
+                    {"type": "userMessage", "id": "duplicate-message", "content": [{"type": "text", "text": "private second request"}]}
+                ]
+            }]
+        }
+    });
+    let (environment, _) = fake_environment(
+        &root,
+        vec![json!({"data": [], "nextCursor": null, "backwardsCursor": null})],
+        duplicate_records,
+        false,
+    );
+
+    let output = run(
+        &root,
+        &["inspect", "codex", "--session", selected_id],
+        &environment,
+    );
+
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("duplicate neutral session bundle record ID"));
+    assert!(!stderr.contains(selected_id));
+    assert!(!stderr.contains("private first request"));
     assert_repository_unchanged(&root);
 }
 

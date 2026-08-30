@@ -91,7 +91,7 @@ pub enum SourceRole {
 }
 
 /// A private, source-linked reference to an imported provider record.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Deserialize, Eq, PartialEq, Serialize)]
 pub struct SourceRef {
     pub provider: SourceProvider,
     /// This value is intentionally local/private and must not be included in
@@ -100,6 +100,18 @@ pub struct SourceRef {
     pub record: String,
     pub role: SourceRole,
     pub content_digest: String,
+}
+
+impl fmt::Debug for SourceRef {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("SourceRef")
+            .field("provider", &self.provider)
+            .field("record", &self.record)
+            .field("role", &self.role)
+            .field("content_digest", &self.content_digest)
+            .finish_non_exhaustive()
+    }
 }
 
 impl SourceRef {
