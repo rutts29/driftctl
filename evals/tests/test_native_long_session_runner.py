@@ -86,6 +86,19 @@ class NativeLongSessionRunnerTests(unittest.TestCase):
                     all(item["elapsed_ms"] == 1 for item in arm["verifiers"])
                 )
                 self.assertEqual(arm["elapsed_scope"], "paired_case_wall_time")
+                self.assertEqual(
+                    arm["projection_generation"],
+                    {
+                        "calls": 1,
+                        "cached_input_tokens": 0,
+                        "elapsed_ms": 7,
+                        "effort": "max",
+                        "input_tokens": 20,
+                        "model": "gpt-5.6-luna",
+                        "output_tokens": 5,
+                        "reasoning_output_tokens": 2,
+                    },
+                )
                 rendered = json.dumps(arm)
                 self.assertNotIn(str(fixture / "baseline-candidate"), rendered)
                 self.assertNotIn("source-thread", rendered)
@@ -155,6 +168,10 @@ class NativeLongSessionRunnerTests(unittest.TestCase):
             commands = read_json_lines(fixture / "driftctl-requests.jsonl")
             self.assertEqual(
                 commands[0]["arguments"][:4],
+                ["inspect", "codex", "--session", "source-thread"],
+            )
+            self.assertEqual(
+                commands[1]["arguments"][:4],
                 ["compare", "codex", "--session", "source-thread"],
             )
             verify_calls = [
@@ -496,6 +513,22 @@ import sys
 arguments = sys.argv[1:]
 with open(os.environ["FAKE_DRIFTCTL_REQUESTS"], "a", encoding="utf-8") as output:
     output.write(json.dumps({"arguments": arguments, "tmpdir": os.environ.get("TMPDIR")}) + "\\n")
+if arguments[0] == "inspect":
+    print(json.dumps({
+        "status": "ready",
+        "resolver": {
+            "calls": 1,
+            "elapsed_ms": 7,
+            "model": "gpt-5.6-luna",
+            "reasoning": "max",
+            "usage": {
+                "input_tokens": 20,
+                "output_tokens": 5,
+                "reasoning_output_tokens": 2,
+            },
+        },
+    }))
+    raise SystemExit(0)
 if arguments[0] == "compare":
     changed_paths = ["service_client.py"]
     if os.environ.get("FAKE_EXTRA_CHANGED_PATH"):

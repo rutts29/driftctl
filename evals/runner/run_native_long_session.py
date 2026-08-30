@@ -444,6 +444,10 @@ def run_case(
         source_clean = git_clean(workspace)
         if not source_clean:
             raise RunnerError("planning-only source turns changed the source workspace")
+        projection_generation = invoke_inspect(
+            driftctl_bin, workspace, session_id, environment
+        )
+        require_evaluation_fingerprint(case_directory, fingerprint)
         comparison = invoke_compare(driftctl_bin, workspace, session_id, environment)
         require_comparison_fairness(comparison, worker_policy)
         require_evaluation_fingerprint(case_directory, fingerprint)
@@ -470,6 +474,7 @@ def run_case(
                 session_id,
                 private_artifact,
                 worker_policy,
+                projection_generation,
             )
             for mode in ("baseline", "workflow")
         }
@@ -502,6 +507,7 @@ def run_case(
                 session_id,
                 private_artifact,
                 worker_policy,
+                projection_generation,
             )
             results["plain_summary"]["control_context"] = {
                 "kind": "flat_plain_summary",
@@ -740,6 +746,64 @@ def invoke_compare(
     return value
 
 
+def invoke_inspect(
+    driftctl_bin: str,
+    workspace: Path,
+    session_id: str,
+    environment: Mapping[str, str],
+) -> dict[str, Any]:
+    completed = invoke(
+        [driftctl_bin, "inspect", "codex", "--session", session_id, "--json"],
+        workspace,
+        environment,
+        "generate native projection",
+    )
+    if completed.returncode != 0:
+        detail = completed.stderr.strip() or completed.stdout.strip()
+        raise RunnerError(f"native inspect failed: {detail or 'command failed'}")
+    try:
+        document = json.loads(completed.stdout)
+    except json.JSONDecodeError as error:
+        raise RunnerError(f"native inspect emitted invalid JSON: {error}") from error
+    resolver = document.get("resolver") if isinstance(document, Mapping) else None
+    usage = resolver.get("usage") if isinstance(resolver, Mapping) else None
+    if (
+        not isinstance(resolver, Mapping)
+        or not isinstance(usage, Mapping)
+        or document.get("status") != "ready"
+    ):
+        raise RunnerError("native inspect did not return ready resolver evidence")
+    fields = {
+        "calls": resolver.get("calls"),
+        "elapsed_ms": resolver.get("elapsed_ms"),
+        "effort": resolver.get("reasoning"),
+        "input_tokens": usage.get("input_tokens"),
+        "cached_input_tokens": usage.get("cached_input_tokens", 0),
+        "model": resolver.get("model"),
+        "output_tokens": usage.get("output_tokens"),
+        "reasoning_output_tokens": usage.get("reasoning_output_tokens"),
+    }
+    numeric = (
+        "calls",
+        "elapsed_ms",
+        "input_tokens",
+        "cached_input_tokens",
+        "output_tokens",
+        "reasoning_output_tokens",
+    )
+    if any(
+        isinstance(fields[name], bool)
+        or not isinstance(fields[name], int)
+        or fields[name] < 0
+        for name in numeric
+    ) or any(
+        not isinstance(fields[name], str) or not fields[name]
+        for name in ("effort", "model")
+    ):
+        raise RunnerError("native inspect returned malformed resolver evidence")
+    return fields
+
+
 def require_comparison_fairness(
     comparison: Mapping[str, Any], worker_policy: Mapping[str, str]
 ) -> None:
@@ -778,6 +842,7 @@ def arm_result(
     source_session_id: str,
     private_artifact: str | None,
     worker_policy: Mapping[str, str],
+    projection_generation: Mapping[str, Any],
 ) -> dict[str, Any]:
     candidate = Path(str(arm["child_cwd"]))
     if not candidate.is_dir():
@@ -815,6 +880,7 @@ def arm_result(
             and not all(item["passed"] for item in verifiers),
             "phase": "continuation" if agent_succeeded else None,
         },
+        "projection_generation": dict(projection_generation),
         "recovery_context": "intact_native_session",
         "source_session_sha256": digest_text(source_session_id),
         "scope": scope,
