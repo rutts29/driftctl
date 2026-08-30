@@ -40,7 +40,7 @@ Usage:\n\
   driftctl inspect codex (--last | --session <id>) [--json] [--compactor luna|terra|sol] [--reasoning high|medium]\n\
   driftctl inspect bundle (--file <path> | --stdin) [--json] [--compactor luna|terra|sol] [--reasoning high|medium]\n\
   driftctl bundle --run <run-id> --json\n\
-  driftctl compare codex (--last | --session <id>) [--json]\n\
+  driftctl compare codex (--last | --session <id>) [--arm-order baseline-first|workflow-first] [--json]\n\
   driftctl continue codex (--last | --session <id>) [--resolve-conflict <conflict-id> <alternative-id> | --approve-goal | --edit-goal <text> | --retain-goal | --cancel] [--json]\n\
   driftctl verify (--run <run-id> | --candidate <path>) (--requirement <id> | --gate regression|integration|protected_scope|review) [--json] -- <program> [args...]\n\
   driftctl run codex\n\
@@ -1183,10 +1183,9 @@ fn completion_blockers(
 }
 
 fn compare_codex(root: &Path, arguments: &[String]) -> CliOutput {
-    let options = match parse_continue_arguments(arguments) {
-        Ok(options) if options.action.is_none() => options,
-        Ok(_) => return CliOutput::error("compare does not accept goal-decision options"),
-        Err(error) => return CliOutput::error(error.replace("continue", "compare")),
+    let options = match parse_compare_arguments(arguments) {
+        Ok(options) => options,
+        Err(error) => return CliOutput::error(error),
     };
     let inspect_arguments = options.inspect_arguments();
     let inspection = inspect(root, &inspect_arguments);
@@ -1264,30 +1263,50 @@ fn compare_codex(root: &Path, arguments: &[String]) -> CliOutput {
         Err(error) => return CliOutput::blocked(error.to_string()),
     };
     let neutral_prompt = "Continue the task from this checkpoint. Preserve existing behavior and complete the remaining work. Do not claim completion without running relevant validation.";
-    let baseline_turn = match ChildTurnRequest::without_projection(
+    let baseline_turn_request = match ChildTurnRequest::without_projection(
         baseline.child_id(),
         baseline.child_cwd(),
         neutral_prompt,
-    )
-    .and_then(|request| adapter.start_child_turn(request))
-    {
-        Ok(turn) => turn,
+    ) {
+        Ok(request) => request,
         Err(error) => return CliOutput::blocked(error.to_string()),
     };
     let projection_context = match public_projection_context(&recovered) {
         Ok(context) => context,
         Err(error) => return CliOutput::error(error),
     };
-    let workflow_turn = match ChildTurnRequest::new(
+    let workflow_turn_request = match ChildTurnRequest::new(
         workflow.child_id(),
         workflow.child_cwd(),
         neutral_prompt,
         projection_context,
-    )
-    .and_then(|request| adapter.start_child_turn(request))
-    {
-        Ok(turn) => turn,
+    ) {
+        Ok(request) => request,
         Err(error) => return CliOutput::blocked(error.to_string()),
+    };
+    let (baseline_turn, workflow_turn) = match options.arm_order {
+        CompareArmOrder::BaselineFirst => {
+            let baseline_turn = match adapter.start_child_turn(baseline_turn_request) {
+                Ok(turn) => turn,
+                Err(error) => return CliOutput::blocked(error.to_string()),
+            };
+            let workflow_turn = match adapter.start_child_turn(workflow_turn_request) {
+                Ok(turn) => turn,
+                Err(error) => return CliOutput::blocked(error.to_string()),
+            };
+            (baseline_turn, workflow_turn)
+        }
+        CompareArmOrder::WorkflowFirst => {
+            let workflow_turn = match adapter.start_child_turn(workflow_turn_request) {
+                Ok(turn) => turn,
+                Err(error) => return CliOutput::blocked(error.to_string()),
+            };
+            let baseline_turn = match adapter.start_child_turn(baseline_turn_request) {
+                Ok(turn) => turn,
+                Err(error) => return CliOutput::blocked(error.to_string()),
+            };
+            (baseline_turn, workflow_turn)
+        }
     };
     let baseline_goal_after = match adapter.observe_persisted_goal(baseline.child_id()) {
         Ok(goal) => goal,
@@ -1328,6 +1347,7 @@ fn compare_codex(root: &Path, arguments: &[String]) -> CliOutput {
             "tool_policy_equal":true,
             "turn_timeout_equal":true,
             "turn_timeout_policy":"provider_terminal_event",
+            "arm_execution_order":options.arm_order.as_names(),
             "worker_policy":{
                 "model":"gpt-5.6-luna",
                 "effort":"max",
@@ -1939,6 +1959,89 @@ enum ContinueAction {
 enum OwnedSessionSelection {
     Last,
     Session(String),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CompareArmOrder {
+    BaselineFirst,
+    WorkflowFirst,
+}
+
+impl CompareArmOrder {
+    fn parse(value: &str) -> Result<Self, String> {
+        match value {
+            "baseline-first" => Ok(Self::BaselineFirst),
+            "workflow-first" => Ok(Self::WorkflowFirst),
+            _ => Err("--arm-order requires baseline-first or workflow-first".to_owned()),
+        }
+    }
+
+    fn as_names(self) -> [&'static str; 2] {
+        match self {
+            Self::BaselineFirst => ["baseline", "workflow"],
+            Self::WorkflowFirst => ["workflow", "baseline"],
+        }
+    }
+}
+
+struct CompareOptions {
+    selection: OwnedSessionSelection,
+    json: bool,
+    arm_order: CompareArmOrder,
+}
+
+impl CompareOptions {
+    fn inspect_arguments(&self) -> Vec<String> {
+        let mut arguments = vec!["codex".to_owned()];
+        match &self.selection {
+            OwnedSessionSelection::Last => arguments.push("--last".to_owned()),
+            OwnedSessionSelection::Session(id) => {
+                arguments.push("--session".to_owned());
+                arguments.push(id.clone());
+            }
+        }
+        arguments.push("--json".to_owned());
+        arguments
+    }
+}
+
+fn parse_compare_arguments(arguments: &[String]) -> Result<CompareOptions, String> {
+    if arguments.first().map(String::as_str) != Some("codex") {
+        return Err("compare requires provider codex".to_owned());
+    }
+    let mut selection = None;
+    let mut arm_order = None;
+    let mut json = false;
+    let mut index = 1;
+    while index < arguments.len() {
+        match arguments[index].as_str() {
+            "--last" if selection.is_none() => selection = Some(OwnedSessionSelection::Last),
+            "--session" if selection.is_none() => {
+                index += 1;
+                let id = arguments
+                    .get(index)
+                    .filter(|id| !id.is_empty())
+                    .ok_or_else(|| "--session requires an ID".to_owned())?;
+                selection = Some(OwnedSessionSelection::Session(id.clone()));
+            }
+            "--arm-order" if arm_order.is_none() => {
+                index += 1;
+                let value = arguments
+                    .get(index)
+                    .ok_or_else(|| "--arm-order requires a value".to_owned())?;
+                arm_order = Some(CompareArmOrder::parse(value)?);
+            }
+            "--json" if !json => json = true,
+            option => return Err(format!("unsupported or repeated compare option: {option}")),
+        }
+        index += 1;
+    }
+    Ok(CompareOptions {
+        selection: selection
+            .ok_or_else(|| "compare requires --last or --session <id>".to_owned())?,
+        json,
+        arm_order: arm_order.unwrap_or(CompareArmOrder::BaselineFirst),
+    })
 }
 
 impl OwnedSessionSelection {

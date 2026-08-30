@@ -79,9 +79,9 @@
 ### G5 — Ship
 
 - [ ] T18–T19 complete.
-- [ ] Clean install and reproduction pass.
+- [x] Clean install and reproduction pass.
 - [x] Sanitized artifacts pass manual path/secret review.
-- [ ] Every public claim points to submitted evidence.
+- [x] Every current public claim points to submitted evidence.
 
 ## Parallel Waves
 

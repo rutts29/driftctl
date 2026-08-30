@@ -107,7 +107,7 @@ PYTHONDONTWRITEBYTECODE=1 python3 evals/runner/run_native_suite.py \
   --artifacts /tmp/driftctl-reproduction/suite-artifacts
 ```
 
-The recorded 2026-08-30 run used Luna Max, never-approve, workspace-write candidates, and 128 KiB of post-steering context. Four cases reached A/C comparison: baseline 3/4 and Driftctl 2/4. Case 02's B control also verified. Case 05 required operator clarification before coding and is excluded from completion denominators. Nine candidates passed process, fixed verifiers, and exact scope; independent review blocked three with Required findings. See [`evals/results/native-suite-20260830/summary.json`](evals/results/native-suite-20260830/summary.json). These are descriptive results without a significance claim.
+The recorded 2026-08-30 run used Luna Max, never-approve, workspace-write candidates, and 128 KiB of post-steering context. Four cases reached A/C comparison: baseline 3/4 and Driftctl 2/4. Case 02's B control also verified. Case 05 required operator clarification before coding and is excluded from completion denominators. Nine candidates passed process, fixed verifiers, and exact scope; independent review blocked three with Required findings. Every published A/C pair executed baseline first, so a possible order effect remains a disclosed limitation. The current runner alternates baseline-first and workflow-first by frozen case position and records the selected order; the published arms were not rerun. See [`evals/results/native-suite-20260830/summary.json`](evals/results/native-suite-20260830/summary.json). These are descriptive results without a significance claim.
 
 Re-score the immutable arm files without overwriting the published summary:
 

@@ -2,6 +2,8 @@
 
 `driftctl` is a local Rust CLI for inspecting an existing Codex session, building a bounded active-intent projection, comparing isolated child continuations, and continuing an approved child. It is a continuity layer, not a replacement for Codex, repository instructions, skills, permissions, or a security sandbox.
 
+Hackathon framing, measured result, limitations, and the five-minute video flow are collected in [`SUBMISSION.md`](SUBMISSION.md).
+
 ## Current local flow
 
 Prerequisites: Git, Rust/Cargo 1.97.1, and an authenticated Codex CLI. Python 3.11+ is required only for evaluation and release tests.

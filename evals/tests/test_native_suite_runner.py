@@ -69,6 +69,16 @@ class NativeSuiteRunnerTests(unittest.TestCase):
                     self.assertIsNotNone(invocation["plain_summary_file"])
                 else:
                     self.assertIsNone(invocation["plain_summary_file"])
+            self.assertEqual(
+                [invocation["arm_order"] for invocation in invocations],
+                [
+                    "baseline-first",
+                    "workflow-first",
+                    "baseline-first",
+                    "workflow-first",
+                    "baseline-first",
+                ],
+            )
 
             status_file = fixture / "results" / "native-suite-status.json"
             self.assertEqual(json.loads(status_file.read_text()), status)
@@ -200,6 +210,7 @@ invocation = {
     "context_bytes": value("--context-bytes"),
     "worker_model": value("--worker-model"),
     "worker_effort": value("--worker-effort"),
+    "arm_order": value("--arm-order"),
     "plain_summary_file": value("--plain-summary-file") if "--plain-summary-file" in arguments else None,
 }
 with open(os.environ["FAKE_SUITE_INVOCATIONS"], "a", encoding="utf-8") as output:

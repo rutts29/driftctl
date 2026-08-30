@@ -145,9 +145,10 @@ def run_suite(
 
     case_statuses: list[dict[str, Any]] = []
     result_files: dict[str, dict[str, str]] = {}
-    for case in cases:
+    for case_index, case in enumerate(cases):
         case_id = str(case["id"])
         case_directory = root / "evals" / "cases" / case_id
+        arm_order = "baseline-first" if case_index % 2 == 0 else "workflow-first"
         record = run_case(
             case,
             case_directory,
@@ -157,6 +158,7 @@ def run_suite(
             codex_bin,
             artifacts,
             public_paths + [case_directory],
+            arm_order,
         )
         case_statuses.append(record)
         if record["result_files"]:
@@ -198,6 +200,7 @@ def run_suite(
             for filename in record["result_files"].values()
         ],
         "status_file": STATUS_FILENAME,
+        "arm_order_policy": "alternating_baseline_first_then_workflow_first",
         "reproduction_command": REPRODUCTION_COMMAND,
     }
     write_status(results_dir, status)
@@ -213,6 +216,7 @@ def run_case(
     codex_bin: str,
     artifacts: Path | None,
     public_paths: Sequence[Path],
+    arm_order: str,
 ) -> dict[str, Any]:
     case_id = str(case["id"])
     command = native_command(
@@ -223,6 +227,7 @@ def run_case(
         driftctl_bin,
         codex_bin,
         artifacts,
+        arm_order,
     )
     try:
         completed = subprocess.run(
@@ -302,6 +307,7 @@ def native_command(
     driftctl_bin: str,
     codex_bin: str,
     artifacts: Path | None,
+    arm_order: str,
 ) -> list[str]:
     policy = case.get("runner_model_policy")
     if not isinstance(policy, Mapping):
@@ -337,6 +343,8 @@ def native_command(
         model,
         "--worker-effort",
         effort,
+        "--arm-order",
+        arm_order,
     ]
     if artifacts is not None:
         command.extend(("--artifacts", str(artifacts)))
