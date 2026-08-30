@@ -45,6 +45,7 @@ DEFAULT_WORKER_MODEL = "gpt-5.6-luna"
 DEFAULT_WORKER_EFFORT = "max"
 DURABLE_READ_ATTEMPTS = 100
 DURABLE_READ_INTERVAL_SECONDS = 0.05
+CONTEXT_CHUNK_COUNT = 4
 
 
 class AppServerRequestError(RunnerError):
@@ -360,50 +361,100 @@ def seed_native_session(
                 "App Server thread/start response has no persisted thread ID"
             )
         initial = server.record_user_turn(
-            thread_id, source_prompt(definition, False), "initial", 1
+            thread_id, initial_source_prompt(definition), "initial", 1
         )
+        source_turns = [initial]
+        for index, steering in enumerate(definition.steering, start=1):
+            source_turns.append(
+                server.record_user_turn(
+                    thread_id,
+                    steering_source_prompt(steering.requirement, index),
+                    f"steering-{index}",
+                    index + 1,
+                )
+            )
         injection = inject_non_authoritative_context(server, thread_id, context_bytes)
-        steering = server.record_user_turn(
-            thread_id, source_prompt(definition, True), "steering", 2
-        )
-        return thread_id, [initial, steering], injection
+        return thread_id, source_turns, injection
     finally:
         server.close()
 
 
-def source_prompt(definition: CaseDefinition, late: bool) -> str:
-    heading = "Late steering" if late else "Goal"
-    body = (
-        "\n".join(f"- {item.requirement}" for item in definition.steering)
-        if late
-        else f"{definition.goal}\n\nKnown requirements:\n"
-        + "\n".join(f"- {item}" for item in definition.initial_requirements)
-    )
-    return f"{heading}:\n{body}"
+def initial_source_prompt(definition: CaseDefinition) -> str:
+    """Render the initial user turn without any later steering."""
+
+    requirements = "\n".join(f"- {item}" for item in definition.initial_requirements)
+    return f"Goal:\n{definition.goal}\n\nKnown requirements:\n{requirements}"
+
+
+def steering_source_prompt(requirement: str, index: int) -> str:
+    """Render one chronological user steering update as its own native turn."""
+
+    return f"Late steering {index}:\n- {requirement}"
 
 
 def inject_non_authoritative_context(
     server: AppServer, thread_id: str, context_bytes: int
 ) -> dict[str, Any]:
     if context_bytes == 0:
-        return {"attempted": False, "accepted": False, "bytes": 0}
-    prefix = "Non-authoritative assistant activity retained for long-context pressure. "
-    payload = (prefix + "x" * context_bytes)[:context_bytes]
-    item = {
-        "type": "message",
-        "role": "assistant",
-        "content": [{"type": "output_text", "text": payload}],
-    }
+        return {
+            "attempted": False,
+            "accepted": False,
+            "bytes": 0,
+            "chunks": 0,
+            "position": "after_last_user_turn",
+        }
+    payloads = synthetic_context_payloads(context_bytes)
+    items = [
+        {
+            "type": "message",
+            "role": "assistant",
+            "content": [{"type": "output_text", "text": payload}],
+        }
+        for payload in payloads
+    ]
     try:
-        server.request("thread/inject_items", {"threadId": thread_id, "items": [item]})
+        server.request("thread/inject_items", {"threadId": thread_id, "items": items})
     except RunnerError:
         return {
             "attempted": True,
             "accepted": False,
             "bytes": context_bytes,
+            "chunks": len(payloads),
+            "position": "after_last_user_turn",
             "reason": "unsupported_or_rejected",
         }
-    return {"attempted": True, "accepted": True, "bytes": context_bytes}
+    return {
+        "attempted": True,
+        "accepted": True,
+        "bytes": context_bytes,
+        "chunks": len(payloads),
+        "position": "after_last_user_turn",
+    }
+
+
+def synthetic_context_payloads(context_bytes: int) -> list[str]:
+    """Create deterministic varied assistant activity totaling the requested bytes."""
+
+    chunk_count = min(CONTEXT_CHUNK_COUNT, context_bytes)
+    base_size, remainder = divmod(context_bytes, chunk_count)
+    payloads: list[str] = []
+    for chunk_index in range(chunk_count):
+        size = base_size + (1 if chunk_index < remainder else 0)
+        lines: list[str] = []
+        line_index = 0
+        payload_size = 0
+        while payload_size < size:
+            line = (
+                "Synthetic activity "
+                f"{chunk_index + 1:02d}.{line_index:05d}: "
+                f"module_{line_index % 97:02d} check_{line_index % 53:02d} "
+                f"status_{line_index % 11:02d}; no user requirement.\n"
+            )
+            lines.append(line)
+            payload_size += len(line)
+            line_index += 1
+        payloads.append("".join(lines)[:size])
+    return payloads
 
 
 def invoke_compare(
@@ -466,6 +517,10 @@ def arm_result(
         "native_checkpoint": {
             "injection": dict(injection),
             "source_user_turn_count": len(source_turns),
+            "source_turn_labels": [
+                "initial",
+                *(f"steering-{index}" for index in range(1, len(source_turns))),
+            ],
             "source_workspace_clean": source_clean,
         },
         "premature_completion": {
