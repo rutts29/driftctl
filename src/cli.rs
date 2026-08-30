@@ -646,6 +646,7 @@ fn continue_codex(root: &Path, arguments: &[String]) -> CliOutput {
     };
     let turn_request = match ChildTurnRequest::new(
         migration.child_id(),
+        migration.child_cwd(),
         "Continue the accepted task from this bounded active-intent projection. Preserve every listed invariant and do not claim completion without the listed validation evidence.",
         projection_context,
     ) {

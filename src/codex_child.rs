@@ -92,6 +92,7 @@ impl ChildMigration {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ChildTurnRequest {
     child_thread_id: String,
+    child_cwd: PathBuf,
     neutral_prompt: String,
     projection: String,
 }
@@ -99,14 +100,24 @@ pub struct ChildTurnRequest {
 impl ChildTurnRequest {
     pub fn new(
         child_thread_id: impl Into<String>,
+        child_cwd: impl AsRef<Path>,
         neutral_prompt: impl Into<String>,
         projection: impl Into<String>,
     ) -> Result<Self, ChildAdapterError> {
         let child_thread_id = validate_identifier(child_thread_id.into(), "child thread ID")?;
+        let child_cwd = child_cwd.as_ref().canonicalize().map_err(|error| {
+            ChildAdapterError::protocol(format!("could not canonicalize child cwd: {error}"))
+        })?;
+        if !child_cwd.is_dir() {
+            return Err(ChildAdapterError::protocol(
+                "child cwd must be an existing directory",
+            ));
+        }
         let neutral_prompt = validate_text(neutral_prompt.into(), "neutral prompt")?;
         let projection = validate_text(projection.into(), "projection")?;
         Ok(Self {
             child_thread_id,
+            child_cwd,
             neutral_prompt,
             projection,
         })
@@ -153,9 +164,19 @@ impl ChildAdapterError {
         Self(message.into())
     }
 
-    fn capability(method: &str) -> Self {
+    fn capability(method: &str, error: &Value) -> Self {
+        let code = error.get("code").and_then(Value::as_i64);
+        let message = error
+            .get("message")
+            .and_then(Value::as_str)
+            .filter(|message| message.len() <= 512 && !message.chars().any(char::is_control))
+            .unwrap_or("provider rejected the request");
+        let detail = code.map_or_else(
+            || message.to_owned(),
+            |code| format!("{message} (code {code})"),
+        );
         Self(format!(
-            "Codex App Server capability unavailable: {method}; child remains blocked and no interactive fallback was executed"
+            "Codex App Server capability unavailable: {method}: {detail}; child remains blocked and no interactive fallback was executed"
         ))
     }
 }
@@ -196,8 +217,10 @@ impl CodexChildAdapter {
             server.initialize()?;
             let parent_goal = server.get_goal(&request.parent_thread_id)?;
             let child = server.fork_persisted(&request)?;
-            let _initial_child_goal = server.get_goal(&child.id)?;
-            server.clear_goal(&child.id)?;
+            let initial_child_goal = server.get_goal(&child.id)?;
+            if initial_child_goal != GoalObservation::Absent {
+                server.clear_goal(&child.id)?;
+            }
             server.set_goal(&child.id, &request.approved_objective)?;
             let child_goal = server.get_goal(&child.id)?;
             if child_goal.objective() != Some(request.approved_objective.as_str()) {
@@ -229,6 +252,7 @@ impl CodexChildAdapter {
         let mut server = AppServer::start(&self.program)?;
         let result = (|| {
             server.initialize()?;
+            server.resume_child(&request)?;
             server.start_turn(&request)
         })();
         server.stop();
@@ -349,6 +373,25 @@ impl AppServer {
         )?))
     }
 
+    fn resume_child(&mut self, request: &ChildTurnRequest) -> Result<(), ChildAdapterError> {
+        let response =
+            self.request("thread/resume", json!({"threadId":request.child_thread_id}))?;
+        let thread = response.get("thread").ok_or_else(|| {
+            ChildAdapterError::protocol("thread/resume response has no child thread")
+        })?;
+        let child_id = required_string(thread, "id", "thread/resume.result.thread")?;
+        let child_cwd = required_string(thread, "cwd", "thread/resume.result.thread")?;
+        if child_id != request.child_thread_id
+            || child_cwd != request.child_cwd.to_string_lossy()
+            || thread.get("ephemeral").and_then(Value::as_bool) != Some(false)
+        {
+            return Err(ChildAdapterError::protocol(
+                "thread/resume did not load the expected persisted child and cwd",
+            ));
+        }
+        Ok(())
+    }
+
     fn clear_goal(&mut self, child_id: &str) -> Result<(), ChildAdapterError> {
         let response = self.request("thread/goal/clear", json!({"threadId":child_id}))?;
         if response.get("cleared").and_then(Value::as_bool) != Some(true) {
@@ -401,7 +444,41 @@ impl AppServer {
             })
             .next_back()
             .unwrap_or(status);
+        let status = if status == ChildTurnStatus::InProgress {
+            self.wait_for_terminal_turn(&request.child_thread_id, &turn_id)?
+        } else {
+            status
+        };
         Ok(ChildTurnStart { turn_id, status })
+    }
+
+    fn wait_for_terminal_turn(
+        &mut self,
+        child_id: &str,
+        turn_id: &str,
+    ) -> Result<ChildTurnStatus, ChildAdapterError> {
+        loop {
+            let message = self.read_json_line()?;
+            if let Some(status) = terminal_notification(&message, child_id, turn_id) {
+                return Ok(status);
+            }
+            let Some(object) = message.as_object() else {
+                return Err(ChildAdapterError::protocol(
+                    "Codex App Server emitted a non-object turn message",
+                ));
+            };
+            if object.get("method").is_some() && object.get("id").is_none() {
+                continue;
+            }
+            if object.get("method").is_some() && object.get("id").is_some() {
+                return Err(ChildAdapterError::protocol(
+                    "child turn requires approval or user input; child remains blocked and Driftctl did not auto-approve it",
+                ));
+            }
+            return Err(ChildAdapterError::protocol(
+                "Codex App Server emitted an unexpected message while the child turn was running",
+            ));
+        }
     }
 
     fn request(&mut self, method: &str, params: Value) -> Result<Value, ChildAdapterError> {
@@ -424,8 +501,8 @@ impl AppServer {
                     "Codex App Server returned an unexpected response ID",
                 ));
             }
-            if object.get("error").is_some() {
-                return Err(ChildAdapterError::capability(method));
+            if let Some(error) = object.get("error") {
+                return Err(ChildAdapterError::capability(method, error));
             }
             return object.get("result").cloned().ok_or_else(|| {
                 ChildAdapterError::protocol(format!(
