@@ -916,17 +916,16 @@ fn apply_event(state: &mut ReplayState, event: &Event) -> Result<(), HistoryErro
                     reason: "conflict is already resolved".to_owned(),
                 });
             }
-            if !conflict
+            let selected_text = conflict
                 .conflict
                 .alternatives
                 .iter()
-                .any(|alternative| alternative.id == resolution.alternative_id)
-            {
-                return Err(HistoryError::InvalidTransition {
+                .find(|alternative| alternative.id == resolution.alternative_id)
+                .map(|alternative| alternative.text.clone())
+                .ok_or_else(|| HistoryError::InvalidTransition {
                     event: "conflict_resolved",
                     reason: "resolution does not select a live alternative".to_owned(),
-                });
-            }
+                })?;
             let intent_ids = conflict.conflict.intent_ids.clone();
             for intent_id in &intent_ids {
                 let item =
@@ -949,6 +948,7 @@ fn apply_event(state: &mut ReplayState, event: &Event) -> Result<(), HistoryErro
                     .get_mut(&intent_id)
                     .expect("validated intent id exists");
                 item.lifecycle = IntentLifecycle::Active;
+                item.text.clone_from(&selected_text);
                 append_sources(&mut item.changed_by, &resolution.source_refs);
                 if let Some(approval) = &resolution.approval {
                     append_sources(&mut item.changed_by, &approval.source_refs);

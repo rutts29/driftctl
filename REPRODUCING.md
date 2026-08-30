@@ -8,6 +8,15 @@ Recorded versions are Git 2.53.0, Rust/Cargo 1.97.1, Python 3.14.4 (Python 3.11+
 
 The current local product flow is Codex-native: `inspect`, `bundle`, `compare`, then `continue`. State for that flow is private XDG state at `${XDG_STATE_HOME:-$HOME/.local/state}/driftctl`, not a repository ledger. `bundle` emits a versioned sanitized projection/blocker handoff; no non-Codex native adapter is claimed. Source session, source workspace, parent native goal, and existing harness instructions/configuration remain unchanged. Candidate workspaces are isolated, but inherited host-wide/YOLO permission is outside the containment guarantee.
 
+If `inspect --json` reports a semantic conflict, unattended `continue` exits `2` before creating a child. Resolve it with the exact IDs returned by inspection:
+
+```bash
+driftctl continue codex --last \
+  --resolve-conflict <conflict-id> <alternative-id> --json
+```
+
+An invalid conflict or alternative ID exits `1` without forking. A valid choice is source-linked in private state and continuation proceeds with the selected alternative.
+
 ## Deterministic checks
 
 ```bash

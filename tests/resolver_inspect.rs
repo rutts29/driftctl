@@ -85,7 +85,18 @@ if "app-server" in sys.argv and "--stdio" in sys.argv:
                     children = json.load(child_file)
                 result = {"thread": children[thread_id] | {"turns": []}}
             else:
-                result = json.loads(os.environ["DRIFTCTL_FAKE_READ"])
+                sequence = json.loads(os.environ.get("DRIFTCTL_FAKE_READ_SEQUENCE", "[]"))
+                if sequence:
+                    count_path = rpc_capture + ".read-count"
+                    try:
+                        read_index = int(open(count_path, encoding="utf-8").read())
+                    except FileNotFoundError:
+                        read_index = 0
+                    with open(count_path, "w", encoding="utf-8") as count_file:
+                        count_file.write(str(read_index + 1))
+                    result = sequence[min(read_index, len(sequence) - 1)]
+                else:
+                    result = json.loads(os.environ["DRIFTCTL_FAKE_READ"])
         elif method == "thread/goal/get":
             thread_id = request["params"]["threadId"]
             if thread_id.startswith("continued-child"):
@@ -237,6 +248,30 @@ fn session(id: &str, root: &Path, messages: &[(&str, &str)]) -> Value {
         })
         .collect();
     json!({"thread":{"id":id,"cwd":root,"turns":[{"items":items}]}})
+}
+
+fn non_user_change_sequence(fixture: &Fixture, stable_reads: usize) -> String {
+    let canonical = fixture.root.canonicalize().expect("canonical source");
+    let mut before = session(
+        &fixture.session_id,
+        &canonical,
+        &[
+            ("u1", "private raw goal that public output must not echo"),
+            ("u2", "private additive steering"),
+            ("u3", "private explicit supersession"),
+        ],
+    );
+    before["thread"]["turns"][0]["items"]
+        .as_array_mut()
+        .expect("thread items")
+        .push(json!({"type":"agentMessage","id":"a1","text":"first assistant state"}));
+    let mut after = before.clone();
+    after["thread"]["turns"][0]["items"]
+        .as_array_mut()
+        .expect("thread items")[3]["text"] = json!("changed assistant state");
+    let mut sequence = vec![before; stable_reads];
+    sequence.push(after);
+    Value::Array(sequence).to_string()
 }
 
 fn base_proposal() -> Value {
@@ -525,6 +560,57 @@ fn inspect_persists_and_reuses_a_private_run_that_bundle_can_export() {
         );
     }
     fixture.assert_unchanged();
+}
+
+#[test]
+fn inspect_rejects_a_non_user_parent_transcript_change_during_resolution() {
+    let mut fixture = Fixture::new(vec![base_proposal()]);
+    let sequence = non_user_change_sequence(&fixture, 1);
+    fixture
+        .environment
+        .insert("DRIFTCTL_FAKE_READ_SEQUENCE", sequence);
+
+    let inspected = fixture.run(&["--json"]);
+    assert_eq!(inspected.status.code(), Some(1), "{inspected:?}");
+    assert!(
+        String::from_utf8_lossy(&inspected.stderr)
+            .contains("Codex source session or native goal changed during inspect"),
+        "{inspected:?}"
+    );
+}
+
+#[test]
+fn compare_blocks_when_non_user_parent_history_changes_during_children() {
+    let mut fixture = Fixture::new(vec![base_proposal()]);
+    let sequence = non_user_change_sequence(&fixture, 3);
+    fixture
+        .environment
+        .insert("DRIFTCTL_FAKE_READ_SEQUENCE", sequence);
+
+    let compared = fixture.run_compare(&["--json"]);
+    assert_eq!(compared.status.code(), Some(2), "{compared:?}");
+    assert!(
+        String::from_utf8_lossy(&compared.stderr)
+            .contains("Codex source session or native goal changed during inspect"),
+        "{compared:?}"
+    );
+}
+
+#[test]
+fn continue_blocks_when_non_user_parent_history_changes_during_child() {
+    let mut fixture = Fixture::new(vec![base_proposal()]);
+    let sequence = non_user_change_sequence(&fixture, 3);
+    fixture
+        .environment
+        .insert("DRIFTCTL_FAKE_READ_SEQUENCE", sequence);
+
+    let continued = fixture.run_continue(&["--json"]);
+    assert_eq!(continued.status.code(), Some(2), "{continued:?}");
+    assert!(
+        String::from_utf8_lossy(&continued.stderr)
+            .contains("Codex source session or native goal changed during inspect"),
+        "{continued:?}"
+    );
 }
 
 #[test]
@@ -1445,6 +1531,73 @@ fn ambiguous_proposal_returns_an_unresolved_conflict_and_exit_two() {
         1
     );
     assert_eq!(document["blockers"][0]["kind"], "conflict");
+
+    let conflict = &document["projection"]["conflicts"][0];
+    let conflict_id = conflict["id"].as_str().expect("conflict ID");
+    let alternative_id = conflict["alternatives"][0]["id"]
+        .as_str()
+        .expect("alternative ID");
+
+    let unattended = fixture.run_continue(&["--json"]);
+    assert_eq!(unattended.status.code(), Some(2), "{unattended:?}");
+    assert!(
+        String::from_utf8_lossy(&unattended.stderr).contains("--resolve-conflict"),
+        "{unattended:?}"
+    );
+    assert!(!fixture.rpc_calls().iter().any(|request| {
+        matches!(
+            request["method"].as_str(),
+            Some("thread/fork" | "turn/start")
+        )
+    }));
+
+    let rejected = fixture.run_continue(&[
+        "--resolve-conflict",
+        conflict_id,
+        "not-an-alternative",
+        "--json",
+    ]);
+    assert_eq!(rejected.status.code(), Some(1), "{rejected:?}");
+    assert!(
+        String::from_utf8_lossy(&rejected.stderr).contains("does not belong"),
+        "{rejected:?}"
+    );
+    assert!(!fixture.rpc_calls().iter().any(|request| {
+        matches!(
+            request["method"].as_str(),
+            Some("thread/fork" | "turn/start")
+        )
+    }));
+
+    let continued =
+        fixture.run_continue(&["--resolve-conflict", conflict_id, alternative_id, "--json"]);
+    assert_eq!(continued.status.code(), Some(0), "{continued:?}");
+    let continued_document: Value =
+        serde_json::from_slice(&continued.stdout).expect("continued JSON");
+    assert_eq!(continued_document["status"], "started");
+    assert_eq!(continued_document["turn_status"], "completed");
+
+    let accepted = fixture.run(&["--json"]);
+    assert_eq!(accepted.status.code(), Some(0), "{accepted:?}");
+    let accepted_document: Value = serde_json::from_slice(&accepted.stdout).expect("accepted JSON");
+    assert_eq!(accepted_document["projection"]["conflicts"], json!([]));
+    assert!(
+        accepted_document["projection"]["frontier"]
+            .as_array()
+            .expect("frontier")
+            .iter()
+            .any(|item| item["text"] == "Emit JSON")
+    );
+    let rpc = fixture.rpc_calls();
+    let turn = rpc
+        .iter()
+        .find(|request| request["method"] == "turn/start")
+        .expect("child turn");
+    let prompt = turn["params"]["input"][0]["text"]
+        .as_str()
+        .expect("child prompt");
+    assert!(prompt.contains("Emit JSON"));
+    assert!(!prompt.contains("Choose an output format"));
     fixture.assert_unchanged();
 }
 
