@@ -19,6 +19,8 @@ use crate::semantic_resolver::{
 use crate::session_bundle::NativeGoal;
 use crate::{ClosureError, Ledger, Snapshot};
 
+const CONTAINMENT_NOTICE: &str = "workspace isolation only; Driftctl inherits worker permissions, so host-wide or YOLO access remains outside its containment";
+
 const USAGE: &str = "driftctl — durable continuity for coding-agent tasks\n\n\
 Usage:\n\
   driftctl start --goal <text> --requirement <text> [--requirement <text> ...]\n\
@@ -708,6 +710,7 @@ fn compare_codex(root: &Path, arguments: &[String]) -> CliOutput {
         "source_unchanged":true,
         "parent_unchanged":true,
         "adoption":"none",
+        "containment":CONTAINMENT_NOTICE,
     });
     let exit_code = if pair_completed { 0 } else { 2 };
     if options.json {
@@ -723,7 +726,7 @@ fn compare_codex(root: &Path, arguments: &[String]) -> CliOutput {
         CliOutput {
             exit_code,
             stdout: format!(
-                "comparison {}: baseline {}, workflow {}; adoption: none",
+                "comparison {}: baseline {}, workflow {}; adoption: none\n{}",
                 if pair_completed {
                     "completed"
                 } else {
@@ -731,6 +734,7 @@ fn compare_codex(root: &Path, arguments: &[String]) -> CliOutput {
                 },
                 baseline_turn.turn_id(),
                 workflow_turn.turn_id(),
+                CONTAINMENT_NOTICE,
             ),
             stderr: String::new(),
         }
@@ -928,6 +932,7 @@ fn continue_codex(root: &Path, arguments: &[String]) -> CliOutput {
         "parent_unchanged":true,
         "source_unchanged":true,
         "adoption":if continuation_completed { "manual" } else { "none" },
+        "containment":CONTAINMENT_NOTICE,
     });
     if options.json {
         match serde_json::to_string(&output) {
@@ -940,16 +945,18 @@ fn continue_codex(root: &Path, arguments: &[String]) -> CliOutput {
         }
     } else if continuation_completed {
         CliOutput::success(format!(
-            "started child {} in {}\nparent and source unchanged; adoption remains manual",
+            "started child {} in {}\nparent and source unchanged; adoption remains manual\n{}",
             migration.child_id(),
-            migration.child_cwd().display()
+            migration.child_cwd().display(),
+            CONTAINMENT_NOTICE,
         ))
     } else {
         CliOutput::blocked(format!(
-            "child {} ended {:?} in {}; parent and source remain unchanged; adoption: none",
+            "child {} ended {:?} in {}; parent and source remain unchanged; adoption: none\n{}",
             migration.child_id(),
             turn.status(),
             migration.child_cwd().display(),
+            CONTAINMENT_NOTICE,
         ))
     }
 }
