@@ -1,0 +1,31 @@
+{
+  "allowed_paths": [
+    {
+      "path": "import_users.py",
+      "source_record_ids": ["initial.requirement.2"]
+    },
+    {
+      "path": "tests/test_unit_import.py",
+      "source_record_ids": ["initial.requirement.2"]
+    }
+  ],
+  "goal": {
+    "source_record_ids": ["initial.goal"],
+    "text": "Add CSV user import to the admin service."
+  },
+  "requirements": [
+    {
+      "source_record_ids": ["initial.requirement.1"],
+      "text": "Import valid email and name CSV rows into UserStore and return the number of users imported."
+    },
+    {
+      "source_record_ids": ["initial.requirement.2"],
+      "text": "Change only import_users.py and tests/test_unit_import.py; do not create or modify any other path."
+    },
+    {
+      "source_record_ids": ["steering.1"],
+      "text": "Validate the complete import before mutating the store, raise ValueError for malformed rows or duplicate emails, and leave existing users exactly unchanged when any row is invalid."
+    }
+  ],
+  "schema_version": 1
+}
