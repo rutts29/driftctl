@@ -522,6 +522,14 @@ impl CandidateBinding {
     pub fn approved_goal_digest(&self) -> &str {
         &self.approved_goal_digest
     }
+
+    #[must_use]
+    pub fn matches_approved_goal(&self, objective: &str) -> bool {
+        let mut hasher = Sha256::new();
+        hasher.update(b"driftctl.approved-child-goal.v1\0");
+        hasher.update(objective.as_bytes());
+        self.approved_goal_digest == format!("sha256:{:x}", hasher.finalize())
+    }
 }
 
 /// Required run-level evidence gates beyond per-requirement checks.

@@ -8,7 +8,8 @@
 use std::collections::BTreeSet;
 use std::fmt;
 use std::fs::{self, File};
-use std::io::Write;
+use std::io::{Read, Write};
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{PermissionsExt, symlink};
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
@@ -41,6 +42,16 @@ impl WorkspaceManifest {
     pub fn digest(&self) -> &str {
         &self.digest
     }
+}
+
+/// An opaque digest of candidate-visible and protected excluded source paths.
+///
+/// Protected path names and contents are retained only as inputs to this
+/// digest. They are never exposed through the attestation or materialized in a
+/// candidate workspace.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SourceAttestation {
+    digest: String,
 }
 
 /// One selected file or symlink in a [`WorkspaceManifest`].
@@ -159,6 +170,7 @@ impl ManifestDiff {
 pub struct WorkspacePair {
     source_pre_manifest: WorkspaceManifest,
     source_post_manifest: WorkspaceManifest,
+    source_attestation: SourceAttestation,
     baseline: CandidateWorkspace,
     workflow: CandidateWorkspace,
     baseline_diff: ManifestDiff,
@@ -174,6 +186,11 @@ impl WorkspacePair {
     #[must_use]
     pub fn source_post_manifest(&self) -> &WorkspaceManifest {
         &self.source_post_manifest
+    }
+
+    #[must_use]
+    pub fn source_attestation(&self) -> &SourceAttestation {
+        &self.source_attestation
     }
 
     #[must_use]
@@ -316,13 +333,14 @@ pub fn isolate_workspace(
     }
 
     let source_post = capture(&snapshot.source_root)?;
-    if source_post.manifest != snapshot.manifest {
+    if source_post.source_attestation != snapshot.source_attestation {
         return Err(WorkspaceError::SourceChanged);
     }
 
     Ok(WorkspacePair {
         source_pre_manifest: snapshot.manifest,
         source_post_manifest: source_post.manifest,
+        source_attestation: snapshot.source_attestation,
         baseline,
         workflow,
         baseline_diff,
@@ -330,14 +348,16 @@ pub fn isolate_workspace(
     })
 }
 
-/// Re-read the source workspace after external work and require exact equality
-/// with the manifest captured before isolation.
-pub fn verify_source_unchanged(
+/// Re-attest the complete protected source boundary after external work.
+///
+/// This includes paths excluded from candidate workspaces, whether tracked,
+/// ignored, or untracked. Git internals remain outside the attestation.
+pub fn verify_source_attestation(
     source: impl AsRef<Path>,
-    expected: &WorkspaceManifest,
+    expected: &SourceAttestation,
 ) -> Result<(), WorkspaceError> {
     let observed = capture(source.as_ref())?;
-    if &observed.manifest == expected {
+    if &observed.source_attestation == expected {
         Ok(())
     } else {
         Err(WorkspaceError::SourceChanged)
@@ -347,6 +367,7 @@ pub fn verify_source_unchanged(
 struct CapturedWorkspace {
     source_root: PathBuf,
     manifest: WorkspaceManifest,
+    source_attestation: SourceAttestation,
     entries: Vec<CapturedEntry>,
 }
 
@@ -402,9 +423,11 @@ fn capture(source: &Path) -> Result<CapturedWorkspace, WorkspaceError> {
         head,
         entries.iter().map(|entry| entry.manifest.clone()).collect(),
     );
+    let source_attestation = capture_source_attestation(&source_root, &manifest)?;
     Ok(CapturedWorkspace {
         source_root,
         manifest,
+        source_attestation,
         entries,
     })
 }
@@ -708,6 +731,82 @@ fn sha256_digest(bytes: &[u8]) -> String {
     format!("sha256:{:x}", Sha256::digest(bytes))
 }
 
+fn capture_source_attestation(
+    root: &Path,
+    manifest: &WorkspaceManifest,
+) -> Result<SourceAttestation, WorkspaceError> {
+    let mut hasher = Sha256::new();
+    update_hash(&mut hasher, b"driftctl-source-attestation-v1");
+    update_hash(&mut hasher, manifest.digest.as_bytes());
+    attest_protected_paths(root, Path::new(""), false, &mut hasher)?;
+    Ok(SourceAttestation {
+        digest: format!("sha256:{:x}", hasher.finalize()),
+    })
+}
+
+fn attest_protected_paths(
+    root: &Path,
+    relative_directory: &Path,
+    within_protected_path: bool,
+    hasher: &mut Sha256,
+) -> Result<(), WorkspaceError> {
+    let directory = root.join(relative_directory);
+    let mut entries = fs::read_dir(&directory)
+        .map_err(|error| io_error("read source directory", &directory, error))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| io_error("read source directory entry", &directory, error))?;
+    entries.sort_by_key(fs::DirEntry::file_name);
+
+    for entry in entries {
+        let relative_path = relative_directory.join(entry.file_name());
+        if is_git_internal(&relative_path) {
+            continue;
+        }
+        let path = root.join(&relative_path);
+        let metadata = fs::symlink_metadata(&path)
+            .map_err(|error| io_error("inspect source entry", &path, error))?;
+        let is_protected = within_protected_path || is_protected_excluded(&relative_path);
+        if is_protected {
+            update_hash(hasher, relative_path.as_os_str().as_bytes());
+            hasher.update((metadata.permissions().mode() & 0o7777).to_be_bytes());
+            if metadata.is_dir() {
+                hasher.update([0]);
+            } else if metadata.is_file() {
+                hasher.update([1]);
+                attest_file_contents(&path, hasher)?;
+            } else if metadata.file_type().is_symlink() {
+                hasher.update([2]);
+                let target = fs::read_link(&path)
+                    .map_err(|error| io_error("read source symlink", &path, error))?;
+                update_hash(hasher, target.as_os_str().as_bytes());
+            } else {
+                hasher.update([3]);
+            }
+        }
+        if metadata.is_dir() {
+            attest_protected_paths(root, &relative_path, is_protected, hasher)?;
+        }
+    }
+    Ok(())
+}
+
+fn attest_file_contents(path: &Path, hasher: &mut Sha256) -> Result<(), WorkspaceError> {
+    let mut file = File::open(path).map_err(|error| io_error("open source file", path, error))?;
+    let mut content_hasher = Sha256::new();
+    let mut buffer = [0_u8; 8192];
+    loop {
+        let read = file
+            .read(&mut buffer)
+            .map_err(|error| io_error("read source file", path, error))?;
+        if read == 0 {
+            break;
+        }
+        content_hasher.update(&buffer[..read]);
+    }
+    update_hash(hasher, &content_hasher.finalize());
+    Ok(())
+}
+
 fn git_text(root: &Path, arguments: &[&str]) -> Result<String, WorkspaceError> {
     let output = git_output(root, arguments, "read Git HEAD")?;
     String::from_utf8(output)
@@ -793,6 +892,18 @@ fn validate_relative_path(path: &Path) -> Result<(), WorkspaceError> {
 }
 
 fn is_excluded(path: &Path) -> bool {
+    is_git_internal(path) || is_protected_excluded(path)
+}
+
+fn is_git_internal(path: &Path) -> bool {
+    let mut components = path.components();
+    let Some(Component::Normal(first)) = components.next() else {
+        return true;
+    };
+    first == ".git"
+}
+
+fn is_protected_excluded(path: &Path) -> bool {
     let mut components = path.components();
     let Some(Component::Normal(first)) = components.next() else {
         return true;
@@ -800,7 +911,7 @@ fn is_excluded(path: &Path) -> bool {
     let first = first.to_string_lossy();
     if matches!(
         first.as_ref(),
-        ".git" | ".driftctl" | ".codex" | ".claude" | ".cursor" | ".aider"
+        ".driftctl" | ".codex" | ".claude" | ".cursor" | ".aider"
     ) {
         return true;
     }
