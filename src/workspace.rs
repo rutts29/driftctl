@@ -395,6 +395,7 @@ fn materialize_candidate(
                 .map_err(|error| io_error("create candidate symlink", &destination, error))?,
         }
     }
+    initialize_candidate_repository(&root)?;
     let entries = snapshot
         .entries
         .iter()
@@ -408,6 +409,38 @@ fn materialize_candidate(
         entries.into_iter().map(|entry| entry.manifest).collect(),
     );
     Ok(CandidateWorkspace { root, manifest })
+}
+
+fn initialize_candidate_repository(root: &Path) -> Result<(), WorkspaceError> {
+    for (arguments, action) in [
+        (
+            vec!["init", "--quiet"],
+            "initialize candidate Git repository",
+        ),
+        (
+            vec!["config", "user.email", "driftctl@localhost.invalid"],
+            "configure candidate Git email",
+        ),
+        (
+            vec!["config", "user.name", "driftctl isolated checkpoint"],
+            "configure candidate Git name",
+        ),
+        (vec!["add", "--all", "--"], "stage candidate checkpoint"),
+        (
+            vec![
+                "commit",
+                "--quiet",
+                "--no-gpg-sign",
+                "--allow-empty",
+                "-m",
+                "driftctl isolated checkpoint",
+            ],
+            "commit candidate checkpoint",
+        ),
+    ] {
+        git_output(root, &arguments, action)?;
+    }
+    Ok(())
 }
 
 fn capture_entry(
