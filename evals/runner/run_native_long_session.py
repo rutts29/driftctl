@@ -246,7 +246,7 @@ class AppServer:
             status = self.wait_for_terminal_turn(child_id, turn_id)
         elif status not in {"completed", "failed", "interrupted"}:
             raise RunnerError("plain-summary turn/start returned an invalid status")
-        self.require_user_message_count(parent_thread_id, expected_source_messages)
+        self.require_user_record_ids(parent_thread_id, expected_source_messages)
         return {
             "child_cwd": str(candidate),
             "child_thread_id": child_id,
@@ -314,7 +314,7 @@ class AppServer:
         if not isinstance(turn_id, str) or not turn_id or not isinstance(status, str):
             raise RunnerError(f"App Server {phase} turn is malformed")
         if status == "inProgress":
-            self.require_user_message_count(thread_id, expected_count)
+            self.require_user_record_ids(thread_id, expected_count)
             try:
                 self.request(
                     "turn/interrupt", {"threadId": thread_id, "turnId": turn_id}
@@ -324,10 +324,12 @@ class AppServer:
                     raise
         elif status not in {"completed", "interrupted"}:
             raise RunnerError(f"App Server {phase} turn ended with {status!r}")
-        self.require_user_message_count(thread_id, expected_count)
-        return turn_id
+        record_ids = self.require_user_record_ids(thread_id, expected_count)
+        return record_ids[-1]
 
-    def require_user_message_count(self, thread_id: str, expected: int) -> None:
+    def require_user_record_ids(self, thread_id: str, expected: int) -> list[str]:
+        """Return the exact durable text-record IDs used by the Codex importer."""
+
         for _ in range(DURABLE_READ_ATTEMPTS):
             try:
                 result = self.request(
@@ -339,16 +341,32 @@ class AppServer:
             thread = result.get("thread")
             turns = thread.get("turns") if isinstance(thread, Mapping) else None
             if isinstance(turns, list):
-                count = sum(
-                    1
-                    for turn in turns
-                    if isinstance(turn, Mapping)
-                    for item in turn.get("items", [])
-                    if isinstance(item, Mapping) and item.get("type") == "userMessage"
-                )
-                if count == expected:
-                    return
-                if count > expected:
+                message_count = 0
+                record_ids: list[str] = []
+                malformed = False
+                for turn in turns:
+                    if not isinstance(turn, Mapping):
+                        continue
+                    for item in turn.get("items", []):
+                        if not isinstance(item, Mapping) or item.get("type") != "userMessage":
+                            continue
+                        message_count += 1
+                        item_id = item.get("id")
+                        content = item.get("content")
+                        if not isinstance(item_id, str) or not isinstance(content, list):
+                            malformed = True
+                            continue
+                        text_parts = [
+                            f"{item_id}:{index}"
+                            for index, part in enumerate(content)
+                            if isinstance(part, Mapping) and part.get("type") == "text"
+                        ]
+                        if len(text_parts) != 1:
+                            malformed = True
+                        record_ids.extend(text_parts)
+                if message_count == expected and len(record_ids) == expected and not malformed:
+                    return record_ids
+                if message_count > expected or len(record_ids) > expected:
                     break
             time.sleep(DURABLE_READ_INTERVAL_SECONDS)
         raise RunnerError(
@@ -466,7 +484,7 @@ def run_case(
             "TMPDIR": str(temporary_directory),
             "XDG_STATE_HOME": str(state_directory),
         }
-        session_id, source_turns, injection = seed_native_session(
+        session_id, source_records, injection = seed_native_session(
             codex_bin, workspace, definition, context_bytes, worker_policy
         )
         source_clean = git_clean(workspace)
@@ -477,7 +495,10 @@ def run_case(
         )
         gold_projection, gold_projection_digest = load_gold_projection(case_directory)
         projection_fidelity = score_projection_fidelity(
-            observed_projection, gold_projection, gold_projection_digest
+            observed_projection,
+            gold_projection,
+            gold_projection_digest,
+            source_records,
         )
         require_evaluation_fingerprint(case_directory, fingerprint)
         comparison = invoke_compare(driftctl_bin, workspace, session_id, environment)
@@ -500,7 +521,7 @@ def run_case(
                 case_directory,
                 fingerprint,
                 environment,
-                source_turns,
+                source_records,
                 injection,
                 source_clean,
                 session_id,
@@ -525,7 +546,7 @@ def run_case(
                 definition,
                 control_summary,
                 worker_policy,
-                len(source_turns),
+                len(source_records),
             )
             control["changed_paths"] = changed_paths_since(candidate, initial_commit)
             results["plain_summary"] = arm_result(
@@ -536,7 +557,7 @@ def run_case(
                 case_directory,
                 fingerprint,
                 environment,
-                source_turns,
+                source_records,
                 injection,
                 source_clean,
                 session_id,
@@ -598,9 +619,9 @@ def seed_native_session(
         initial = server.record_user_turn(
             thread_id, initial_source_prompt(definition), "initial", 1
         )
-        source_turns = [initial]
+        source_records = [initial]
         for index, steering in enumerate(definition.steering, start=1):
-            source_turns.append(
+            source_records.append(
                 server.record_user_turn(
                     thread_id,
                     steering_source_prompt(steering.requirement, index),
@@ -609,7 +630,7 @@ def seed_native_session(
                 )
             )
         injection = inject_non_authoritative_context(server, thread_id, context_bytes)
-        return thread_id, source_turns, injection
+        return thread_id, source_records, injection
     finally:
         server.close()
 
@@ -865,13 +886,16 @@ def normalize_fidelity_text(value: Any) -> str:
 
 
 def score_projection_fidelity(
-    observed: Mapping[str, Any], gold: Mapping[str, Any], gold_digest: str
+    observed: Mapping[str, Any],
+    gold: Mapping[str, Any],
+    gold_digest: str,
+    native_source_records: Sequence[str],
 ) -> dict[str, Any]:
-    """Compare exact active text and provenance without equating source namespaces."""
+    """Compare lifecycle and native provenance without requiring verbatim clauses."""
 
     base = {
         "schema_version": 1,
-        "method": "strict_text_provenance_fidelity_v1",
+        "method": "structural_provenance_fidelity_v2",
         "gold_projection_sha256": gold_digest,
         "inspect_projection_schema_version": observed.get("schema_version"),
     }
@@ -885,6 +909,12 @@ def score_projection_fidelity(
             "name": "fixture_logical_v1",
         }:
             raise ValueError("gold source namespace is invalid")
+        if (
+            not native_source_records
+            or any(not isinstance(record, str) or not record for record in native_source_records)
+            or len(set(native_source_records)) != len(native_source_records)
+        ):
+            raise ValueError("native source record sequence is malformed")
         gold_goal = gold.get("goal")
         observed_goal = observed.get("goal")
         if not isinstance(gold_goal, Mapping) or not isinstance(observed_goal, Mapping):
@@ -893,8 +923,13 @@ def score_projection_fidelity(
         native_goal_sources = observed_goal.get("source_record_ids")
         if not isinstance(gold_goal_sources, list) or not gold_goal_sources:
             raise ValueError("gold goal provenance is missing")
-        if not isinstance(native_goal_sources, list):
+        if not isinstance(native_goal_sources, list) or any(
+            not isinstance(source, str) or not source for source in native_goal_sources
+        ):
             raise ValueError("native goal provenance is malformed")
+        expected_goal_sources = logical_source_records(
+            gold_goal_sources, native_source_records
+        )
         goal_exact = normalize_fidelity_text(observed_goal.get("text")) == (
             normalize_fidelity_text(gold_goal.get("text"))
         )
@@ -908,8 +943,15 @@ def score_projection_fidelity(
                     raise ValueError(f"native projection {bucket} item is malformed")
                 normalize_fidelity_text(item.get("text"))
                 sources = item.get("source_record_ids")
-                if not isinstance(sources, list):
+                if (
+                    not isinstance(sources, list)
+                    or not sources
+                    or any(not isinstance(source, str) or not source for source in sources)
+                    or len(set(sources)) != len(sources)
+                ):
                     raise ValueError("native item provenance is malformed")
+                if not isinstance(item.get("kind"), str) or not item.get("kind"):
+                    raise ValueError("native item kind is malformed")
                 active_items.append((bucket, item))
         gold_requirements = gold.get("requirements")
         inactive_requirements = gold.get("inactive_requirements")
@@ -917,7 +959,7 @@ def score_projection_fidelity(
             raise ValueError("gold active requirements are malformed")
         if not isinstance(inactive_requirements, list):
             raise ValueError("gold inactive requirements are malformed")
-        expected_by_text: dict[str, Mapping[str, Any]] = {}
+        expected: list[dict[str, Any]] = []
         for requirement in gold_requirements:
             if not isinstance(requirement, Mapping):
                 raise ValueError("gold requirement is malformed")
@@ -930,66 +972,89 @@ def score_projection_fidelity(
                 or not sources
             ):
                 raise ValueError("gold requirement identity or provenance is malformed")
-            normalized = normalize_fidelity_text(requirement.get("text"))
-            if normalized in expected_by_text:
-                raise ValueError("gold requirements contain duplicate text")
-            expected_by_text[normalized] = requirement
-        observed_by_text: dict[str, list[tuple[str, Mapping[str, Any]]]] = {}
-        for bucket, item in active_items:
-            observed_by_text.setdefault(
-                normalize_fidelity_text(item.get("text")), []
-            ).append((bucket, item))
+            evidence = requirement.get("evidence")
+            if not isinstance(evidence, Mapping):
+                raise ValueError("gold requirement evidence is malformed")
+            expected.append(
+                {
+                    "id": requirement_id,
+                    "text": normalize_fidelity_text(requirement.get("text")),
+                    "sources": logical_source_records(sources, native_source_records),
+                    "scope": evidence.get("kind") == "mutation_scope",
+                }
+            )
         matches = []
         missing = []
         duplicates = []
-        provenance_complete = 0
-        for normalized, requirement in expected_by_text.items():
-            candidates = observed_by_text.get(normalized, [])
-            requirement_id = str(requirement["id"])
+        matched_indices: set[int] = set()
+        text_exact_count = 0
+        for requirement in expected:
+            source_peers_include_scope = any(
+                peer["scope"] and peer["sources"] == requirement["sources"]
+                for peer in expected
+            )
+            candidates = []
+            for index, (bucket, item) in enumerate(active_items):
+                if index in matched_indices:
+                    continue
+                if tuple(item["source_record_ids"]) != requirement["sources"]:
+                    continue
+                if requirement["scope"] and item["kind"] != "scope":
+                    continue
+                if (
+                    not requirement["scope"]
+                    and source_peers_include_scope
+                    and item["kind"] == "scope"
+                ):
+                    continue
+                candidates.append((index, bucket, item))
+            requirement_id = requirement["id"]
             if not candidates:
                 missing.append(requirement_id)
                 continue
             if len(candidates) != 1:
                 duplicates.append(requirement_id)
                 continue
-            bucket, item = candidates[0]
+            index, bucket, item = candidates[0]
+            matched_indices.add(index)
             sources = item["source_record_ids"]
-            provenance_nonempty = bool(sources)
-            provenance_complete += int(provenance_nonempty)
+            text_exact = normalize_fidelity_text(item.get("text")) == requirement["text"]
+            text_exact_count += int(text_exact)
             matches.append(
                 {
                     "gold_requirement_id": requirement_id,
                     "native_item_id": item.get("id"),
                     "bucket": bucket,
                     "native_source_record_count": len(sources),
-                    "text_exact": True,
-                    "native_provenance_nonempty": provenance_nonempty,
+                    "text_exact": text_exact,
+                    "native_provenance_nonempty": True,
                 }
             )
         unexpected = [
             item.get("id")
-            for _, item in active_items
-            if normalize_fidelity_text(item.get("text")) not in expected_by_text
+            for index, (_, item) in enumerate(active_items)
+            if index not in matched_indices
         ]
-        inactive_texts = {
-            normalize_fidelity_text(requirement.get("text"))
+        inactive_sources = {
+            logical_source_records(
+                requirement.get("source_record_ids"), native_source_records
+            )
             for requirement in inactive_requirements
             if isinstance(requirement, Mapping)
         }
-        if len(inactive_texts) != len(inactive_requirements):
+        if len(inactive_sources) != len(inactive_requirements):
             raise ValueError("gold inactive requirements are malformed")
         leaked = [
             item.get("id")
             for _, item in active_items
-            if normalize_fidelity_text(item.get("text")) in inactive_texts
+            if tuple(item["source_record_ids"]) in inactive_sources
         ]
-        native_goal_provenance = bool(native_goal_sources)
+        native_goal_provenance = tuple(native_goal_sources) == expected_goal_sources
         matched_count = len(matches)
         overall = (
             goal_exact
             and native_goal_provenance
             and matched_count == len(gold_requirements)
-            and provenance_complete == len(gold_requirements)
             and not missing
             and not duplicates
             and not unexpected
@@ -1001,12 +1066,13 @@ def score_projection_fidelity(
                 "text_exact": goal_exact,
                 "gold_source_label_count": len(gold_goal_sources),
                 "native_source_record_count": len(native_goal_sources),
-                "native_provenance_nonempty": native_goal_provenance,
+                "native_provenance_exact": native_goal_provenance,
             },
             "requirements": {
                 "expected_count": len(gold_requirements),
                 "matched_count": matched_count,
-                "provenance_complete_count": provenance_complete,
+                "provenance_complete_count": matched_count,
+                "text_exact_count": text_exact_count,
                 "missing_gold_requirement_ids": missing,
                 "unexpected_active_items": unexpected,
                 "duplicate_matches": duplicates,
@@ -1025,6 +1091,32 @@ def score_projection_fidelity(
             "reason": str(error),
             "overall_pass": False,
         }
+
+
+def logical_source_records(
+    labels: Any, native_source_records: Sequence[str]
+) -> tuple[str, ...]:
+    """Map fixture-only provenance labels onto ordered native record IDs."""
+
+    if not isinstance(labels, list) or not labels:
+        raise ValueError("gold source labels are malformed")
+    mapped = []
+    for label in labels:
+        if not isinstance(label, str):
+            raise ValueError("gold source label is malformed")
+        if label.startswith("initial."):
+            index = 0
+        else:
+            match = re.fullmatch(r"steering\.([1-9][0-9]*)", label)
+            if match is None:
+                raise ValueError("gold source label is unsupported")
+            index = int(match.group(1))
+        if index >= len(native_source_records):
+            raise ValueError("gold source label has no native record")
+        record = native_source_records[index]
+        if record not in mapped:
+            mapped.append(record)
+    return tuple(mapped)
 
 
 def require_comparison_fairness(
@@ -1059,7 +1151,7 @@ def arm_result(
     case_directory: Path,
     fingerprint: str,
     base_environment: Mapping[str, str],
-    source_turns: Sequence[str],
+    source_records: Sequence[str],
     injection: Mapping[str, Any],
     source_clean: bool,
     source_session_id: str,
@@ -1109,10 +1201,10 @@ def arm_result(
         "mode": mode,
         "native_checkpoint": {
             "injection": dict(injection),
-            "source_user_turn_count": len(source_turns),
+            "source_user_turn_count": len(source_records),
             "source_turn_labels": [
                 "initial",
-                *(f"steering-{index}" for index in range(1, len(source_turns))),
+                *(f"steering-{index}" for index in range(1, len(source_records))),
             ],
             "source_workspace_clean": source_clean,
         },

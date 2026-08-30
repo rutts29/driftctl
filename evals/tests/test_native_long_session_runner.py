@@ -61,7 +61,7 @@ class NativeLongSessionRunnerTests(unittest.TestCase):
             )
             fidelity = result["projection_fidelity"]
             self.assertEqual(
-                fidelity["method"], "strict_text_provenance_fidelity_v1"
+                fidelity["method"], "structural_provenance_fidelity_v2"
             )
             self.assertEqual(fidelity["status"], "passed")
             self.assertTrue(fidelity["overall_pass"])
@@ -481,30 +481,41 @@ class NativeLongSessionRunnerTests(unittest.TestCase):
         active = [
             {
                 "id": requirement["id"],
+                "kind": "scope" if requirement["id"] == "02.scope" else "outcome",
                 "text": requirement["text"],
-                "source_record_ids": ["native-record"],
+                "source_record_ids": [
+                    "item-1:0"
+                    if requirement["source_record_ids"][0].startswith("initial.")
+                    else "item-3:0"
+                ],
             }
             for requirement in gold["requirements"]
         ]
         active.append(
             {
                 "id": "leaked-old-rule",
+                "kind": "outcome",
                 "text": gold["inactive_requirements"][0]["text"],
-                "source_record_ids": ["native-old-record"],
+                "source_record_ids": ["item-2:0"],
             }
         )
         observed = {
             "schema_version": 1,
             "goal": {
                 "text": gold["goal"]["text"],
-                "source_record_ids": ["native-goal-record"],
+                "source_record_ids": ["item-1:0"],
             },
             "preserve": [],
             "frontier": active,
             "validation": [],
         }
 
-        fidelity = score_projection_fidelity(observed, gold, "sha256:gold")
+        fidelity = score_projection_fidelity(
+            observed,
+            gold,
+            "sha256:gold",
+            ["item-1:0", "item-2:0", "item-3:0"],
+        )
 
         self.assertEqual(fidelity["status"], "failed")
         self.assertFalse(fidelity["inactive_requirements"]["passed"])
@@ -512,6 +523,53 @@ class NativeLongSessionRunnerTests(unittest.TestCase):
             fidelity["inactive_requirements"]["leaked_active_items"],
             ["leaked-old-rule"],
         )
+
+    def test_projection_fidelity_accepts_concise_semantic_clauses(self) -> None:
+        gold = json.loads(
+            (CASE / "calibration/gold/active_projection.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        observed = {
+            "schema_version": 1,
+            "goal": {
+                "text": gold["goal"]["text"],
+                "source_record_ids": ["item-1:0"],
+            },
+            "preserve": [],
+            "frontier": [
+                {
+                    "id": "native-scope",
+                    "kind": "scope",
+                    "text": "Modify only the two declared implementation and unit-test files.",
+                    "source_record_ids": ["item-1:0"],
+                },
+                {
+                    "id": "native-retry",
+                    "kind": "outcome",
+                    "text": "Retry one transient checkout request failure once.",
+                    "source_record_ids": ["item-1:0"],
+                },
+                {
+                    "id": "native-auth",
+                    "kind": "invariant",
+                    "text": "Never replay checkout after a 401 or 403 response.",
+                    "source_record_ids": ["item-2:0"],
+                },
+            ],
+            "validation": [],
+        }
+
+        fidelity = score_projection_fidelity(
+            observed,
+            gold,
+            "sha256:gold",
+            ["item-1:0", "item-2:0"],
+        )
+
+        self.assertEqual(fidelity["status"], "passed")
+        self.assertTrue(fidelity["overall_pass"])
+        self.assertEqual(fidelity["requirements"]["text_exact_count"], 0)
 
     def test_accepts_a_source_turn_that_finished_before_interrupt(self) -> None:
         with temporary_fixture() as fixture:
@@ -686,7 +744,7 @@ for raw in sys.stdin:
         result = {"thread": {"id": "source-thread", "cwd": request["params"]["cwd"], "ephemeral": False}}
     elif method == "turn/start":
         if request["params"]["threadId"] == "source-thread":
-            turns.append({"items": [{"type": "userMessage", "content": request["params"]["input"]}]})
+            turns.append({"items": [{"id": "item-" + str(len(turns) + 1), "type": "userMessage", "content": request["params"]["input"]}]})
             with open(turns_path, "w", encoding="utf-8") as output:
                 json.dump(turns, output)
             result = {"turn": {"id": "source-" + str(request["id"]), "status": "inProgress"}}
@@ -755,13 +813,13 @@ if arguments[0] == "inspect":
             "schema_version": 1,
             "goal": {
                 "text": "Add one retry for transient service failures in the checkout client.",
-                "source_record_ids": ["native-goal"],
+                "source_record_ids": ["item-1:0"],
             },
             "preserve": [],
             "frontier": [
-                {"id": "native-retry", "text": "Retry a failed service request once to improve reliability.", "source_record_ids": ["native-initial"]},
-                {"id": "native-scope", "text": "Change only service_client.py and tests/test_unit_client.py; do not create or modify any other path.", "source_record_ids": ["native-initial"]},
-                {"id": "native-auth", "text": "Do not retry 401 or 403 authentication failures because a checkout operation must never be replayed after an authorization rejection.", "source_record_ids": ["native-steering"]},
+                {"id": "native-retry", "kind": "outcome", "text": "Retry a failed service request once to improve reliability.", "source_record_ids": ["item-1:0"]},
+                {"id": "native-scope", "kind": "scope", "text": "Change only service_client.py and tests/test_unit_client.py; do not create or modify any other path.", "source_record_ids": ["item-1:0"]},
+                {"id": "native-auth", "kind": "invariant", "text": "Do not retry 401 or 403 authentication failures because a checkout operation must never be replayed after an authorization rejection.", "source_record_ids": ["item-2:0"]},
             ],
             "validation": [],
         },
