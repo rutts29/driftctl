@@ -119,7 +119,13 @@ class AppServer:
         if not isinstance(turn_id, str) or not turn_id or not isinstance(status, str):
             raise RunnerError(f"App Server {phase} turn is malformed")
         if status == "inProgress":
-            self.request("turn/interrupt", {"threadId": thread_id, "turnId": turn_id})
+            try:
+                self.request(
+                    "turn/interrupt", {"threadId": thread_id, "turnId": turn_id}
+                )
+            except RunnerError as error:
+                if not str(error).endswith("no active turn to interrupt"):
+                    raise
         elif status not in {"completed", "interrupted"}:
             raise RunnerError(f"App Server {phase} turn ended with {status!r}")
         return turn_id

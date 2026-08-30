@@ -136,6 +136,13 @@ class NativeLongSessionRunnerTests(unittest.TestCase):
             self.assertFalse(injection["accepted"])
             self.assertEqual(injection["reason"], "unsupported_or_rejected")
 
+    def test_accepts_a_source_turn_that_finished_before_interrupt(self) -> None:
+        with temporary_fixture() as fixture:
+            result, outputs = run_fixture(fixture, {"FAKE_NO_ACTIVE_TURN": "1"})
+            self.assertEqual(result["status"], "completed")
+            baseline = json.loads(outputs["baseline"].read_text(encoding="utf-8"))
+            self.assertEqual(baseline["native_checkpoint"]["source_user_turn_count"], 2)
+
 
 class temporary_fixture:
     def __enter__(self) -> Path:
@@ -227,6 +234,9 @@ for raw in sys.stdin:
     elif method == "turn/start":
         result = {"turn": {"id": "source-" + str(request["id"]), "status": "inProgress"}}
     elif method == "turn/interrupt":
+        if os.environ.get("FAKE_NO_ACTIVE_TURN"):
+            print(json.dumps({"id": request["id"], "error": {"message": "no active turn to interrupt"}}), flush=True)
+            continue
         result = {}
     elif method == "thread/inject_items" and os.environ.get("FAKE_INJECTION_UNSUPPORTED"):
         print(json.dumps({"id": request["id"], "error": {"message": "unsupported"}}), flush=True)
