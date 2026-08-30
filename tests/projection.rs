@@ -237,6 +237,7 @@ fn validation_items_are_kept_in_validation_and_open_conflicts_block_closure() {
         .expect("resolve conflict");
     let resolved = project(&history, 16 * 1024).expect("project resolved conflict");
     assert!(resolved.conflicts.is_empty());
+    assert_eq!(resolved.frontier[0].text, "choose A");
     assert!(
         !resolved
             .closure

@@ -3,13 +3,17 @@ use std::io::{IsTerminal as _, Write as _};
 use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
+use sha2::{Digest as _, Sha256};
 
 use crate::agent::{display_path, run_codex};
 use crate::codex_child::{ChildForkRequest, ChildTurnRequest, CodexChildAdapter};
 use crate::codex_source::{self, SessionSelection};
 use crate::goal_change_store::{GoalChangeStore, PendingGoalChange};
 use crate::inspect_state::InspectSource;
-use crate::intent_history::{Approval, Event, GoalRevision};
+use crate::intent_history::{
+    Approval, ConflictId, ConflictResolution, Event, GoalRevision, SourceProvider, SourceRef,
+    SourceRole,
+};
 use crate::projection::{ActiveProjection, ProjectionConfig};
 use crate::run_store::{RunStore, SourceCursorComparison};
 use crate::semantic_resolver::{
@@ -31,7 +35,7 @@ Usage:\n\
   driftctl inspect codex (--last | --session <id>) [--json] [--compactor luna|terra|sol] [--reasoning high|medium]\n\
   driftctl bundle --run <run-id> --json\n\
   driftctl compare codex (--last | --session <id>) [--json]\n\
-  driftctl continue codex (--last | --session <id>) [--approve-goal | --edit-goal <text> | --retain-goal | --cancel] [--json]\n\
+  driftctl continue codex (--last | --session <id>) [--resolve-conflict <conflict-id> <alternative-id> | --approve-goal | --edit-goal <text> | --retain-goal | --cancel] [--json]\n\
   driftctl verify --candidate <path> --requirement <id> [--json] -- <program> [args...]\n\
   driftctl run codex\n\
   driftctl close";
@@ -769,7 +773,7 @@ fn continue_codex(root: &Path, arguments: &[String]) -> CliOutput {
     if blockers.iter().any(|blocker| {
         !matches!(
             blocker["kind"].as_str(),
-            Some("goal_change_pending" | "native_goal_conflict")
+            Some("conflict" | "goal_change_pending" | "native_goal_conflict")
         )
     }) {
         return inspection;
@@ -788,6 +792,50 @@ fn continue_codex(root: &Path, arguments: &[String]) -> CliOutput {
     let Some(cursor) = recovered.source_cursor.as_ref() else {
         return CliOutput::error("stored inspect run has no accepted source cursor");
     };
+    let conflict_action = match options.action.clone() {
+        Some(action @ ContinueAction::ResolveConflict { .. }) => Some(action),
+        Some(_) if !recovered.projection.conflicts.is_empty() => {
+            return CliOutput::error(
+                "resolve the active semantic conflict before choosing a goal action",
+            );
+        }
+        None if recovered.projection.conflicts.is_empty() => None,
+        None if !std::io::stdin().is_terminal() => {
+            return CliOutput {
+                exit_code: 2,
+                stdout: inspection.stdout,
+                stderr: "operator decision required; rerun with --resolve-conflict <conflict-id> <alternative-id>".to_owned(),
+            };
+        }
+        None => match prompt_for_conflict_action(&recovered.projection.conflicts) {
+            Ok(action) => Some(action),
+            Err(error) => return CliOutput::blocked(error),
+        },
+        Some(_) => None,
+    };
+    if let Some(ContinueAction::ResolveConflict {
+        conflict_id,
+        alternative_id,
+    }) = conflict_action.as_ref()
+    {
+        if let Err(error) =
+            apply_conflict_resolution(&store, &recovered, conflict_id, alternative_id)
+        {
+            return CliOutput::error(error);
+        }
+        drop(store);
+        return continue_codex(root, &options.arguments_without_action());
+    }
+    if matches!(conflict_action, Some(ContinueAction::Cancel)) {
+        return inspection;
+    }
+    if matches!(
+        &options.action,
+        Some(ContinueAction::ResolveConflict { .. })
+    ) {
+        return CliOutput::error("there is no unresolved semantic conflict to resolve");
+    }
+
     let proposal_store = match GoalChangeStore::open(&store) {
         Ok(store) => store,
         Err(error) => return CliOutput::error(error.to_string()),
@@ -849,6 +897,9 @@ fn continue_codex(root: &Path, arguments: &[String]) -> CliOutput {
         }
         ContinueAction::Cancel => return inspection,
         ContinueAction::UseCurrent => (recovered.projection.goal.text.clone(), false),
+        ContinueAction::ResolveConflict { .. } => {
+            return CliOutput::error("there is no unresolved semantic conflict to resolve");
+        }
     };
 
     let imported = match codex_source::inspect(root, options.selection.as_borrowed()) {
@@ -1046,6 +1097,72 @@ fn apply_approved_goal(
     store.recover().map_err(|error| error.to_string())
 }
 
+fn apply_conflict_resolution(
+    store: &RunStore,
+    recovered: &crate::run_store::RecoveredRun,
+    conflict_id: &str,
+    alternative_id: &str,
+) -> Result<crate::run_store::RecoveredRun, String> {
+    let conflicts = recovered.history.open_conflicts();
+    let conflict = conflicts
+        .iter()
+        .find(|(id, _)| id.as_str() == conflict_id)
+        .map(|(_, conflict)| conflict)
+        .ok_or_else(|| "the selected semantic conflict is not active".to_owned())?;
+    let alternative = conflict
+        .alternatives
+        .iter()
+        .find(|alternative| alternative.id == alternative_id)
+        .ok_or_else(|| {
+            "the selected alternative does not belong to the active conflict".to_owned()
+        })?;
+    let cursor = recovered
+        .source_cursor
+        .as_ref()
+        .ok_or_else(|| "stored inspect run has no accepted source cursor".to_owned())?;
+    let decision = format!(
+        "{}\0{}\0{}\0{}",
+        conflict_id,
+        alternative_id,
+        recovered.projection.revision,
+        cursor.digest()
+    );
+    let approval_source = SourceRef::new(
+        SourceProvider::Codex,
+        cursor.session_locator_private(),
+        format!(
+            "operator-conflict-{}-{}",
+            recovered.projection.revision, conflict_id
+        ),
+        SourceRole::SystemObservation,
+        format!("sha256:{:x}", Sha256::digest(decision.as_bytes())),
+    );
+    let mut history = recovered.history.clone();
+    let record = history
+        .append(Event::ConflictResolved {
+            conflict_id: ConflictId::new(conflict_id),
+            resolution: ConflictResolution::new(
+                alternative_id,
+                alternative.source_refs.clone(),
+                Some(Approval::new(approval_source)),
+            ),
+        })
+        .map_err(|error| error.to_string())?;
+    store
+        .append_pending(record)
+        .map_err(|error| error.to_string())?;
+    let mut projection = ActiveProjection::from_history(
+        &history,
+        ProjectionConfig::new(recovered.projection.overflow.budget),
+    )
+    .map_err(|error| error.to_string())?;
+    projection.generated_by = recovered.projection.generated_by.clone();
+    store
+        .commit_projection_with_source_cursor(&projection, cursor)
+        .map_err(|error| error.to_string())?;
+    store.recover().map_err(|error| error.to_string())
+}
+
 fn public_projection_context(recovered: &crate::run_store::RecoveredRun) -> Result<String, String> {
     let cursor = recovered
         .source_cursor
@@ -1084,6 +1201,10 @@ enum ContinueAction {
     Retain,
     Cancel,
     UseCurrent,
+    ResolveConflict {
+        conflict_id: String,
+        alternative_id: String,
+    },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1120,6 +1241,21 @@ impl ContinueOptions {
         arguments.push("--json".to_owned());
         arguments
     }
+
+    fn arguments_without_action(&self) -> Vec<String> {
+        let mut arguments = vec!["codex".to_owned()];
+        match &self.selection {
+            OwnedSessionSelection::Last => arguments.push("--last".to_owned()),
+            OwnedSessionSelection::Session(id) => {
+                arguments.push("--session".to_owned());
+                arguments.push(id.clone());
+            }
+        }
+        if self.json {
+            arguments.push("--json".to_owned());
+        }
+        arguments
+    }
 }
 
 fn parse_continue_arguments(arguments: &[String]) -> Result<ContinueOptions, String> {
@@ -1151,6 +1287,21 @@ fn parse_continue_arguments(arguments: &[String]) -> Result<ContinueOptions, Str
                 action = Some(ContinueAction::Edit(goal.clone()));
             }
             "--retain-goal" if action.is_none() => action = Some(ContinueAction::Retain),
+            "--resolve-conflict" if action.is_none() => {
+                let conflict_id = arguments
+                    .get(index + 1)
+                    .filter(|value| !value.trim().is_empty())
+                    .ok_or_else(|| "--resolve-conflict requires a conflict ID".to_owned())?;
+                let alternative_id = arguments
+                    .get(index + 2)
+                    .filter(|value| !value.trim().is_empty())
+                    .ok_or_else(|| "--resolve-conflict requires an alternative ID".to_owned())?;
+                action = Some(ContinueAction::ResolveConflict {
+                    conflict_id: conflict_id.clone(),
+                    alternative_id: alternative_id.clone(),
+                });
+                index += 2;
+            }
             "--cancel" if action.is_none() => action = Some(ContinueAction::Cancel),
             "--json" if !json => json = true,
             option => return Err(format!("unsupported or repeated continue option: {option}")),
@@ -1163,6 +1314,39 @@ fn parse_continue_arguments(arguments: &[String]) -> Result<ContinueOptions, Str
         action,
         json,
     })
+}
+
+fn prompt_for_conflict_action(
+    conflicts: &[crate::intent_history::Conflict],
+) -> Result<ContinueAction, String> {
+    let conflict = conflicts
+        .first()
+        .ok_or_else(|| "there is no unresolved semantic conflict".to_owned())?;
+    eprintln!("conflict {} requires an operator choice:", conflict.id);
+    for alternative in &conflict.alternatives {
+        eprintln!("- {}: {}", alternative.id, alternative.text);
+    }
+    eprintln!("enter an alternative ID, or cancel:");
+    let mut answer = String::new();
+    std::io::stdin()
+        .read_line(&mut answer)
+        .map_err(|error| format!("could not read operator decision: {error}"))?;
+    let answer = answer.trim();
+    if matches!(answer.to_ascii_lowercase().as_str(), "c" | "cancel") {
+        return Ok(ContinueAction::Cancel);
+    }
+    if conflict
+        .alternatives
+        .iter()
+        .any(|alternative| alternative.id == answer)
+    {
+        Ok(ContinueAction::ResolveConflict {
+            conflict_id: conflict.id.to_string(),
+            alternative_id: answer.to_owned(),
+        })
+    } else {
+        Err("operator cancelled: unrecognized conflict alternative".to_owned())
+    }
 }
 
 fn prompt_for_goal_action(pending: Option<&PendingGoalChange>) -> Result<ContinueAction, String> {

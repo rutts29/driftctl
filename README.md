@@ -26,6 +26,15 @@ driftctl continue codex --last
 
 `compare` creates isolated, equal starting children and leaves adoption manual. `continue` creates one isolated child; ambiguous steering or native-goal changes require an explicit operator action, and no-TTY operation blocks rather than prompting. Existing `AGENTS.md`, `CLAUDE.md`, skills, hooks, permissions, and the user's harness configuration remain authoritative and unchanged.
 
+For a blocked semantic conflict, copy the conflict and alternative IDs from `inspect --json`, then make the operator choice explicitly:
+
+```bash
+driftctl continue codex --last \
+  --resolve-conflict <conflict-id> <alternative-id>
+```
+
+The decision is recorded in private local state and only the selected alternative enters the child prompt. Invalid IDs and unattended ambiguity create no child.
+
 A completed child is not verified completion. `continue --json` returns its `child_cwd`, changed paths, current evidence, and blockers. Run requirement-specific checks against that candidate before manually adopting it:
 
 ```bash

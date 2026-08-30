@@ -31,6 +31,7 @@ pub(crate) struct ImportedSession {
     session_id: String,
     repository_digest: String,
     native_goal: NativeGoal,
+    thread_snapshot: Value,
     user_records: Vec<ImportedUserRecord>,
 }
 
@@ -502,6 +503,7 @@ fn parse_imported_session(
         session_id: id,
         repository_digest: repository_digest(canonical_root),
         native_goal,
+        thread_snapshot: thread.clone(),
         user_records,
     })
 }

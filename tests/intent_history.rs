@@ -217,6 +217,10 @@ fn conflicts_block_until_an_authorized_resolution() {
         history.intent("i-1").expect("resolved item").lifecycle,
         IntentLifecycle::Active
     );
+    assert_eq!(
+        history.intent("i-1").expect("resolved item").text,
+        "keep the API"
+    );
 }
 
 #[test]
