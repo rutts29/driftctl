@@ -4,6 +4,11 @@ use driftctl::intent_history::{
 };
 use driftctl::projection::{ClosureBlockerKind, ProjectionConfig, project};
 
+#[test]
+fn default_projection_budget_has_headroom_for_the_measured_organic_projection() {
+    assert_eq!(ProjectionConfig::default().byte_budget, 32 * 1024);
+}
+
 fn source(role: SourceRole, record: &str) -> SourceRef {
     SourceRef::new(
         SourceProvider::Bundle,

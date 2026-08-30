@@ -214,7 +214,7 @@ if break_source:
     os.remove(break_source)
     os.mkdir(break_source)
 if os.environ.get("DRIFTCTL_FAKE_DYNAMIC_CHUNKS") == "1":
-    if prompt_document["protocol"] == "driftctl.semantic-proposal.v2":
+    if prompt_document["protocol"] == "driftctl.semantic-proposal.v4":
         records = prompt_document["records"]
         response = {
             "schema_version": 1,
@@ -1850,7 +1850,7 @@ fn initial_inspect_chunks_a_large_session_before_any_provider_call() {
     assert_eq!(calls.len(), 3);
     assert_eq!(
         calls[0]["prompt"]["protocol"],
-        "driftctl.semantic-proposal.v2"
+        "driftctl.semantic-proposal.v4"
     );
     assert_eq!(
         calls[1]["prompt"]["protocol"],
@@ -2214,7 +2214,7 @@ fn repair_receives_the_precise_failure_prior_proposal_and_authoritative_source_l
     let calls = fixture.calls();
     assert_eq!(calls.len(), 2);
     let repair = &calls[1]["prompt"];
-    assert_eq!(repair["protocol"], "driftctl.semantic-proposal.v2");
+    assert_eq!(repair["protocol"], "driftctl.semantic-proposal.v4");
     assert_eq!(repair["mode"], "repair");
     assert_eq!(repair["previous_failure"], "source_accounting_or_authority");
     assert_eq!(repair["previous_proposal"], missing_source);
@@ -2249,6 +2249,45 @@ fn invalid_semantic_key_repair_receives_the_missing_key_contract() {
         .expect("repair instructions");
     assert!(instructions.contains("add, supersede, and conflict"));
     assert!(instructions.contains("non-empty unique key"));
+    fixture.assert_unchanged();
+}
+
+#[test]
+fn invalid_history_transition_repair_explains_resolved_transient_conflicts() {
+    let mut invalid_transition = base_proposal();
+    invalid_transition["operations"]
+        .as_array_mut()
+        .unwrap()
+        .insert(
+            1,
+            json!({
+                "operation":"conflict",
+                "key":"format-choice",
+                "kind":"constraint",
+                "text":"The output format is unresolved",
+                "target_key":"",
+                "intent_keys":["format-json"],
+                "source_record_ids":["u2:0","u3:0"],
+                "alternatives":[
+                    {"key":"json","text":"Keep JSON","source_record_ids":["u2:0"]},
+                    {"key":"yaml","text":"Use YAML","source_record_ids":["u3:0"]}
+                ]
+            }),
+        );
+    let fixture = Fixture::new(vec![invalid_transition, base_proposal()]);
+
+    let output = fixture.run(&["--json"]);
+
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let calls = fixture.calls();
+    assert_eq!(calls.len(), 2);
+    let repair = &calls[1]["prompt"];
+    assert_eq!(repair["previous_failure"], "invalid_history_transition");
+    let instructions = repair["repair_instructions"]
+        .as_str()
+        .expect("repair instructions");
+    assert!(instructions.contains("resolved by later explicit steering"));
+    assert!(instructions.contains("remove the transient conflict"));
     fixture.assert_unchanged();
 }
 

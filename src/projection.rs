@@ -18,7 +18,7 @@ use crate::intent_history::{
 pub const PROJECTION_SCHEMA_VERSION: u32 = 1;
 
 /// The conservative default used by callers that do not choose a budget.
-pub const DEFAULT_PROJECTION_BYTE_BUDGET: usize = 16 * 1024;
+pub const DEFAULT_PROJECTION_BYTE_BUDGET: usize = 32 * 1024;
 
 /// Configuration for deterministic projection rendering.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
