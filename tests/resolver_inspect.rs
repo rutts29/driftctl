@@ -634,6 +634,57 @@ fn inspect_persists_and_reuses_a_private_run_that_bundle_can_export() {
 }
 
 #[test]
+fn non_authoritative_append_advances_source_without_model_or_intent_change() {
+    let mut fixture = Fixture::new(vec![base_proposal()]);
+    let first = fixture.run(&["--json"]);
+    assert_eq!(first.status.code(), Some(0), "{first:?}");
+    let first_document: Value = serde_json::from_slice(&first.stdout).expect("first inspect JSON");
+
+    let mut source: Value = serde_json::from_str(&fixture.environment["DRIFTCTL_FAKE_READ"])
+        .expect("mutable source fixture");
+    source["thread"]["turns"][0]["items"]
+        .as_array_mut()
+        .expect("source items")
+        .push(json!({
+            "type":"agentMessage",
+            "id":"assistant-after-user-steering",
+            "text":"private assistant-only append"
+        }));
+    fixture
+        .environment
+        .insert("DRIFTCTL_FAKE_READ", source.to_string());
+
+    let second = fixture.run(&["--json"]);
+    assert_eq!(second.status.code(), Some(0), "{second:?}");
+    let second_document: Value =
+        serde_json::from_slice(&second.stdout).expect("second inspect JSON");
+    assert_eq!(second_document["projection"], first_document["projection"]);
+    assert_eq!(second_document["source"]["imported_user_records"], 3);
+    assert_ne!(
+        second_document["source"]["digest"],
+        first_document["source"]["digest"]
+    );
+    assert_eq!(
+        fixture.calls().len(),
+        1,
+        "assistant-only evidence append must not spend a semantic model call"
+    );
+    let cursor: Value = serde_json::from_str(
+        &fs::read_to_string(fixture.state_file("source.json")).expect("source cursor"),
+    )
+    .expect("source cursor JSON");
+    assert_eq!(
+        cursor["accepted_records"]
+            .as_array()
+            .expect("accepted records")
+            .last()
+            .expect("last source record")["role"],
+        "assistant"
+    );
+    fixture.assert_unchanged();
+}
+
+#[test]
 fn inspect_accepts_a_strict_neutral_bundle_without_a_native_harness_adapter() {
     let fixture = Fixture::new(vec![base_proposal()]);
     let canonical = fixture.root.canonicalize().expect("canonical source");

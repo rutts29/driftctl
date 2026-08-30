@@ -25,7 +25,13 @@ impl InspectSource {
             bundle
                 .records()
                 .iter()
-                .map(|record| SourceRecordDigest::new(record.id(), record.content_digest()))
+                .map(|record| {
+                    SourceRecordDigest::with_role(
+                        record.id(),
+                        record.content_digest(),
+                        record.role(),
+                    )
+                })
                 .collect(),
         )?;
         let mut digest = Sha256::new();
@@ -135,8 +141,14 @@ impl InspectSource {
                 }
             }
         }
-        observed.len() == self.cursor.accepted_record_count()
-            && self.cursor.accepted_records().iter().all(|record| {
+        let authoritative_records = self
+            .cursor
+            .accepted_records()
+            .iter()
+            .filter(|record| matches!(record.role(), crate::intent_history::SourceRole::User))
+            .collect::<Vec<_>>();
+        observed.len() == authoritative_records.len()
+            && authoritative_records.iter().all(|record| {
                 observed
                     .get(record.id())
                     .is_some_and(|digest| *digest == record.content_digest())

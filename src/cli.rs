@@ -180,7 +180,7 @@ fn inspect_codex(root: &Path, arguments: &[String]) -> CliOutput {
                 return inspect_output(
                     &resolution,
                     source.run_id().as_str(),
-                    source.cursor().accepted_record_count(),
+                    imported.imported_user_record_count(),
                     source.cursor().digest(),
                     options.json,
                     "codex",
@@ -226,7 +226,7 @@ fn inspect_codex(root: &Path, arguments: &[String]) -> CliOutput {
                     return inspect_output(
                         &resolution,
                         source.run_id().as_str(),
-                        source.cursor().accepted_record_count(),
+                        imported.imported_user_record_count(),
                         source.cursor().digest(),
                         options.json,
                         "codex",
@@ -237,6 +237,27 @@ fn inspect_codex(root: &Path, arguments: &[String]) -> CliOutput {
                     Ok(delta) => delta,
                     Err(error) => return CliOutput::error(error.to_string()),
                 };
+                if delta.authoritative_records().is_empty() {
+                    if let Err(error) = codex_source::verify_unchanged(root, &imported) {
+                        return CliOutput::error(error.to_string());
+                    }
+                    if let Err(error) = existing.store.commit_projection_with_source_cursor(
+                        &existing.recovered.projection,
+                        source.cursor(),
+                    ) {
+                        return CliOutput::error(error.to_string());
+                    }
+                    let resolution =
+                        cached_resolution(existing.recovered, Some(bundle.native_goal()), None);
+                    return inspect_output(
+                        &resolution,
+                        source.run_id().as_str(),
+                        imported.imported_user_record_count(),
+                        source.cursor().digest(),
+                        options.json,
+                        "codex",
+                    );
+                }
                 if let Err(error) = write_disclosure(options.compactor, 1) {
                     return CliOutput::error(error);
                 }
@@ -279,7 +300,7 @@ fn inspect_codex(root: &Path, arguments: &[String]) -> CliOutput {
                 return inspect_output(
                     &resolution,
                     source.run_id().as_str(),
-                    source.cursor().accepted_record_count(),
+                    imported.imported_user_record_count(),
                     source.cursor().digest(),
                     options.json,
                     "codex",

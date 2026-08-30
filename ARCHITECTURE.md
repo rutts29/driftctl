@@ -231,7 +231,10 @@ ${TMPDIR}/driftctl/<run-id>/
 ```text
 initial import:
   source records
-    → chronological bounded chunks
+    → validate documented provider items
+    → private ordered role/digest cursor
+    → coalesce non-user items into digest evidence batches
+    → chronological bounded user-authoritative chunks
     → empty/current projection + chunk
     → proposal
     → deterministic validation
@@ -239,7 +242,8 @@ initial import:
 
 incremental update:
   accepted projection + pending delta
-    → proposal
+    → no user text: advance source cursor without model call
+    → user text: proposal
     → deterministic validation
     → conflict gate
     → projection commit or blocker
@@ -265,6 +269,7 @@ incremental update:
 - Optional Terra effort: Medium.
 - Sol: explicit advanced override.
 - Input: active projection, bounded delta, schema, source map.
+- Non-user input: digest-only batch counts; compaction markers remain non-authoritative.
 - Output authority: proposal only.
 - Retry: one schema-repair attempt; semantic ambiguity routes to conflict gate.
 - Usage: local provider account; record calls/tokens/time when observable.

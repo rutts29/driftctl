@@ -62,7 +62,9 @@ import sys
 
 capture = os.environ["DRIFTCTL_FAKE_CAPTURE"]
 if sys.argv[1] == "exec":
-    sys.stdin.read()
+    prompt = sys.stdin.read()
+    with open(os.environ["DRIFTCTL_FAKE_PROMPTS"], "a", encoding="utf-8") as file:
+        file.write(prompt + "\n")
     proposal = os.environ["DRIFTCTL_FAKE_PROPOSAL"]
     last_path = sys.argv[sys.argv.index("--output-last-message") + 1]
     with open(last_path, "w", encoding="utf-8") as file:
@@ -90,7 +92,11 @@ for raw in sys.stdin:
             sys.stdout.write('{"id":' + str(request["id"]))
             sys.stdout.flush()
             break
-        response = {"id": request["id"], "result": json.loads(os.environ["DRIFTCTL_FAKE_READ"])}
+        result = json.loads(os.environ["DRIFTCTL_FAKE_READ"])
+        large_tool_bytes = int(os.environ.get("DRIFTCTL_FAKE_LARGE_TOOL_BYTES", "0"))
+        if large_tool_bytes:
+            result["thread"]["turns"][0]["items"][2]["aggregatedOutput"] = "x" * large_tool_bytes
+        response = {"id": request["id"], "result": result}
     elif method == "thread/goal/get":
         response = {"id": request["id"], "result": json.loads(os.environ.get("DRIFTCTL_FAKE_GOAL", '{"goal":null}'))}
     else:
@@ -131,6 +137,8 @@ fn read_result(id: &str, cwd: &str) -> Value {
                         {"type": "image", "url": "https://example.invalid/private.png"}
                     ]},
                     {"type": "agentMessage", "id": "assistant-1", "text": "private assistant draft must not be authority"},
+                    {"type": "commandExecution", "id": "command-1", "command": "cargo test", "commandActions": [], "cwd": cwd, "status": "completed", "aggregatedOutput": "private tool output", "exitCode": 0},
+                    {"type": "contextCompaction", "id": "compaction-1"},
                     {"type": "userMessage", "id": "user-2", "content": [
                         {"type": "text", "text": "latest explicit steering"}
                     ]}
@@ -160,6 +168,10 @@ fn fake_environment(
         fake_root.join("state").display().to_string(),
     );
     environment.insert("DRIFTCTL_FAKE_CAPTURE", capture.display().to_string());
+    environment.insert(
+        "DRIFTCTL_FAKE_PROMPTS",
+        fake_root.join("prompts.jsonl").display().to_string(),
+    );
     environment.insert(
         "DRIFTCTL_FAKE_LIST_PAGES",
         Value::Array(list_pages).to_string(),
@@ -192,6 +204,26 @@ fn captured_requests(capture: &Path) -> Vec<Value> {
         .collect()
 }
 
+fn private_source_cursor(environment: &BTreeMap<&str, String>) -> Value {
+    let repositories = PathBuf::from(&environment["XDG_STATE_HOME"])
+        .join("driftctl")
+        .join("repositories");
+    let repository = fs::read_dir(repositories)
+        .expect("repository state")
+        .next()
+        .expect("one repository state")
+        .expect("repository entry")
+        .path();
+    let run = fs::read_dir(repository.join("runs"))
+        .expect("run state")
+        .next()
+        .expect("one run state")
+        .expect("run entry")
+        .path();
+    serde_json::from_str(&fs::read_to_string(run.join("source.json")).expect("source cursor"))
+        .expect("source cursor JSON")
+}
+
 fn assert_repository_unchanged(root: &Path) {
     let output = Command::new("git")
         .current_dir(root)
@@ -207,7 +239,7 @@ fn assert_repository_unchanged(root: &Path) {
 }
 
 #[test]
-fn inspect_last_uses_the_canonical_cwd_imports_only_user_text_and_leaves_source_unchanged() {
+fn inspect_last_preserves_ordered_roles_and_compaction_without_granting_intent_authority() {
     let root = temporary_directory("inspect-last");
     clean_repository(&root);
     let canonical_root = root.canonicalize().expect("canonical test root");
@@ -225,6 +257,11 @@ fn inspect_last_uses_the_canonical_cwd_imports_only_user_text_and_leaves_source_
         })],
         read_result(selected_id, &canonical_root.display().to_string()),
         false,
+    );
+    let mut environment = environment;
+    environment.insert(
+        "DRIFTCTL_FAKE_LARGE_TOOL_BYTES",
+        (2 * 1024 * 1024).to_string(),
     );
 
     let output = run(
@@ -255,6 +292,63 @@ fn inspect_last_uses_the_canonical_cwd_imports_only_user_text_and_leaves_source_
     assert!(!serialized.contains(&canonical_root.display().to_string()));
     assert!(!serialized.contains("private user intent"));
     assert!(!serialized.contains("assistant draft"));
+
+    let prompts = fs::read_to_string(&environment["DRIFTCTL_FAKE_PROMPTS"])
+        .expect("read captured compactor prompt");
+    let prompt: Value = serde_json::from_str(prompts.lines().next().expect("initial prompt"))
+        .expect("captured prompt JSON");
+    let records = prompt["records"].as_array().expect("prompt records");
+    assert_eq!(records.len(), 3);
+    assert_eq!(records[0]["id"], "user-1:0");
+    assert!(
+        records[1]["id"]
+            .as_str()
+            .expect("opaque batch ID")
+            .starts_with("opaque-batch:")
+    );
+    assert_eq!(records[2]["id"], "user-2:0");
+    assert_eq!(
+        records
+            .iter()
+            .map(|record| record["role"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        vec!["user", "system_observation", "user"]
+    );
+    let opaque: Value = serde_json::from_str(records[1]["content"].as_str().unwrap())
+        .expect("opaque evidence batch");
+    assert_eq!(opaque["provider_type"], "opaqueEvidenceBatch");
+    assert_eq!(opaque["record_count"], 4);
+    assert_eq!(opaque["assistant_records"], 1);
+    assert_eq!(opaque["tool_records"], 1);
+    assert_eq!(opaque["system_observation_records"], 2);
+    assert_eq!(opaque["compaction_boundaries"], 1);
+    assert!(!prompts.contains("private assistant draft"));
+    assert!(!prompts.contains("private tool output"));
+    assert!(
+        prompts.len() < 32 * 1024,
+        "opaque evidence did not bound the prompt"
+    );
+
+    let cursor = private_source_cursor(&environment);
+    assert_eq!(
+        cursor["accepted_records"]
+            .as_array()
+            .expect("cursor records")
+            .iter()
+            .map(|record| (
+                record["id"].as_str().unwrap(),
+                record["role"].as_str().unwrap()
+            ))
+            .collect::<Vec<_>>(),
+        vec![
+            ("user-1:0", "user"),
+            ("user-1:1", "system_observation"),
+            ("assistant-1", "assistant"),
+            ("command-1", "tool"),
+            ("compaction-1", "system_observation"),
+            ("user-2:0", "user"),
+        ]
+    );
 
     let requests = captured_requests(&capture);
     assert_eq!(requests[0]["method"], "initialize");
@@ -335,6 +429,37 @@ fn inspect_rejects_malformed_provider_content_and_truncated_json_without_mutatin
     assert_eq!(malformed.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&malformed.stderr).contains("thread.turns"));
     assert!(!String::from_utf8_lossy(&malformed.stderr).contains(selected_id));
+    assert_repository_unchanged(&root);
+
+    let unsupported_record = json!({
+        "thread": {
+            "id": selected_id,
+            "cwd": canonical_root,
+            "turns": [{
+                "items": [
+                    {"type": "userMessage", "id": "user-1", "content": [{"type": "text", "text": "private request"}]},
+                    {"type": "futureProviderItem", "id": "future-1"}
+                ]
+            }]
+        }
+    });
+    let (environment, _) = fake_environment(
+        &root,
+        vec![json!({"data": [], "nextCursor": null, "backwardsCursor": null})],
+        unsupported_record,
+        false,
+    );
+    let unsupported = run(
+        &root,
+        &["inspect", "codex", "--session", selected_id],
+        &environment,
+    );
+    assert_eq!(unsupported.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&unsupported.stderr);
+    assert!(stderr.contains("turns[0].items[1].type"));
+    assert!(stderr.contains("unsupported Codex thread item"));
+    assert!(!stderr.contains(selected_id));
+    assert!(!stderr.contains("private request"));
     assert_repository_unchanged(&root);
 
     let (environment, _) = fake_environment(
