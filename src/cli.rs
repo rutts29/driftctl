@@ -32,6 +32,7 @@ const MAX_NEUTRAL_BUNDLE_BYTES: u64 = 16 * 1024 * 1024;
 
 const USAGE: &str = "driftctl — durable continuity for coding-agent tasks\n\n\
 Usage:\n\
+  driftctl integrate codex install|status|remove [--json]\n\
   driftctl start --goal <text> --requirement <text> [--requirement <text> ...]\n\
   driftctl steer --requirement <text>\n\
   driftctl satisfy --id <requirement-id> --evidence <text>\n\
@@ -43,6 +44,11 @@ Usage:\n\
   driftctl compare codex (--last | --session <id> [--allow-ancestor-cwd]) [--arm-order baseline-first|workflow-first] [--json]\n\
   driftctl continue codex (--last | --session <id> [--allow-ancestor-cwd]) [--resolve-conflict <conflict-id> <alternative-id> | --approve-goal | --edit-goal <text> | --retain-goal | --cancel] [--json]\n\
   driftctl verify (--run <run-id> | --candidate <path>) (--requirement <id> | --gate regression|integration|protected_scope|review) [--json] -- <program> [args...]\n\
+  driftctl attach codex --session <exact-id> [--allow-ancestor-cwd] [--json] [--compactor luna|terra|sol] [--reasoning high|medium]\n\
+  driftctl status codex --session <exact-id> [--json]\n\
+  driftctl resolve codex --session <exact-id> (--conflict <id> --alternative <id> | --approve-goal | --reject-goal | --edit-goal <text>) [--json]\n\
+  driftctl detach codex --session <exact-id> [--json]\n\
+  driftctl hook codex\n\
   driftctl run codex\n\
   driftctl close";
 
@@ -97,12 +103,28 @@ pub fn execute(root: &Path, arguments: impl IntoIterator<Item = String>) -> CliO
         "start" => start(root, &arguments),
         "steer" => steer(root, &arguments),
         "satisfy" => satisfy(root, &arguments),
+        "status" if arguments.first().map(String::as_str) == Some("codex") => {
+            return enrollment_status(root, &arguments);
+        }
         "status" | "resume" => status(root, &arguments),
+        "integrate" => {
+            let request = crate::codex_integration::parse(&arguments);
+            let Ok(request) = request else {
+                return CliOutput::error(
+                    request.expect_err("checked integration error").to_string(),
+                );
+            };
+            crate::codex_integration::execute(&request).map_err(|error| error.to_string())
+        }
+        "attach" => return attach_codex(root, &arguments),
+        "resolve" => return resolve_codex(root, &arguments),
+        "detach" => return detach_codex(root, &arguments),
         "inspect" => return inspect(root, &arguments),
         "bundle" => return bundle(root, &arguments),
         "compare" => return compare_codex(root, &arguments),
         "continue" => return continue_codex(root, &arguments),
         "verify" => return verify_requirement(root, &arguments),
+        "hook" => crate::codex_hook::handle(&arguments),
         "run" => run(root, &arguments),
         "close" => return close(root, &arguments),
         _ => Err(format!("unknown command: {command}\n\n{USAGE}")),
@@ -2399,6 +2421,575 @@ fn satisfy(root: &Path, arguments: &[String]) -> Result<String, String> {
         .satisfy(requirement_id, evidence)
         .map_err(|error| error.to_string())?;
     Ok(format!("satisfied {requirement_id}"))
+}
+
+fn attach_codex(root: &Path, arguments: &[String]) -> CliOutput {
+    let options = match parse_inspect_arguments(arguments) {
+        Ok(options) => options,
+        Err(error) => return CliOutput::error(error),
+    };
+    let (session_id, allow_ancestor_cwd) = match options.selection {
+        SessionSelection::Explicit {
+            id,
+            allow_ancestor_cwd,
+        } => (id.to_owned(), allow_ancestor_cwd),
+        SessionSelection::Last => {
+            return CliOutput::error(
+                "attach requires an exact --session <id>; --last is not allowed",
+            );
+        }
+    };
+    let requested_json = options.json;
+    let mut inspect_arguments = arguments.to_vec();
+    if !requested_json {
+        inspect_arguments.push("--json".to_owned());
+    }
+    let inspection = inspect_codex(root, &inspect_arguments);
+    if inspection.exit_code != 0 {
+        return inspection;
+    }
+    let document: Value = match serde_json::from_str(&inspection.stdout) {
+        Ok(document) => document,
+        Err(_) => return CliOutput::error("could not read the attached session bootstrap result"),
+    };
+    let Some(run_id) = document["run_id"].as_str() else {
+        return CliOutput::error("attached session bootstrap returned no run ID");
+    };
+    let enrollment = match crate::enrollment::Enrollment::new(
+        &session_id,
+        root,
+        run_id,
+        allow_ancestor_cwd,
+        options.compactor.preset_name(),
+        options.compactor.reasoning_argument(),
+    ) {
+        Ok(enrollment) => enrollment,
+        Err(error) => return CliOutput::error(error.to_string()),
+    };
+    let created = match crate::enrollment::attach(&enrollment) {
+        Ok(created) => created,
+        Err(error) => return CliOutput::error(error.to_string()),
+    };
+    let session = crate::enrollment::redacted_session(&session_id);
+    if requested_json {
+        match serde_json::to_string(&json!({
+            "schema_version": 1,
+            "provider": "codex",
+            "session": session,
+            "run_id": run_id,
+            "status": "attached",
+            "created": created,
+        })) {
+            Ok(output) => CliOutput::success(output),
+            Err(error) => CliOutput::error(format!("could not serialize attach result: {error}")),
+        }
+    } else {
+        CliOutput::success(format!(
+            "attached {session}\nrun id: {run_id}\nnext matching session hook will inject the active intent"
+        ))
+    }
+}
+
+fn enrollment_status(root: &Path, arguments: &[String]) -> CliOutput {
+    let options = match parse_exact_session_command(arguments, "status") {
+        Ok(options) => options,
+        Err(error) => return CliOutput::error(error),
+    };
+    let enrollment = match crate::enrollment::load(&options.session_id) {
+        Ok(Some(enrollment)) => enrollment,
+        Ok(None) => {
+            return exact_session_output(
+                &options,
+                "detached",
+                None,
+                "the exact Codex session is not attached",
+            );
+        }
+        Err(error) => return CliOutput::error(error.to_string()),
+    };
+    let canonical_root = match root.canonicalize() {
+        Ok(root) => root,
+        Err(error) => {
+            return CliOutput::error(format!("could not canonicalize repository: {error}"));
+        }
+    };
+    if enrollment.repository() != canonical_root {
+        return CliOutput::error("the exact session is attached to a different repository");
+    }
+    let store = match RunStore::open_default(enrollment.repository(), enrollment.run_id()) {
+        Ok(store) => store,
+        Err(error) => return CliOutput::error(error.to_string()),
+    };
+    let recovered = match store.recover() {
+        Ok(recovered) => recovered,
+        Err(error) => return CliOutput::error(error.to_string()),
+    };
+    let status = if recovered.projection.continuation_blocked() {
+        "blocked"
+    } else {
+        "attached"
+    };
+    exact_session_output(
+        &options,
+        status,
+        Some(enrollment.run_id()),
+        "exact Codex session enrollment is active",
+    )
+}
+
+fn resolve_codex(root: &Path, arguments: &[String]) -> CliOutput {
+    if arguments.iter().any(|argument| {
+        matches!(
+            argument.as_str(),
+            "--approve-goal" | "--reject-goal" | "--edit-goal"
+        )
+    }) {
+        return resolve_goal_change(root, arguments);
+    }
+    let options = match parse_conflict_resolution(arguments) {
+        Ok(options) => options,
+        Err(error) => return CliOutput::error(error),
+    };
+    let enrollment = match crate::enrollment::load(&options.session_id) {
+        Ok(Some(enrollment)) => enrollment,
+        Ok(None) => return CliOutput::error("the exact Codex session is not attached"),
+        Err(error) => return CliOutput::error(error.to_string()),
+    };
+    let canonical_root = match root.canonicalize() {
+        Ok(root) => root,
+        Err(error) => {
+            return CliOutput::error(format!("could not canonicalize repository: {error}"));
+        }
+    };
+    if enrollment.repository() != canonical_root {
+        return CliOutput::error("the exact session is attached to a different repository");
+    }
+    let store = match RunStore::open_default(enrollment.repository(), enrollment.run_id()) {
+        Ok(store) => store,
+        Err(error) => return CliOutput::error(error.to_string()),
+    };
+    let recovered = match store.recover() {
+        Ok(recovered) => recovered,
+        Err(error) => return CliOutput::error(error.to_string()),
+    };
+    let recovered = match apply_conflict_resolution(
+        &store,
+        &recovered,
+        &options.conflict_id,
+        &options.alternative_id,
+    ) {
+        Ok(recovered) => recovered,
+        Err(error) => return CliOutput::error(error),
+    };
+    let session = crate::enrollment::redacted_session(&options.session_id);
+    if options.json {
+        match serde_json::to_string(&json!({
+            "schema_version":1,
+            "provider":"codex",
+            "session":session,
+            "status":if recovered.projection.continuation_blocked() {"blocked"} else {"attached"},
+            "projection_revision":recovered.projection.revision,
+            "resolved_conflict":options.conflict_id,
+            "selected_alternative":options.alternative_id,
+        })) {
+            Ok(output) => CliOutput::success(output),
+            Err(error) => CliOutput::error(format!("could not serialize resolution: {error}")),
+        }
+    } else {
+        CliOutput::success(format!(
+            "resolved conflict {} for {session}; selected {}",
+            options.conflict_id, options.alternative_id
+        ))
+    }
+}
+
+enum GoalResolutionAction {
+    Approve,
+    Reject,
+    Edit(String),
+}
+
+struct GoalResolutionCommand {
+    session_id: String,
+    action: GoalResolutionAction,
+    json: bool,
+}
+
+fn resolve_goal_change(root: &Path, arguments: &[String]) -> CliOutput {
+    let options = match parse_goal_resolution(arguments) {
+        Ok(options) => options,
+        Err(error) => return CliOutput::error(error),
+    };
+    let enrollment = match crate::enrollment::load(&options.session_id) {
+        Ok(Some(enrollment)) => enrollment,
+        Ok(None) => return CliOutput::error("the exact Codex session is not attached"),
+        Err(error) => return CliOutput::error(error.to_string()),
+    };
+    let canonical_root = match root.canonicalize() {
+        Ok(root) => root,
+        Err(error) => {
+            return CliOutput::error(format!("could not canonicalize repository: {error}"));
+        }
+    };
+    if enrollment.repository() != canonical_root {
+        return CliOutput::error("the exact session is attached to a different repository");
+    }
+    let store = match RunStore::open_default(enrollment.repository(), enrollment.run_id()) {
+        Ok(store) => store,
+        Err(error) => return CliOutput::error(error.to_string()),
+    };
+    let recovered = match store.recover() {
+        Ok(recovered) => recovered,
+        Err(error) => return CliOutput::error(error.to_string()),
+    };
+    let proposal_store = match GoalChangeStore::open(&store) {
+        Ok(store) => store,
+        Err(error) => return CliOutput::error(error.to_string()),
+    };
+    let pending = match proposal_store.load_pending() {
+        Ok(Some(pending)) => pending,
+        Ok(None) => return CliOutput::error("there is no pending goal change to resolve"),
+        Err(error) => return CliOutput::error(error.to_string()),
+    };
+    let Some(cursor) = recovered.source_cursor.as_ref() else {
+        return CliOutput::error("attached run has no accepted source cursor");
+    };
+    let sequence = match accepted_event_sequence(&recovered) {
+        Ok(sequence) => sequence,
+        Err(error) => return CliOutput::error(error),
+    };
+    if !pending.matches(recovered.projection.revision, sequence, cursor.digest()) {
+        return CliOutput::blocked("pending goal-change decision is stale");
+    }
+    let (status, proposed_goal) = match options.action {
+        GoalResolutionAction::Reject => {
+            if let Err(error) = proposal_store.reject(&pending) {
+                return CliOutput::error(error.to_string());
+            }
+            ("attached", None)
+        }
+        GoalResolutionAction::Edit(ref goal) => {
+            let edited = match proposal_store.edit(&pending, goal) {
+                Ok(edited) => edited,
+                Err(error) => return CliOutput::error(error.to_string()),
+            };
+            ("blocked", Some(edited.proposed_goal().to_owned()))
+        }
+        GoalResolutionAction::Approve => {
+            return approve_same_session_goal(
+                &options,
+                &enrollment,
+                &store,
+                &recovered,
+                &proposal_store,
+                &pending,
+            );
+        }
+    };
+    render_goal_resolution(&options, status, proposed_goal.as_deref(), None)
+}
+
+fn approve_same_session_goal(
+    options: &GoalResolutionCommand,
+    enrollment: &crate::enrollment::Enrollment,
+    store: &RunStore,
+    recovered: &crate::run_store::RecoveredRun,
+    proposal_store: &GoalChangeStore,
+    pending: &PendingGoalChange,
+) -> CliOutput {
+    if let Err(error) = verify_enrolled_source(enrollment, recovered, None) {
+        return CliOutput::blocked(error);
+    }
+    let adapter = CodexChildAdapter::from_environment();
+    let transition =
+        match adapter.replace_exact_goal(enrollment.session_id(), pending.proposed_goal()) {
+            Ok(transition) => transition,
+            Err(error) => return CliOutput::blocked(error.to_string()),
+        };
+    if let Err(error) = verify_enrolled_source(enrollment, recovered, Some(pending.proposed_goal()))
+    {
+        return match adapter.restore_exact_goal(
+            enrollment.session_id(),
+            transition.current(),
+            transition.previous(),
+        ) {
+            Ok(()) => CliOutput::blocked(format!(
+                "approved native goal was restored because source verification failed: {error}"
+            )),
+            Err(rollback) => CliOutput::blocked(format!(
+                "source verification failed and native-goal rollback could not be verified: {error}; {rollback}"
+            )),
+        };
+    }
+    let final_recovered = match apply_approved_goal(store, recovered, pending) {
+        Ok(recovered) => recovered,
+        Err(error) => {
+            return match adapter.restore_exact_goal(
+                enrollment.session_id(),
+                transition.current(),
+                transition.previous(),
+            ) {
+                Ok(()) => CliOutput::blocked(format!(
+                    "approved goal was not committed and the native goal was restored: {error}"
+                )),
+                Err(rollback) => CliOutput::blocked(format!(
+                    "approved goal commit failed and native-goal rollback could not be verified: {error}; {rollback}"
+                )),
+            };
+        }
+    };
+    if let Err(error) = proposal_store.mark_applied(pending) {
+        return CliOutput::blocked(format!(
+            "approved goal is source-linked and active, but its decision marker could not be finalized: {error}"
+        ));
+    }
+    let status = if final_recovered.projection.continuation_blocked() {
+        "blocked"
+    } else {
+        "attached"
+    };
+    render_goal_resolution(
+        options,
+        status,
+        None,
+        Some(final_recovered.projection.goal.text.as_str()),
+    )
+}
+
+fn verify_enrolled_source(
+    enrollment: &crate::enrollment::Enrollment,
+    recovered: &crate::run_store::RecoveredRun,
+    expected_native_goal: Option<&str>,
+) -> Result<(), String> {
+    let imported = codex_source::inspect(
+        enrollment.repository(),
+        SessionSelection::Explicit {
+            id: enrollment.session_id(),
+            allow_ancestor_cwd: enrollment.allow_ancestor_cwd(),
+        },
+    )
+    .map_err(|error| error.to_string())?;
+    let bundle = imported
+        .neutral_bundle()
+        .map_err(|error| error.to_string())?;
+    let source = InspectSource::from_bundle(&bundle).map_err(|error| error.to_string())?;
+    let cursor = recovered
+        .source_cursor
+        .as_ref()
+        .ok_or_else(|| "attached run has no accepted source cursor".to_owned())?;
+    if source.run_id().as_str() != enrollment.run_id()
+        || source.cursor().digest() != cursor.digest()
+    {
+        return Err("Codex source changed after the goal decision was prepared".to_owned());
+    }
+    if let Some(expected) = expected_native_goal
+        && bundle.native_goal().text() != Some(expected)
+    {
+        return Err("Codex native goal read-back did not match the approved goal".to_owned());
+    }
+    Ok(())
+}
+
+fn parse_goal_resolution(arguments: &[String]) -> Result<GoalResolutionCommand, String> {
+    if arguments.first().map(String::as_str) != Some("codex") {
+        return Err("resolve currently supports exactly: driftctl resolve codex".to_owned());
+    }
+    let mut session_id = None;
+    let mut action = None;
+    let mut json = false;
+    let mut index = 1;
+    while index < arguments.len() {
+        match arguments[index].as_str() {
+            "--session" if session_id.is_none() => {
+                session_id = arguments.get(index + 1).cloned();
+                index += 2;
+            }
+            "--approve-goal" if action.is_none() => {
+                action = Some(GoalResolutionAction::Approve);
+                index += 1;
+            }
+            "--reject-goal" if action.is_none() => {
+                action = Some(GoalResolutionAction::Reject);
+                index += 1;
+            }
+            "--edit-goal" if action.is_none() => {
+                let goal = arguments
+                    .get(index + 1)
+                    .filter(|goal| !goal.trim().is_empty())
+                    .ok_or_else(|| "--edit-goal requires text".to_owned())?;
+                action = Some(GoalResolutionAction::Edit(goal.clone()));
+                index += 2;
+            }
+            "--json" if !json => {
+                json = true;
+                index += 1;
+            }
+            option => return Err(format!("unsupported or repeated resolve option: {option}")),
+        }
+    }
+    Ok(GoalResolutionCommand {
+        session_id: session_id
+            .filter(|id| !id.trim().is_empty() && !id.chars().any(char::is_control))
+            .ok_or_else(|| "resolve requires --session <exact-id>".to_owned())?,
+        action: action.ok_or_else(|| "resolve requires one goal decision".to_owned())?,
+        json,
+    })
+}
+
+fn render_goal_resolution(
+    options: &GoalResolutionCommand,
+    status: &str,
+    proposed_goal: Option<&str>,
+    applied_goal: Option<&str>,
+) -> CliOutput {
+    let session = crate::enrollment::redacted_session(&options.session_id);
+    if options.json {
+        match serde_json::to_string(&json!({
+            "schema_version":1,
+            "provider":"codex",
+            "session":session,
+            "status":status,
+            "proposed_goal":proposed_goal,
+            "applied_goal":applied_goal,
+        })) {
+            Ok(output) => CliOutput::success(output),
+            Err(error) => CliOutput::error(format!("could not serialize goal resolution: {error}")),
+        }
+    } else {
+        CliOutput::success(format!("goal resolution: {status} for {session}"))
+    }
+}
+
+struct ConflictResolutionCommand {
+    session_id: String,
+    conflict_id: String,
+    alternative_id: String,
+    json: bool,
+}
+
+fn parse_conflict_resolution(arguments: &[String]) -> Result<ConflictResolutionCommand, String> {
+    if arguments.first().map(String::as_str) != Some("codex") {
+        return Err("resolve currently supports exactly: driftctl resolve codex".to_owned());
+    }
+    let mut session_id = None;
+    let mut conflict_id = None;
+    let mut alternative_id = None;
+    let mut json = false;
+    let mut index = 1;
+    while index < arguments.len() {
+        match arguments[index].as_str() {
+            "--session" if session_id.is_none() => {
+                session_id = arguments.get(index + 1).cloned();
+                index += 2;
+            }
+            "--conflict" if conflict_id.is_none() => {
+                conflict_id = arguments.get(index + 1).cloned();
+                index += 2;
+            }
+            "--alternative" if alternative_id.is_none() => {
+                alternative_id = arguments.get(index + 1).cloned();
+                index += 2;
+            }
+            "--json" if !json => {
+                json = true;
+                index += 1;
+            }
+            option => return Err(format!("unsupported or repeated resolve option: {option}")),
+        }
+    }
+    let required = |value: Option<String>, name: &str| {
+        value
+            .filter(|value| !value.trim().is_empty() && !value.chars().any(char::is_control))
+            .ok_or_else(|| format!("resolve requires {name}"))
+    };
+    Ok(ConflictResolutionCommand {
+        session_id: required(session_id, "--session <exact-id>")?,
+        conflict_id: required(conflict_id, "--conflict <id>")?,
+        alternative_id: required(alternative_id, "--alternative <id>")?,
+        json,
+    })
+}
+
+fn detach_codex(root: &Path, arguments: &[String]) -> CliOutput {
+    let options = match parse_exact_session_command(arguments, "detach") {
+        Ok(options) => options,
+        Err(error) => return CliOutput::error(error),
+    };
+    if let Err(error) = crate::enrollment::detach(&options.session_id, root) {
+        return CliOutput::error(error.to_string());
+    }
+    exact_session_output(
+        &options,
+        "detached",
+        None,
+        "the exact Codex session now follows ordinary Codex behavior",
+    )
+}
+
+struct ExactSessionCommand {
+    session_id: String,
+    json: bool,
+}
+
+fn parse_exact_session_command(
+    arguments: &[String],
+    command: &str,
+) -> Result<ExactSessionCommand, String> {
+    if arguments.first().map(String::as_str) != Some("codex") {
+        return Err(format!(
+            "{command} currently supports exactly: driftctl {command} codex"
+        ));
+    }
+    let mut session_id = None;
+    let mut json = false;
+    let mut index = 1;
+    while index < arguments.len() {
+        match arguments[index].as_str() {
+            "--session" if session_id.is_none() => {
+                let Some(value) = arguments.get(index + 1) else {
+                    return Err("missing value for --session".to_owned());
+                };
+                if value.trim().is_empty() || value.chars().any(char::is_control) {
+                    return Err("invalid explicit Codex session ID".to_owned());
+                }
+                session_id = Some(value.clone());
+                index += 2;
+            }
+            "--json" if !json => {
+                json = true;
+                index += 1;
+            }
+            option => return Err(format!("unknown {command} option: {option}")),
+        }
+    }
+    Ok(ExactSessionCommand {
+        session_id: session_id
+            .ok_or_else(|| format!("{command} requires an exact --session <id>"))?,
+        json,
+    })
+}
+
+fn exact_session_output(
+    options: &ExactSessionCommand,
+    status: &str,
+    run_id: Option<&str>,
+    message: &str,
+) -> CliOutput {
+    let session = crate::enrollment::redacted_session(&options.session_id);
+    if options.json {
+        match serde_json::to_string(&json!({
+            "schema_version": 1,
+            "provider": "codex",
+            "session": session,
+            "status": status,
+            "run_id": run_id,
+        })) {
+            Ok(output) => CliOutput::success(output),
+            Err(error) => CliOutput::error(format!("could not serialize session status: {error}")),
+        }
+    } else {
+        CliOutput::success(format!("{status}: {session}\n{message}"))
+    }
 }
 
 fn status(root: &Path, arguments: &[String]) -> Result<String, String> {

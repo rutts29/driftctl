@@ -1,0 +1,56 @@
+{
+  "description": "Opt-in same-session intent continuity for Driftctl-enrolled sessions.",
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume|compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "driftctl hook codex",
+            "statusMessage": "Restoring Driftctl intent",
+            "timeout": 600,
+            "additionalContextLimit": 32768
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "driftctl hook codex",
+            "statusMessage": "Reconciling Driftctl intent",
+            "timeout": 600,
+            "additionalContextLimit": 32768
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "matcher": "manual|auto",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "driftctl hook codex",
+            "statusMessage": "Flushing Driftctl intent",
+            "timeout": 600
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "driftctl hook codex",
+            "timeout": 120
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -45,16 +45,15 @@ install isolated hooks
 
 ```text
 ${XDG_STATE_HOME:-$HOME/.local/state}/driftctl/
-├── integration/codex.json
 ├── enrollments/<session-digest>.json
-└── sessions/<session-digest>/
-    ├── lock
+└── repositories/<repository-digest>/runs/<run-id>/
+    ├── .writer.lock
     ├── source.json
     ├── projection.json
     ├── pending.jsonl
     ├── history/*.jsonl
-    ├── proposals/*.json
-    └── observations.jsonl
+    ├── proposals/goal-change.json
+    └── observations/hook-prompts.jsonl
 ```
 
 - Session ID remains private; filenames use its digest.
@@ -62,7 +61,7 @@ ${XDG_STATE_HOME:-$HOME/.local/state}/driftctl/
 - Separate session IDs never share writable state.
 - Commit: validate base revision/head → atomic projection write → append/rotate history → advance cursor.
 - Recovery: accepted projection + immutable history + pending tail + App Server reconciliation.
-- Duplicate hook delivery is idempotent by session ID, turn ID, event name, and source head.
+- Duplicate hook delivery is idempotent by exact enrollment and hook turn ID. A digest-only receipt binds once to Codex's later persisted provider record ID, which may differ from the hook turn ID; later identical prompts cannot reuse that binding.
 
 ## State Machine
 
