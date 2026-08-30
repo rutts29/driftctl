@@ -1,0 +1,50 @@
+{
+  "schema_version": 1,
+  "evidence_kind": "pipeline_rehearsal",
+  "experiment_kind": "prospective_paired",
+  "efficacy_claim": false,
+  "status": "evaluated",
+  "outcome": "tie_pass",
+  "source_unchanged": true,
+  "fairness": {
+    "starting_candidate_digest_equal": true,
+    "inherited_goal_equal": true,
+    "worker_policy_equal": true,
+    "same_verifier_command": true
+  },
+  "baseline": {
+    "enrollment": "detached",
+    "explicit_on_recorded": false,
+    "verified_completion": true,
+    "post_checkpoint_records": 15,
+    "post_checkpoint_user_prompts": 1,
+    "verifier_elapsed_ms": 33
+  },
+  "workflow": {
+    "enrollment": "attached_exact",
+    "explicit_on_recorded": true,
+    "verified_completion": true,
+    "post_checkpoint_records": 29,
+    "post_checkpoint_user_prompts": 2,
+    "verifier_elapsed_ms": 42,
+    "keeper_overhead": {
+      "status": "measured",
+      "invocations": 4,
+      "calls": 4,
+      "elapsed_ms": 83354,
+      "tokens": {
+        "input": 58998,
+        "cached_input": 12032,
+        "output": 5561,
+        "reasoning_output": 4306
+      }
+    }
+  },
+  "cached_report_replay": true,
+  "notes": [
+    "Both arms used real persisted Codex forks and the same external verifier.",
+    "The workflow required operator goal approval and one workspace-policy retry.",
+    "The asymmetric interventions make this lifecycle evidence, not a controlled efficacy comparison.",
+    "Provider session identifiers, raw text, local paths, and artifact identifiers were intentionally omitted."
+  ]
+}
