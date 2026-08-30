@@ -509,6 +509,12 @@ fn compare_runs_equal_isolated_children_with_only_the_projection_added() {
     assert_eq!(document["source_unchanged"], true);
     assert_eq!(document["parent_unchanged"], true);
     assert_eq!(document["adoption"], "none");
+    assert!(
+        document["containment"]
+            .as_str()
+            .expect("containment notice")
+            .contains("host-wide")
+    );
 
     let rpc = fixture.rpc_calls();
     let turns = rpc
@@ -868,6 +874,12 @@ fn continue_requires_operator_authority_then_migrates_only_an_isolated_child() {
     assert_eq!(approved_document["parent_unchanged"], true);
     assert_eq!(approved_document["source_unchanged"], true);
     assert_eq!(approved_document["adoption"], "manual");
+    assert!(
+        approved_document["containment"]
+            .as_str()
+            .expect("containment notice")
+            .contains("host-wide")
+    );
     assert_ne!(approved_document["goal"], old_goal);
 
     let rpc = fixture.rpc_calls();
