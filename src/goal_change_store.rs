@@ -21,6 +21,8 @@ static TEMPORARY_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 #[serde(deny_unknown_fields)]
 pub(crate) struct PendingGoalChange {
     schema_version: u32,
+    revision: u64,
+    status: GoalChangeStatus,
     proposed_goal: String,
     source_refs: Vec<SourceRef>,
     base_projection_revision: u64,
@@ -35,6 +37,8 @@ impl PendingGoalChange {
     ) -> Result<Self, GoalChangeStoreError> {
         let proposal = Self {
             schema_version: SCHEMA_VERSION,
+            revision: 1,
+            status: GoalChangeStatus::Pending,
             proposed_goal: observation.proposed_goal.clone(),
             source_refs: observation.source_refs.clone(),
             base_projection_revision: observation.base_projection_revision,
@@ -54,6 +58,18 @@ impl PendingGoalChange {
         }
     }
 
+    pub(crate) fn proposed_goal(&self) -> &str {
+        &self.proposed_goal
+    }
+
+    pub(crate) fn source_refs(&self) -> &[SourceRef] {
+        &self.source_refs
+    }
+
+    pub(crate) fn is_pending(&self) -> bool {
+        self.status == GoalChangeStatus::Pending
+    }
+
     pub(crate) fn matches(
         &self,
         projection_revision: u64,
@@ -66,7 +82,7 @@ impl PendingGoalChange {
     }
 
     fn validate(&self) -> Result<(), GoalChangeStoreError> {
-        if self.schema_version != SCHEMA_VERSION {
+        if self.schema_version != SCHEMA_VERSION || self.revision == 0 {
             return Err(GoalChangeStoreError::Invalid("unsupported schema version"));
         }
         if self.proposed_goal.trim().is_empty()
@@ -84,6 +100,29 @@ impl PendingGoalChange {
             .try_for_each(SourceRef::validate)
             .map_err(|_| GoalChangeStoreError::Invalid("invalid goal-change source reference"))
     }
+
+    fn edit(&self, proposed_goal: &str) -> Result<Self, GoalChangeStoreError> {
+        let mut edited = self.clone();
+        edited.revision = edited.revision.saturating_add(1);
+        edited.status = GoalChangeStatus::Pending;
+        edited.proposed_goal = proposed_goal.trim().to_owned();
+        edited.validate()?;
+        Ok(edited)
+    }
+
+    fn with_status(&self, status: GoalChangeStatus) -> Self {
+        let mut decided = self.clone();
+        decided.status = status;
+        decided
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum GoalChangeStatus {
+    Pending,
+    Rejected,
+    Applied,
 }
 
 pub(crate) struct GoalChangeStore {
@@ -108,16 +147,65 @@ impl GoalChangeStore {
         Ok(Some(proposal))
     }
 
+    pub(crate) fn load_pending(&self) -> Result<Option<PendingGoalChange>, GoalChangeStoreError> {
+        Ok(self.load()?.filter(PendingGoalChange::is_pending))
+    }
+
     pub(crate) fn persist(&self, proposal: &PendingGoalChange) -> Result<(), GoalChangeStoreError> {
         proposal.validate()?;
         if let Some(existing) = self.load()? {
             if existing == *proposal {
                 return Ok(());
             }
-            return Err(GoalChangeStoreError::Invalid(
-                "a different goal-change proposal is already pending",
-            ));
+            if existing.is_pending() {
+                return Err(GoalChangeStoreError::Invalid(
+                    "a different goal-change proposal is already pending",
+                ));
+            }
+            let mut next = proposal.clone();
+            next.revision = existing.revision.saturating_add(1);
+            return self.replace(&next);
         }
+        let bytes = serde_json::to_vec(proposal)
+            .map_err(|_| GoalChangeStoreError::Invalid("could not encode goal-change proposal"))?;
+        write_private_atomic(&self.directory, GOAL_CHANGE_FILE, &bytes)
+    }
+
+    pub(crate) fn edit(
+        &self,
+        current: &PendingGoalChange,
+        proposed_goal: &str,
+    ) -> Result<PendingGoalChange, GoalChangeStoreError> {
+        self.require_current(current)?;
+        let edited = current.edit(proposed_goal)?;
+        self.replace(&edited)?;
+        Ok(edited)
+    }
+
+    pub(crate) fn reject(&self, current: &PendingGoalChange) -> Result<(), GoalChangeStoreError> {
+        self.require_current(current)?;
+        self.replace(&current.with_status(GoalChangeStatus::Rejected))
+    }
+
+    pub(crate) fn mark_applied(
+        &self,
+        current: &PendingGoalChange,
+    ) -> Result<(), GoalChangeStoreError> {
+        self.require_current(current)?;
+        self.replace(&current.with_status(GoalChangeStatus::Applied))
+    }
+
+    fn require_current(&self, expected: &PendingGoalChange) -> Result<(), GoalChangeStoreError> {
+        match self.load()? {
+            Some(current) if current == *expected && current.is_pending() => Ok(()),
+            _ => Err(GoalChangeStoreError::Invalid(
+                "goal-change decision is stale or already resolved",
+            )),
+        }
+    }
+
+    fn replace(&self, proposal: &PendingGoalChange) -> Result<(), GoalChangeStoreError> {
+        proposal.validate()?;
         let bytes = serde_json::to_vec(proposal)
             .map_err(|_| GoalChangeStoreError::Invalid("could not encode goal-change proposal"))?;
         write_private_atomic(&self.directory, GOAL_CHANGE_FILE, &bytes)

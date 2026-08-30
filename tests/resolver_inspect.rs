@@ -58,9 +58,14 @@ import os
 import sys
 
 if sys.argv[1:3] == ["app-server", "--stdio"]:
+    child_goal = None
     for raw in sys.stdin:
         request = json.loads(raw)
         method = request.get("method")
+        rpc_capture = os.environ.get("DRIFTCTL_FAKE_RPC_CAPTURE")
+        if rpc_capture:
+            with open(rpc_capture, "a", encoding="utf-8") as capture:
+                capture.write(json.dumps(request, sort_keys=True) + "\n")
         if method == "initialized":
             continue
         if method == "initialize":
@@ -70,7 +75,21 @@ if sys.argv[1:3] == ["app-server", "--stdio"]:
         elif method == "thread/read":
             result = json.loads(os.environ["DRIFTCTL_FAKE_READ"])
         elif method == "thread/goal/get":
-            result = json.loads(os.environ.get("DRIFTCTL_FAKE_GOAL", '{"goal":null}'))
+            thread_id = request["params"]["threadId"]
+            if thread_id == "continued-child":
+                result = {"goal": None if child_goal is None else {"threadId":thread_id,"objective":child_goal}}
+            else:
+                result = json.loads(os.environ.get("DRIFTCTL_FAKE_GOAL", '{"goal":null}'))
+        elif method == "thread/fork":
+            result = {"thread":{"id":"continued-child","cwd":request["params"]["cwd"],"ephemeral":False}}
+        elif method == "thread/goal/clear":
+            child_goal = None
+            result = {"cleared":True}
+        elif method == "thread/goal/set":
+            child_goal = request["params"]["objective"]
+            result = {"goal":{"threadId":request["params"]["threadId"],"objective":child_goal}}
+        elif method == "turn/start":
+            result = {"turn":{"id":"continued-turn","items":[],"status":"completed"}}
         else:
             print(json.dumps({"id":request["id"],"error":{"code":-32601,"message":"unexpected"}}), flush=True)
             continue
@@ -180,6 +199,7 @@ struct Fixture {
     root: PathBuf,
     environment: BTreeMap<&'static str, String>,
     capture: PathBuf,
+    rpc_capture: PathBuf,
     artifacts: PathBuf,
     state_home: PathBuf,
     session_id: String,
@@ -193,6 +213,7 @@ impl Fixture {
         let fake_root = temporary_directory("fake");
         let program = fake_codex(&fake_root);
         let capture = fake_root.join("exec.jsonl");
+        let rpc_capture = fake_root.join("rpc.jsonl");
         let artifacts = fake_root.join("private-artifacts");
         let state_home = fake_root.join("state");
         let session_id = "private-source-session".to_owned();
@@ -208,6 +229,10 @@ impl Fixture {
         let mut environment = BTreeMap::new();
         environment.insert("DRIFTCTL_CODEX_BIN", program.display().to_string());
         environment.insert("DRIFTCTL_FAKE_EXEC_CAPTURE", capture.display().to_string());
+        environment.insert(
+            "DRIFTCTL_FAKE_RPC_CAPTURE",
+            rpc_capture.display().to_string(),
+        );
         environment.insert("DRIFTCTL_ARTIFACT_DIR", artifacts.display().to_string());
         environment.insert("XDG_STATE_HOME", state_home.display().to_string());
         environment.insert("DRIFTCTL_FAKE_READ", source.to_string());
@@ -219,6 +244,7 @@ impl Fixture {
             root,
             environment,
             capture,
+            rpc_capture,
             artifacts,
             state_home,
             session_id,
@@ -252,11 +278,30 @@ impl Fixture {
         command.output().expect("run driftctl bundle")
     }
 
+    fn run_continue(&self, options: &[&str]) -> Output {
+        let mut arguments = vec!["continue", "codex", "--session", &self.session_id];
+        arguments.extend_from_slice(options);
+        let mut command = Command::new(env!("CARGO_BIN_EXE_driftctl"));
+        command.current_dir(&self.root).args(arguments);
+        for (name, value) in &self.environment {
+            command.env(name, value);
+        }
+        command.output().expect("run driftctl continue")
+    }
+
     fn calls(&self) -> Vec<Value> {
         fs::read_to_string(&self.capture)
             .expect("read exec capture")
             .lines()
             .map(|line| serde_json::from_str(line).expect("capture JSON"))
+            .collect()
+    }
+
+    fn rpc_calls(&self) -> Vec<Value> {
+        fs::read_to_string(&self.rpc_capture)
+            .expect("read RPC capture")
+            .lines()
+            .map(|line| serde_json::from_str(line).expect("captured RPC request"))
             .collect()
     }
 
@@ -293,6 +338,68 @@ impl Fixture {
         }
         panic!("state file {name} was not found")
     }
+}
+
+fn prepare_pending_goal_change(fixture: &mut Fixture, proposed_goal: &str) -> Value {
+    let first = fixture.run(&["--json"]);
+    assert_eq!(first.status.code(), Some(0), "{first:?}");
+    let first_document: Value = serde_json::from_slice(&first.stdout).expect("initial JSON");
+    let revision = first_document["projection"]["revision"]
+        .as_u64()
+        .expect("projection revision");
+    let active_ids = first_document["projection"]["preserve"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .chain(
+            first_document["projection"]["frontier"]
+                .as_array()
+                .into_iter()
+                .flatten(),
+        )
+        .chain(
+            first_document["projection"]["validation"]
+                .as_array()
+                .into_iter()
+                .flatten(),
+        )
+        .map(|item| item["id"].clone())
+        .collect::<Vec<_>>();
+    let proposal = json!({
+        "schema_version":1,
+        "base_projection_revision":revision,
+        "base_event_sequence":revision,
+        "classification":"goal_change",
+        "accounted_active_intent_ids":active_ids,
+        "accounted_source_record_ids":["u4:0"],
+        "operations":[],
+        "proposed_goal":{
+            "text":proposed_goal,
+            "source_record_ids":["u4:0"]
+        }
+    });
+    let canonical = fixture.root.canonicalize().expect("canonical source");
+    fixture.environment.insert(
+        "DRIFTCTL_FAKE_READ",
+        session(
+            &fixture.session_id,
+            &canonical,
+            &[
+                ("u1", "private raw goal that public output must not echo"),
+                ("u2", "private additive steering"),
+                ("u3", "private explicit supersession"),
+                ("u4", "replace the overall goal with the proposed objective"),
+            ],
+        )
+        .to_string(),
+    );
+    fixture.environment.insert(
+        "DRIFTCTL_FAKE_PROPOSALS",
+        json!([base_proposal(), proposal]).to_string(),
+    );
+    let pending = fixture.run(&["--json"]);
+    assert_eq!(pending.status.code(), Some(2), "{pending:?}");
+    first_document
 }
 
 #[test]
@@ -556,6 +663,173 @@ fn pending_goal_change_survives_cached_inspect_without_mutating_the_accepted_goa
             })
     );
     assert!(!bundle_document.to_string().contains(&fixture.session_id));
+    fixture.assert_unchanged();
+}
+
+#[test]
+fn continue_requires_operator_authority_then_migrates_only_an_isolated_child() {
+    let mut fixture = Fixture::new(vec![base_proposal()]);
+    let first = fixture.run(&["--json"]);
+    assert_eq!(first.status.code(), Some(0), "{first:?}");
+    let first_document: Value = serde_json::from_slice(&first.stdout).expect("initial JSON");
+    let old_goal = first_document["projection"]["goal"]["text"].clone();
+    let revision = first_document["projection"]["revision"]
+        .as_u64()
+        .expect("projection revision");
+    let active_ids = first_document["projection"]["preserve"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .chain(
+            first_document["projection"]["frontier"]
+                .as_array()
+                .into_iter()
+                .flatten(),
+        )
+        .chain(
+            first_document["projection"]["validation"]
+                .as_array()
+                .into_iter()
+                .flatten(),
+        )
+        .map(|item| item["id"].clone())
+        .collect::<Vec<_>>();
+    let proposal = json!({
+        "schema_version":1,
+        "base_projection_revision":revision,
+        "base_event_sequence":revision,
+        "classification":"goal_change",
+        "accounted_active_intent_ids":active_ids,
+        "accounted_source_record_ids":["u4:0"],
+        "operations":[],
+        "proposed_goal":{
+            "text":"Ship the operator-approved replacement objective",
+            "source_record_ids":["u4:0"]
+        }
+    });
+    let canonical = fixture.root.canonicalize().expect("canonical source");
+    fixture.environment.insert(
+        "DRIFTCTL_FAKE_READ",
+        session(
+            &fixture.session_id,
+            &canonical,
+            &[
+                ("u1", "private raw goal that public output must not echo"),
+                ("u2", "private additive steering"),
+                ("u3", "private explicit supersession"),
+                ("u4", "replace the overall goal with the approved objective"),
+            ],
+        )
+        .to_string(),
+    );
+    fixture.environment.insert(
+        "DRIFTCTL_FAKE_PROPOSALS",
+        json!([base_proposal(), proposal]).to_string(),
+    );
+    let pending = fixture.run(&["--json"]);
+    assert_eq!(pending.status.code(), Some(2), "{pending:?}");
+
+    let edited = fixture.run_continue(&[
+        "--edit-goal",
+        "Ship the operator-edited replacement objective",
+        "--json",
+    ]);
+    assert_eq!(edited.status.code(), Some(2), "{edited:?}");
+    let edited_document: Value =
+        serde_json::from_slice(&edited.stdout).expect("edited proposal JSON");
+    assert_eq!(
+        edited_document["goal_change"]["proposed_goal"],
+        "Ship the operator-edited replacement objective"
+    );
+    let cancelled = fixture.run_continue(&["--cancel", "--json"]);
+    assert_eq!(cancelled.status.code(), Some(2), "{cancelled:?}");
+    let cancelled_document: Value =
+        serde_json::from_slice(&cancelled.stdout).expect("cancelled continuation JSON");
+    assert_eq!(
+        cancelled_document["goal_change"],
+        edited_document["goal_change"]
+    );
+
+    let unattended = fixture.run_continue(&["--json"]);
+    assert_eq!(unattended.status.code(), Some(2), "{unattended:?}");
+    assert!(String::from_utf8_lossy(&unattended.stderr).contains("operator decision required"));
+    assert!(!fixture.rpc_calls().iter().any(|request| {
+        request["method"] == "thread/fork"
+            || request["method"] == "thread/goal/clear"
+            || request["method"] == "thread/goal/set"
+    }));
+
+    let approved = fixture.run_continue(&["--approve-goal", "--json"]);
+    assert_eq!(approved.status.code(), Some(0), "{approved:?}");
+    let approved_document: Value =
+        serde_json::from_slice(&approved.stdout).expect("approved continuation JSON");
+    assert_eq!(approved_document["status"], "started");
+    assert_eq!(approved_document["child_thread_id"], "continued-child");
+    assert_eq!(approved_document["turn_status"], "completed");
+    assert_eq!(approved_document["parent_unchanged"], true);
+    assert_eq!(approved_document["source_unchanged"], true);
+    assert_eq!(approved_document["adoption"], "manual");
+    assert_ne!(approved_document["goal"], old_goal);
+
+    let rpc = fixture.rpc_calls();
+    assert!(rpc.iter().any(|request| request["method"] == "thread/fork"));
+    assert!(rpc.iter().any(|request| {
+        request["method"] == "thread/goal/set"
+            && request["params"]["threadId"] == "continued-child"
+            && request["params"]["objective"] == "Ship the operator-edited replacement objective"
+    }));
+    assert!(!rpc.iter().any(|request| {
+        matches!(
+            request["method"].as_str(),
+            Some("thread/goal/clear" | "thread/goal/set")
+        ) && request["params"]["threadId"] == fixture.session_id
+    }));
+
+    let accepted = fixture.run(&["--json"]);
+    assert_eq!(accepted.status.code(), Some(0), "{accepted:?}");
+    let accepted_document: Value =
+        serde_json::from_slice(&accepted.stdout).expect("accepted inspect JSON");
+    assert_eq!(accepted_document["goal_change"], Value::Null);
+    assert_eq!(
+        accepted_document["projection"]["goal"]["text"],
+        "Ship the operator-edited replacement objective"
+    );
+    assert_eq!(fixture.calls().len(), 2);
+    fixture.assert_unchanged();
+}
+
+#[test]
+fn retaining_the_current_goal_rejects_new_steering_and_continues_the_child() {
+    let mut fixture = Fixture::new(vec![base_proposal()]);
+    let first =
+        prepare_pending_goal_change(&mut fixture, "This replacement must be explicitly rejected");
+    let accepted_goal = first["projection"]["goal"]["text"]
+        .as_str()
+        .expect("accepted goal")
+        .to_owned();
+
+    let retained = fixture.run_continue(&["--retain-goal", "--json"]);
+    assert_eq!(retained.status.code(), Some(0), "{retained:?}");
+    let retained_document: Value =
+        serde_json::from_slice(&retained.stdout).expect("retained continuation JSON");
+    assert_eq!(retained_document["status"], "started");
+    assert_eq!(retained_document["goal"], accepted_goal);
+    assert!(fixture.rpc_calls().iter().any(|request| {
+        request["method"] == "thread/goal/set"
+            && request["params"]["threadId"] == "continued-child"
+            && request["params"]["objective"] == accepted_goal
+    }));
+
+    let inspected = fixture.run(&["--json"]);
+    assert_eq!(inspected.status.code(), Some(0), "{inspected:?}");
+    let inspected_document: Value =
+        serde_json::from_slice(&inspected.stdout).expect("retained inspect JSON");
+    assert_eq!(inspected_document["goal_change"], Value::Null);
+    assert_eq!(
+        inspected_document["projection"]["goal"]["text"],
+        accepted_goal
+    );
+    assert_eq!(fixture.calls().len(), 2);
     fixture.assert_unchanged();
 }
 
