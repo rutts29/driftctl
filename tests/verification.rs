@@ -128,6 +128,18 @@ fn distinguishes_command_failure_from_candidate_mutation_and_rejects_aggregate_i
     assert_eq!(failed_document["status"], "failed");
     assert_eq!(failed_document["exit_code"], 7);
 
+    let self_mutating = script(&root, "self-mutate.sh", "printf '# changed' >> \"$0\"");
+    let protected = run(
+        &root,
+        &candidate,
+        "intent-validation-protected",
+        &self_mutating,
+    );
+    assert_eq!(protected.status.code(), Some(2), "{protected:?}");
+    let protected_document: Value =
+        serde_json::from_slice(&protected.stdout).expect("protected-input JSON");
+    assert_eq!(protected_document["status"], "protected_input_changed");
+
     let mutating = script(&root, "mutate.sh", "printf changed > tracked.txt");
     let mutated = run(&root, &candidate, "intent-validation-3", &mutating);
     assert_eq!(mutated.status.code(), Some(2), "{mutated:?}");
@@ -156,6 +168,19 @@ fn distinguishes_command_failure_from_candidate_mutation_and_rejects_aggregate_i
         .expect("run aggregate rejection");
     assert_eq!(aggregate.status.code(), Some(1), "{aggregate:?}");
     assert!(String::from_utf8_lossy(&aggregate.stderr).contains("unsupported verify option"));
+
+    let inside_candidate = script(&candidate, "inside-verifier.sh", "exit 0");
+    let rejected = run(
+        &root,
+        &candidate,
+        "intent-validation-inside",
+        &inside_candidate,
+    );
+    assert_eq!(rejected.status.code(), Some(1), "{rejected:?}");
+    assert!(
+        String::from_utf8_lossy(&rejected.stderr)
+            .contains("verifier inputs must remain outside the candidate")
+    );
     assert_eq!(
         json!(failed_document["requirement_id"]),
         json!("intent-validation-2")
