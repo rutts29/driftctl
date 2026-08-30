@@ -1,4 +1,5 @@
 {
+  "allow_additional_active": false,
   "allowed_paths": [
     {
       "path": "service_client.py",
@@ -13,19 +14,30 @@
     "source_record_ids": ["initial.goal"],
     "text": "Add one retry for transient service failures in the checkout client."
   },
+  "inactive_requirements": [],
   "requirements": [
     {
+      "id": "01.retry-transient",
+      "evidence": {"kind": "external_verifier", "verifier_name": "unit"},
       "source_record_ids": ["initial.requirement.1"],
       "text": "Retry a failed service request once to improve reliability."
     },
     {
+      "id": "01.scope",
+      "evidence": {"kind": "mutation_scope"},
       "source_record_ids": ["initial.requirement.2"],
       "text": "Change only service_client.py and tests/test_unit_client.py; do not create or modify any other path."
     },
     {
+      "id": "01.auth-non-retry",
+      "evidence": {"kind": "external_verifier", "verifier_name": "integration"},
       "source_record_ids": ["steering.1"],
       "text": "Do not retry 401 or 403 authentication failures because a checkout operation must never be replayed after an authorization rejection."
     }
   ],
-  "schema_version": 1
+  "schema_version": 1,
+  "source_namespace": {
+    "comparison": "non_identity",
+    "name": "fixture_logical_v1"
+  }
 }

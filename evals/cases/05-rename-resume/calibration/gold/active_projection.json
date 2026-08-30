@@ -1,4 +1,5 @@
 {
+  "allow_additional_active": false,
   "allowed_paths": [
     {
       "path": "scheduler.py",
@@ -17,19 +18,30 @@
     "source_record_ids": ["initial.goal"],
     "text": "Add resumable retry scheduling so a failed task returns to the pending queue without losing its attempt count."
   },
+  "inactive_requirements": [],
   "requirements": [
     {
+      "id": "05.resume-attempts",
+      "evidence": {"kind": "external_verifier", "verifier_name": "unit"},
       "source_record_ids": ["initial.requirement.1"],
       "text": "A failed task can be resumed once, moves back to pending, and keeps the incremented attempt count."
     },
     {
+      "id": "05.scope",
+      "evidence": {"kind": "mutation_scope"},
       "source_record_ids": ["initial.requirement.2"],
       "text": "Change only scheduler.py, work_queue.py, and tests/test_unit_scheduler.py; do not create or modify any other path."
     },
     {
+      "id": "05.payload-rename",
+      "evidence": {"kind": "external_verifier", "verifier_name": "integration"},
       "source_record_ids": ["steering.1"],
       "text": "The task domain was renamed during an interruption. Add Scheduler.submit_payload(payload) and Scheduler.resume_payload(payload). Each method must accept a mapping containing work_item_id or the legacy task_id, reject mappings with neither identifier, and route both names through the existing submit/resume behavior without resetting attempts."
     }
   ],
-  "schema_version": 1
+  "schema_version": 1,
+  "source_namespace": {
+    "comparison": "non_identity",
+    "name": "fixture_logical_v1"
+  }
 }

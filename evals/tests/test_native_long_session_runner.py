@@ -13,6 +13,8 @@ import tempfile
 import textwrap
 import unittest
 
+from evals.runner.run_native_long_session import score_projection_fidelity
+
 ROOT = Path(__file__).resolve().parents[2]
 RUNNER = ROOT / "evals" / "runner" / "run_native_long_session.py"
 CASE = ROOT / "evals" / "cases" / "01-steering-retry"
@@ -52,6 +54,14 @@ class NativeLongSessionRunnerTests(unittest.TestCase):
             self.assertEqual(
                 result["statistical_claim"], "descriptive_only_no_significance"
             )
+            fidelity = result["projection_fidelity"]
+            self.assertEqual(
+                fidelity["method"], "strict_text_provenance_fidelity_v1"
+            )
+            self.assertEqual(fidelity["status"], "passed")
+            self.assertTrue(fidelity["overall_pass"])
+            self.assertEqual(fidelity["requirements"]["expected_count"], 3)
+            self.assertEqual(fidelity["requirements"]["matched_count"], 3)
             baseline = json.loads(outputs["baseline"].read_text(encoding="utf-8"))
             workflow = json.loads(outputs["workflow"].read_text(encoding="utf-8"))
             for arm, mode in ((baseline, "baseline"), (workflow, "workflow")):
@@ -82,6 +92,16 @@ class NativeLongSessionRunnerTests(unittest.TestCase):
                 )
                 self.assertEqual(len(arm["verifiers"]), 3)
                 self.assertTrue(all(item["passed"] for item in arm["verifiers"]))
+                self.assertEqual(
+                    [item["requirement_id"] for item in arm["requirement_evidence"]],
+                    ["01.retry-transient", "01.scope", "01.auth-non-retry"],
+                )
+                self.assertEqual(
+                    [item["evidence_kind"] for item in arm["requirement_evidence"]],
+                    ["external_verifier", "mutation_scope", "external_verifier"],
+                )
+                self.assertEqual(arm["requirement_pass_rate"], 1.0)
+                self.assertEqual(arm["review"]["status"], "not_evaluated")
                 self.assertTrue(
                     all(item["elapsed_ms"] == 1 for item in arm["verifiers"])
                 )
@@ -305,6 +325,17 @@ class NativeLongSessionRunnerTests(unittest.TestCase):
             prompt = control_turns[0]["params"]["input"][0]["text"]
             self.assertIn("Continue the task from this checkpoint", prompt)
             self.assertIn("Never retry 401 or 403", prompt)
+            invocations = read_json_lines(fixture / "codex-invocations.jsonl")
+            self.assertEqual(invocations[0], ["app-server", "--stdio"])
+            self.assertEqual(
+                invocations[1],
+                [
+                    "-c",
+                    'model_reasoning_effort="max"',
+                    "app-server",
+                    "--stdio",
+                ],
+            )
 
     def test_waits_for_plain_summary_control_terminal_notification(self) -> None:
         with temporary_fixture() as fixture:
@@ -324,6 +355,48 @@ class NativeLongSessionRunnerTests(unittest.TestCase):
                 outputs["plain_summary"].read_text(encoding="utf-8")
             )
             self.assertEqual(control["turn_status"], "completed")
+
+    def test_projection_fidelity_detects_superseded_intent_leakage(self) -> None:
+        gold = json.loads(
+            (
+                ROOT
+                / "evals/cases/02-steering-pagination/calibration/gold/active_projection.json"
+            ).read_text(encoding="utf-8")
+        )
+        active = [
+            {
+                "id": requirement["id"],
+                "text": requirement["text"],
+                "source_record_ids": ["native-record"],
+            }
+            for requirement in gold["requirements"]
+        ]
+        active.append(
+            {
+                "id": "leaked-old-rule",
+                "text": gold["inactive_requirements"][0]["text"],
+                "source_record_ids": ["native-old-record"],
+            }
+        )
+        observed = {
+            "schema_version": 1,
+            "goal": {
+                "text": gold["goal"]["text"],
+                "source_record_ids": ["native-goal-record"],
+            },
+            "preserve": [],
+            "frontier": active,
+            "validation": [],
+        }
+
+        fidelity = score_projection_fidelity(observed, gold, "sha256:gold")
+
+        self.assertEqual(fidelity["status"], "failed")
+        self.assertFalse(fidelity["inactive_requirements"]["passed"])
+        self.assertEqual(
+            fidelity["inactive_requirements"]["leaked_active_items"],
+            ["leaked-old-rule"],
+        )
 
     def test_accepts_a_source_turn_that_finished_before_interrupt(self) -> None:
         with temporary_fixture() as fixture:
@@ -377,6 +450,7 @@ def run_fixture(
     results = root / "results"
     environment = os.environ | {
         "FAKE_CODEX_REQUESTS": str(root / "codex-requests.jsonl"),
+        "FAKE_CODEX_INVOCATIONS": str(root / "codex-invocations.jsonl"),
         "FAKE_DRIFTCTL_REQUESTS": str(root / "driftctl-requests.jsonl"),
         "FAKE_BASELINE_CANDIDATE": str(root / "baseline-candidate"),
         "FAKE_WORKFLOW_CANDIDATE": str(root / "workflow-candidate"),
@@ -428,6 +502,9 @@ FAKE_CODEX = """\
 import json
 import os
 import sys
+
+with open(os.environ["FAKE_CODEX_INVOCATIONS"], "a", encoding="utf-8") as output:
+    output.write(json.dumps(sys.argv[1:]) + "\\n")
 
 turns_path = os.environ["FAKE_CODEX_REQUESTS"] + ".turns"
 try:
@@ -516,6 +593,20 @@ with open(os.environ["FAKE_DRIFTCTL_REQUESTS"], "a", encoding="utf-8") as output
 if arguments[0] == "inspect":
     print(json.dumps({
         "status": "usable",
+        "projection": {
+            "schema_version": 1,
+            "goal": {
+                "text": "Add one retry for transient service failures in the checkout client.",
+                "source_record_ids": ["native-goal"],
+            },
+            "preserve": [],
+            "frontier": [
+                {"id": "native-retry", "text": "Retry a failed service request once to improve reliability.", "source_record_ids": ["native-initial"]},
+                {"id": "native-scope", "text": "Change only service_client.py and tests/test_unit_client.py; do not create or modify any other path.", "source_record_ids": ["native-initial"]},
+                {"id": "native-auth", "text": "Do not retry 401 or 403 authentication failures because a checkout operation must never be replayed after an authorization rejection.", "source_record_ids": ["native-steering"]},
+            ],
+            "validation": [],
+        },
         "resolver": {
             "calls": 1,
             "elapsed_ms": 7,
