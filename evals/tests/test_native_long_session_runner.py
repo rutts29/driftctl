@@ -89,6 +89,7 @@ class NativeLongSessionRunnerTests(unittest.TestCase):
                     "thread/settings/update",
                 ],
             )
+            self.assertTrue(requests[0]["params"]["capabilities"]["experimentalApi"])
             self.assertIn("Goal:", requests[3]["params"]["input"][0]["text"])
             self.assertNotIn(
                 "Do not edit files", requests[3]["params"]["input"][0]["text"]
