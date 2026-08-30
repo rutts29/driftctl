@@ -1935,13 +1935,7 @@ fn validate_new_clause(operation: &OperationProposal) -> Result<(), ValidationFa
         return Err(ValidationFailure::EmptyClause);
     }
     match operation.operation {
-        OperationName::Add
-            if operation.target_key.is_empty()
-                && operation.intent_keys.is_empty()
-                && operation.alternatives.is_empty() =>
-        {
-            Ok(())
-        }
+        OperationName::Add if operation.alternatives.is_empty() => Ok(()),
         OperationName::Add => Err(ValidationFailure::AddIrrelevantFields),
         OperationName::Supersede
             if !operation.target_key.is_empty()
@@ -2282,6 +2276,38 @@ mod incremental_tests {
             "source_record_ids":[source_record],
             "alternatives":[],
         })
+    }
+
+    #[test]
+    fn initial_add_ignores_fields_that_have_no_add_semantics() {
+        let bundle = delta("item-1", "Add one bounded retry");
+        let proposal: ProjectionProposal = serde_json::from_value(json!({
+            "schema_version": 1,
+            "goal": {
+                "text": "Add one bounded retry",
+                "source_record_ids": ["item-1"]
+            },
+            "accounted_source_record_ids": ["item-1"],
+            "operations": [{
+                "operation": "add",
+                "key": "retry_once",
+                "kind": "constraint",
+                "text": "Retry a transient failure exactly once",
+                "target_key": "ignored_for_add",
+                "intent_keys": ["ignored_for_add"],
+                "source_record_ids": ["item-1"],
+                "alternatives": []
+            }]
+        }))
+        .unwrap();
+
+        let history = validate_proposal(&bundle, proposal).unwrap();
+        assert!(
+            history
+                .intents()
+                .values()
+                .any(|intent| intent.text == "Retry a transient failure exactly once")
+        );
     }
 
     #[test]
