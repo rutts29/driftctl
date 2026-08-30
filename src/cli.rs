@@ -28,6 +28,7 @@ Usage:\n\
   driftctl resume [--json]\n\
   driftctl inspect codex (--last | --session <id>) [--json] [--compactor luna|terra|sol] [--reasoning high|medium]\n\
   driftctl bundle --run <run-id> --json\n\
+  driftctl compare codex (--last | --session <id>) [--json]\n\
   driftctl continue codex (--last | --session <id>) [--approve-goal | --edit-goal <text> | --retain-goal | --cancel] [--json]\n\
   driftctl run codex\n\
   driftctl close";
@@ -86,6 +87,7 @@ pub fn execute(root: &Path, arguments: impl IntoIterator<Item = String>) -> CliO
         "status" | "resume" => status(root, &arguments),
         "inspect" => return inspect(root, &arguments),
         "bundle" => return bundle(root, &arguments),
+        "compare" => return compare_codex(root, &arguments),
         "continue" => return continue_codex(root, &arguments),
         "run" => run(root, &arguments),
         "close" => return close(root, &arguments),
@@ -480,6 +482,181 @@ fn bundle(root: &Path, arguments: &[String]) -> CliOutput {
     match serde_json::to_string(&output) {
         Ok(output) => CliOutput::success(output),
         Err(_) => CliOutput::error("could not serialize sanitized run bundle"),
+    }
+}
+
+fn compare_codex(root: &Path, arguments: &[String]) -> CliOutput {
+    let options = match parse_continue_arguments(arguments) {
+        Ok(options) if options.action.is_none() => options,
+        Ok(_) => return CliOutput::error("compare does not accept goal-decision options"),
+        Err(error) => return CliOutput::error(error.replace("continue", "compare")),
+    };
+    let inspect_arguments = options.inspect_arguments();
+    let inspection = inspect(root, &inspect_arguments);
+    if inspection.exit_code != 0 {
+        return inspection;
+    }
+    let document: Value = match serde_json::from_str(&inspection.stdout) {
+        Ok(document) => document,
+        Err(_) => return CliOutput::error("could not read inspect result before comparison"),
+    };
+    let Some(run_id) = document["run_id"].as_str() else {
+        return CliOutput::error("inspect result has no run ID");
+    };
+    let store = match RunStore::open_default(root, run_id) {
+        Ok(store) => store,
+        Err(error) => return CliOutput::error(error.to_string()),
+    };
+    let recovered = match store.recover() {
+        Ok(recovered) => recovered,
+        Err(error) => return CliOutput::error(error.to_string()),
+    };
+    let Some(cursor) = recovered.source_cursor.as_ref() else {
+        return CliOutput::error("stored inspect run has no accepted source cursor");
+    };
+    let imported = match codex_source::inspect(root, options.selection.as_borrowed()) {
+        Ok(imported) => imported,
+        Err(error) => return CliOutput::error(error.to_string()),
+    };
+    let source_bundle = match imported.neutral_bundle() {
+        Ok(bundle) => bundle,
+        Err(error) => return CliOutput::error(error.to_string()),
+    };
+    let observed_source = match InspectSource::from_bundle(&source_bundle) {
+        Ok(source) => source,
+        Err(error) => return CliOutput::error(error.to_string()),
+    };
+    if observed_source.run_id().as_str() != run_id
+        || observed_source.cursor().digest() != cursor.digest()
+    {
+        return CliOutput::blocked("source changed after inspect; inspect again before comparing");
+    }
+
+    let candidate_parent = store.path().join("comparisons");
+    if let Err(error) = create_private_directory(&candidate_parent) {
+        return CliOutput::error(error);
+    }
+    let pair = match crate::workspace::isolate_workspace(root, &candidate_parent) {
+        Ok(pair) => pair,
+        Err(error) => return CliOutput::error(error.to_string()),
+    };
+    let adapter = CodexChildAdapter::from_environment();
+    let goal = recovered.projection.goal.text.clone();
+    let baseline_request = match ChildForkRequest::new(
+        source_bundle.source().session_ref_private(),
+        pair.baseline().root(),
+        &goal,
+    ) {
+        Ok(request) => request,
+        Err(error) => return CliOutput::error(error.to_string()),
+    };
+    let workflow_request = match ChildForkRequest::new(
+        source_bundle.source().session_ref_private(),
+        pair.workflow().root(),
+        &goal,
+    ) {
+        Ok(request) => request,
+        Err(error) => return CliOutput::error(error.to_string()),
+    };
+    let baseline = match adapter.fork_and_migrate(baseline_request) {
+        Ok(migration) => migration,
+        Err(error) => return CliOutput::blocked(error.to_string()),
+    };
+    let workflow = match adapter.fork_and_migrate(workflow_request) {
+        Ok(migration) => migration,
+        Err(error) => return CliOutput::blocked(error.to_string()),
+    };
+    let neutral_prompt = "Continue the task from this checkpoint. Preserve existing behavior and complete the remaining work. Do not claim completion without running relevant validation.";
+    let baseline_turn = match ChildTurnRequest::without_projection(
+        baseline.child_id(),
+        baseline.child_cwd(),
+        neutral_prompt,
+    )
+    .and_then(|request| adapter.start_child_turn(request))
+    {
+        Ok(turn) => turn,
+        Err(error) => return CliOutput::blocked(error.to_string()),
+    };
+    let projection_context = match public_projection_context(&recovered) {
+        Ok(context) => context,
+        Err(error) => return CliOutput::error(error),
+    };
+    let workflow_turn = match ChildTurnRequest::new(
+        workflow.child_id(),
+        workflow.child_cwd(),
+        neutral_prompt,
+        projection_context,
+    )
+    .and_then(|request| adapter.start_child_turn(request))
+    {
+        Ok(turn) => turn,
+        Err(error) => return CliOutput::blocked(error.to_string()),
+    };
+    if let Err(error) = codex_source::verify_unchanged(root, &imported) {
+        return CliOutput::blocked(error.to_string());
+    }
+    let baseline_diff = match crate::workspace::candidate_diff(baseline.child_cwd()) {
+        Ok(diff) => diff,
+        Err(error) => return CliOutput::error(error.to_string()),
+    };
+    let workflow_diff = match crate::workspace::candidate_diff(workflow.child_cwd()) {
+        Ok(diff) => diff,
+        Err(error) => return CliOutput::error(error.to_string()),
+    };
+    let pair_completed = baseline_turn.completed() && workflow_turn.completed();
+    let output = json!({
+        "schema_version":1,
+        "status":if pair_completed { "completed" } else { "invalid_pair" },
+        "run_id":run_id,
+        "fairness":{
+            "starting_manifest_equal":pair.baseline().manifest() == pair.workflow().manifest(),
+            "neutral_prompt_equal":true,
+            "worker_policy":"inherited_from_parent",
+            "only_intended_input_difference":"workflow receives the bounded active-intent projection",
+        },
+        "baseline":{
+            "child_thread_id":baseline.child_id(),
+            "child_cwd":baseline.child_cwd(),
+            "turn_id":baseline_turn.turn_id(),
+            "turn_status":format!("{:?}", baseline_turn.status()).to_ascii_lowercase(),
+            "changed_paths":baseline_diff.changed_paths(),
+        },
+        "workflow":{
+            "child_thread_id":workflow.child_id(),
+            "child_cwd":workflow.child_cwd(),
+            "turn_id":workflow_turn.turn_id(),
+            "turn_status":format!("{:?}", workflow_turn.status()).to_ascii_lowercase(),
+            "changed_paths":workflow_diff.changed_paths(),
+        },
+        "source_unchanged":true,
+        "parent_unchanged":true,
+        "adoption":"none",
+    });
+    let exit_code = if pair_completed { 0 } else { 2 };
+    if options.json {
+        match serde_json::to_string(&output) {
+            Ok(stdout) => CliOutput {
+                exit_code,
+                stdout,
+                stderr: String::new(),
+            },
+            Err(_) => CliOutput::error("could not serialize comparison result"),
+        }
+    } else {
+        CliOutput {
+            exit_code,
+            stdout: format!(
+                "comparison {}: baseline {}, workflow {}; adoption: none",
+                if pair_completed {
+                    "completed"
+                } else {
+                    "invalid"
+                },
+                baseline_turn.turn_id(),
+                workflow_turn.turn_id(),
+            ),
+            stderr: String::new(),
+        }
     }
 }
 

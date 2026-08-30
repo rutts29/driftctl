@@ -7,7 +7,7 @@ use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use driftctl::workspace::{WorkspaceError, isolate_workspace};
+use driftctl::workspace::{WorkspaceError, candidate_diff, isolate_workspace};
 
 static TEMPORARY_DIRECTORY_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
@@ -160,6 +160,27 @@ fn isolates_an_equal_read_only_snapshot_with_dirty_untracked_ignored_and_symlink
         assert!(!root.join(".codex").exists());
         assert!(!root.join("evals/hidden-graders").exists());
     }
+    fs::write(
+        pair.baseline().root().join("tracked.txt"),
+        "candidate change\n",
+    )
+    .expect("change candidate tracked file");
+    fs::write(
+        pair.baseline().root().join("new.txt"),
+        "candidate addition\n",
+    )
+    .expect("add candidate file");
+    assert_eq!(
+        candidate_diff(pair.baseline().root())
+            .expect("read candidate diff")
+            .changed_paths(),
+        &["new.txt".to_owned(), "tracked.txt".to_owned()]
+    );
+    assert!(
+        candidate_diff(pair.workflow().root())
+            .expect("read unchanged candidate diff")
+            .is_empty()
+    );
 
     fs::remove_dir_all(root).expect("remove isolated test directory");
 }

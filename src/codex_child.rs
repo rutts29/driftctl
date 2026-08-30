@@ -94,7 +94,7 @@ pub struct ChildTurnRequest {
     child_thread_id: String,
     child_cwd: PathBuf,
     neutral_prompt: String,
-    projection: String,
+    projection: Option<String>,
 }
 
 impl ChildTurnRequest {
@@ -119,12 +119,37 @@ impl ChildTurnRequest {
             child_thread_id,
             child_cwd,
             neutral_prompt,
-            projection,
+            projection: Some(projection),
+        })
+    }
+
+    pub fn without_projection(
+        child_thread_id: impl Into<String>,
+        child_cwd: impl AsRef<Path>,
+        neutral_prompt: impl Into<String>,
+    ) -> Result<Self, ChildAdapterError> {
+        let child_thread_id = validate_identifier(child_thread_id.into(), "child thread ID")?;
+        let child_cwd = child_cwd.as_ref().canonicalize().map_err(|error| {
+            ChildAdapterError::protocol(format!("could not canonicalize child cwd: {error}"))
+        })?;
+        if !child_cwd.is_dir() {
+            return Err(ChildAdapterError::protocol(
+                "child cwd must be an existing directory",
+            ));
+        }
+        Ok(Self {
+            child_thread_id,
+            child_cwd,
+            neutral_prompt: validate_text(neutral_prompt.into(), "neutral prompt")?,
+            projection: None,
         })
     }
 
     fn text(&self) -> String {
-        format!("{}\n\n{}", self.neutral_prompt, self.projection)
+        self.projection.as_ref().map_or_else(
+            || self.neutral_prompt.clone(),
+            |projection| format!("{}\n\n{}", self.neutral_prompt, projection),
+        )
     }
 }
 
