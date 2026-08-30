@@ -106,6 +106,42 @@ pub struct ManifestDiff {
     changed_paths: Vec<String>,
 }
 
+/// Report tracked and nonignored untracked changes from a materialized
+/// candidate's clean checkpoint. Git metadata and ignored build output are
+/// outside this diff by design.
+pub fn candidate_diff(root: impl AsRef<Path>) -> Result<ManifestDiff, WorkspaceError> {
+    let root = root
+        .as_ref()
+        .canonicalize()
+        .map_err(|error| WorkspaceError::Io {
+            action: "canonicalize candidate root",
+            path: root.as_ref().to_path_buf(),
+            message: error.to_string(),
+        })?;
+    let output = git_output(
+        &root,
+        &["status", "--porcelain=v1", "-z", "--untracked-files=all"],
+        "read candidate diff",
+    )?;
+    let mut changed_paths = output
+        .split(|byte| *byte == 0)
+        .filter(|record| record.len() >= 4 && record.get(2) == Some(&b' '))
+        .map(|record| {
+            let path = std::str::from_utf8(&record[3..]).map_err(|_| {
+                WorkspaceError::InvalidSourcePath {
+                    path: PathBuf::from("<non-UTF-8 candidate path>"),
+                }
+            })?;
+            let path = PathBuf::from(path);
+            validate_relative_path(&path)?;
+            Ok(path.to_string_lossy().into_owned())
+        })
+        .collect::<Result<Vec<_>, WorkspaceError>>()?;
+    changed_paths.sort();
+    changed_paths.dedup();
+    Ok(ManifestDiff { changed_paths })
+}
+
 impl ManifestDiff {
     #[must_use]
     pub fn is_empty(&self) -> bool {

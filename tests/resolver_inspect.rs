@@ -76,18 +76,26 @@ if sys.argv[1:3] == ["app-server", "--stdio"]:
             result = json.loads(os.environ["DRIFTCTL_FAKE_READ"])
         elif method == "thread/goal/get":
             thread_id = request["params"]["threadId"]
-            if thread_id == "continued-child":
+            if thread_id.startswith("continued-child"):
                 result = {"goal": None if child_goal is None else {"threadId":thread_id,"objective":child_goal}}
             else:
                 result = json.loads(os.environ.get("DRIFTCTL_FAKE_GOAL", '{"goal":null}'))
         elif method == "thread/fork":
-            result = {"thread":{"id":"continued-child","cwd":request["params"]["cwd"],"ephemeral":False}}
-            if rpc_capture:
-                with open(rpc_capture + ".child", "w", encoding="utf-8") as child_file:
-                    json.dump(result["thread"], child_file)
+            children_path = rpc_capture + ".children"
+            try:
+                with open(children_path, encoding="utf-8") as child_file:
+                    children = json.load(child_file)
+            except FileNotFoundError:
+                children = {}
+            child_id = "continued-child" if not children else "continued-child-" + str(len(children) + 1)
+            result = {"thread":{"id":child_id,"cwd":request["params"]["cwd"],"ephemeral":False}}
+            children[child_id] = result["thread"]
+            with open(children_path, "w", encoding="utf-8") as child_file:
+                json.dump(children, child_file)
         elif method == "thread/resume":
-            with open(rpc_capture + ".child", encoding="utf-8") as child_file:
-                result = {"thread":json.load(child_file)}
+            with open(rpc_capture + ".children", encoding="utf-8") as child_file:
+                children = json.load(child_file)
+            result = {"thread":children[request["params"]["threadId"]]}
         elif method == "thread/goal/clear":
             child_goal = None
             result = {"cleared":True}
@@ -95,7 +103,7 @@ if sys.argv[1:3] == ["app-server", "--stdio"]:
             child_goal = request["params"]["objective"]
             result = {"goal":{"threadId":request["params"]["threadId"],"objective":child_goal}}
         elif method == "turn/start":
-            result = {"turn":{"id":"continued-turn","items":[],"status":"completed"}}
+            result = {"turn":{"id":"continued-turn-" + request["params"]["threadId"],"items":[],"status":"completed"}}
         else:
             print(json.dumps({"id":request["id"],"error":{"code":-32601,"message":"unexpected"}}), flush=True)
             continue
@@ -295,6 +303,17 @@ impl Fixture {
         command.output().expect("run driftctl continue")
     }
 
+    fn run_compare(&self, options: &[&str]) -> Output {
+        let mut arguments = vec!["compare", "codex", "--session", &self.session_id];
+        arguments.extend_from_slice(options);
+        let mut command = Command::new(env!("CARGO_BIN_EXE_driftctl"));
+        command.current_dir(&self.root).args(arguments);
+        for (name, value) in &self.environment {
+            command.env(name, value);
+        }
+        command.output().expect("run driftctl compare")
+    }
+
     fn calls(&self) -> Vec<Value> {
         fs::read_to_string(&self.capture)
             .expect("read exec capture")
@@ -463,6 +482,61 @@ fn inspect_persists_and_reuses_a_private_run_that_bundle_can_export() {
             "Driftctl state must not be group/world accessible"
         );
     }
+    fixture.assert_unchanged();
+}
+
+#[test]
+fn compare_runs_equal_isolated_children_with_only_the_projection_added() {
+    let fixture = Fixture::new(vec![base_proposal()]);
+    let compared = fixture.run_compare(&["--json"]);
+    assert_eq!(compared.status.code(), Some(0), "{compared:?}");
+    let document: Value = serde_json::from_slice(&compared.stdout).expect("comparison JSON");
+    assert_eq!(document["status"], "completed");
+    assert_eq!(document["fairness"]["starting_manifest_equal"], true);
+    assert_eq!(document["fairness"]["neutral_prompt_equal"], true);
+    assert_eq!(
+        document["fairness"]["worker_policy"],
+        "inherited_from_parent"
+    );
+    assert_eq!(document["baseline"]["turn_status"], "completed");
+    assert_eq!(document["workflow"]["turn_status"], "completed");
+    assert_eq!(document["baseline"]["changed_paths"], json!([]));
+    assert_eq!(document["workflow"]["changed_paths"], json!([]));
+    assert_ne!(
+        document["baseline"]["child_thread_id"],
+        document["workflow"]["child_thread_id"]
+    );
+    assert_eq!(document["source_unchanged"], true);
+    assert_eq!(document["parent_unchanged"], true);
+    assert_eq!(document["adoption"], "none");
+
+    let rpc = fixture.rpc_calls();
+    let turns = rpc
+        .iter()
+        .filter(|request| request["method"] == "turn/start")
+        .collect::<Vec<_>>();
+    assert_eq!(turns.len(), 2);
+    let baseline_text = turns[0]["params"]["input"][0]["text"]
+        .as_str()
+        .expect("baseline prompt");
+    let workflow_text = turns[1]["params"]["input"][0]["text"]
+        .as_str()
+        .expect("workflow prompt");
+    assert!(workflow_text.starts_with(baseline_text));
+    assert!(workflow_text.contains("\"goal\""));
+    assert!(workflow_text.contains("\"frontier\""));
+    assert!(!workflow_text.contains("private raw goal"));
+    for request in rpc.iter().filter(|request| {
+        matches!(
+            request["method"].as_str(),
+            Some("thread/fork" | "thread/resume" | "turn/start")
+        )
+    }) {
+        assert!(request["params"].get("model").is_none());
+        assert!(request["params"].get("effort").is_none());
+        assert!(request["params"].get("sandbox").is_none());
+    }
+    assert_eq!(fixture.calls().len(), 1);
     fixture.assert_unchanged();
 }
 
