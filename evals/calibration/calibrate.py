@@ -158,6 +158,7 @@ def generate_manifest(root: Path, manifest_path: Path) -> Path:
     cases = []
     for case_id in CASE_IDS:
         case_directory = case_root / case_id
+        write_source_bundle(case_directory)
         case = build_case_manifest(root, case_directory)
         cases.append(case)
     result: dict[str, Any] = {
@@ -202,6 +203,7 @@ def build_case_manifest(root: Path, case_directory: Path) -> dict[str, Any]:
     workspace = case_directory / workspace_path
     grader = case_directory / "steering"
     workspace_files = relative_files(workspace)
+    workspace_sha256 = fingerprint_tree(workspace, workspace_files)
     grader_files = relative_files(grader)
     gold_path = case_directory / "calibration" / "gold" / "active_projection.json"
     gold_projection = read_object(gold_path, "gold projection")
@@ -212,6 +214,13 @@ def build_case_manifest(root: Path, case_directory: Path) -> dict[str, Any]:
     if plain_summary != expected_summary + "\n":
         raise CalibrationError(
             f"case {case_id} plain summary does not match the approved gold facts"
+        )
+    source_bundle_path = case_directory / "calibration" / "gold" / "source_bundle.json"
+    source_bundle = read_object(source_bundle_path, "neutral source bundle")
+    expected_source_bundle = source_bundle_for_case(raw_case, workspace_sha256)
+    if source_bundle != expected_source_bundle:
+        raise CalibrationError(
+            f"case {case_id} neutral source bundle does not match its frozen contract"
         )
     canonical_facts = canonical_facts_for(gold_projection)
     reference_path = case_directory / "calibration" / "reference"
@@ -234,7 +243,10 @@ def build_case_manifest(root: Path, case_directory: Path) -> dict[str, Any]:
         ),
         "plain_summary_sha256": digest_text(plain_summary),
         "reference_artifact_sha256": fingerprint_tree(reference_path, reference_files),
-        "workspace_sha256": fingerprint_tree(workspace, workspace_files),
+        "source_bundle_sha256": fingerprint_paths(
+            source_bundle_path.parent, (source_bundle_path.name,)
+        ),
+        "workspace_sha256": workspace_sha256,
     }
     case = {
         "allowed_paths": allowed_paths,
@@ -243,6 +255,7 @@ def build_case_manifest(root: Path, case_directory: Path) -> dict[str, Any]:
             "known_bad": "calibration/known-bad",
             "plain_summary": "calibration/gold/plain_summary.txt",
             "reference": "calibration/reference",
+            "source_bundle": "calibration/gold/source_bundle.json",
         },
         "case_contract": {
             "fields": {
@@ -291,6 +304,92 @@ def build_case_manifest(root: Path, case_directory: Path) -> dict[str, Any]:
         },
     }
     return case
+
+
+def write_source_bundle(case_directory: Path) -> Path:
+    """Write the deterministic synthetic native-session input for one case."""
+
+    case_path = case_directory / "case.json"
+    raw_case = read_object(case_path, "case contract")
+    workspace_path = required_relative(raw_case, "workspace", case_path)
+    workspace = case_directory / workspace_path
+    workspace_sha256 = fingerprint_tree(workspace, relative_files(workspace))
+    bundle = source_bundle_for_case(raw_case, workspace_sha256)
+    output = case_directory / "calibration" / "gold" / "source_bundle.json"
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(
+        json.dumps(bundle, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    return output
+
+
+def source_bundle_for_case(
+    raw_case: Mapping[str, Any], workspace_sha256: str
+) -> dict[str, Any]:
+    """Derive a schema-v1 neutral bundle from a frozen synthetic case contract."""
+
+    case_id = required_manifest_string(raw_case, "id")
+    goal = required_manifest_string(raw_case, "goal")
+    initial_requirements = required_manifest_string_list(
+        raw_case, "initial_requirements"
+    )
+    steering = raw_case.get("steering")
+    if not isinstance(steering, list):
+        raise CalibrationError(f"case {case_id} steering must be an array")
+    initial_requirements_text = "\n".join(
+        f"- {requirement}" for requirement in initial_requirements
+    )
+    records = [
+        source_record(
+            "initial",
+            f"Goal:\n{goal}\n\nKnown requirements:\n{initial_requirements_text}",
+        )
+    ]
+    for index, item in enumerate(steering, start=1):
+        if not isinstance(item, Mapping):
+            raise CalibrationError(f"case {case_id} steering {index} is not an object")
+        requirement = required_manifest_string(item, "requirement")
+        records.append(
+            source_record(
+                f"steering-{index}",
+                f"Late steering {index}:\n- {requirement}",
+            )
+        )
+    source_hasher = hashlib.sha256()
+    for record in records:
+        source_hasher.update(record["id"].encode("utf-8"))
+        source_hasher.update(b"\0")
+        source_hasher.update(record["content_digest"].encode("utf-8"))
+        source_hasher.update(b"\0")
+    return {
+        "schema_version": 1,
+        "source": {
+            "provider": "codex",
+            "session_ref": f"synthetic-{case_id}",
+            "repository_digest": f"sha256:{workspace_sha256}",
+            "head": records[-1]["id"],
+            "digest": f"sha256:{source_hasher.hexdigest()}",
+        },
+        "native_goal": {"state": "absent"},
+        "records": records,
+    }
+
+
+def source_record(record_id: str, content: str) -> dict[str, str]:
+    """Build one normalized user record with the shipped Rust digest algorithm."""
+
+    content = content.replace("\r\n", "\n").replace("\r", "\n")
+    hasher = hashlib.sha256()
+    hasher.update(record_id.encode("utf-8"))
+    hasher.update(b"\0user\0")
+    hasher.update(content.encode("utf-8"))
+    return {
+        "id": record_id,
+        "role": "user",
+        "content": content,
+        "content_digest": f"sha256:{hasher.hexdigest()}",
+    }
 
 
 def check_manifest(root: Path, manifest_path: Path) -> dict[str, Any]:
@@ -603,6 +702,9 @@ def validate_case_fingerprints(root: Path, case: Mapping[str, Any]) -> None:
         "reference_artifact_sha256": artifact_fingerprint(
             case_directory, artifacts, "reference"
         ),
+        "source_bundle_sha256": file_artifact_fingerprint(
+            case_directory, artifacts, "source_bundle"
+        ),
         "workspace_sha256": fingerprint_tree(
             safe_join(case_directory, workspace_path, "workspace"), workspace_files
         ),
@@ -629,6 +731,15 @@ def validate_case_fingerprints(root: Path, case: Mapping[str, Any]) -> None:
         raise CalibrationError(f"case {case_id} neutral prompt hash drifted")
     if case.get("plain_summary_sha256") != digest_text(summary):
         raise CalibrationError(f"case {case_id} plain summary hash drifted")
+    source_bundle_path = safe_join(
+        case_directory, artifacts["source_bundle"], "neutral source bundle"
+    )
+    source_bundle = read_object(source_bundle_path, "neutral source bundle")
+    expected_source_bundle = source_bundle_for_case(
+        case_contract, actual["workspace_sha256"]
+    )
+    if source_bundle != expected_source_bundle:
+        raise CalibrationError(f"case {case_id} neutral source bundle drifted")
     projection = required_manifest_mapping(case, "gold_projection")
     validate_gold_projection(projection)
     gold_projection_path = safe_join(
@@ -687,6 +798,18 @@ def plain_summary_artifact_fingerprint(
     path = safe_join(case_directory, relative, "plain summary artifact")
     if path.is_dir():
         raise CalibrationError("plain summary artifact must be a regular file")
+    return fingerprint_paths(path.parent, (path.name,))
+
+
+def file_artifact_fingerprint(
+    case_directory: Path, artifacts: Mapping[str, Any], key: str
+) -> str:
+    """Fingerprint one regular-file artifact referenced by a manifest."""
+
+    relative = required_manifest_string(artifacts, key)
+    path = safe_join(case_directory, relative, f"{key} artifact")
+    if path.is_dir():
+        raise CalibrationError(f"{key} artifact must be a regular file")
     return fingerprint_paths(path.parent, (path.name,))
 
 
