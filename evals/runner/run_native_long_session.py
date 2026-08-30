@@ -43,6 +43,18 @@ DEFAULT_WORKER_MODEL = "gpt-5.6-luna"
 DEFAULT_WORKER_EFFORT = "max"
 
 
+class AppServerRequestError(RunnerError):
+    def __init__(self, method: str, reason: str = "rejected") -> None:
+        self.method = method
+        self.reason = reason
+        detail = (
+            ": no active turn to interrupt"
+            if reason == "no_active_turn"
+            else ": provider rejected request"
+        )
+        super().__init__(f"App Server {method} failed{detail}")
+
+
 class AppServer:
     def __init__(self, codex_bin: str) -> None:
         try:
@@ -91,10 +103,12 @@ class AppServer:
             error = response.get("error")
             if isinstance(error, Mapping):
                 message = error.get("message")
-                detail = (
-                    message if isinstance(message, str) else "provider rejected request"
+                reason = (
+                    "no_active_turn"
+                    if message == "no active turn to interrupt"
+                    else "rejected"
                 )
-                raise RunnerError(f"App Server {method} failed: {detail}")
+                raise AppServerRequestError(method, reason)
             result = response.get("result")
             if not isinstance(result, Mapping):
                 raise RunnerError(f"App Server {method} response has no object result")
@@ -123,8 +137,8 @@ class AppServer:
                 self.request(
                     "turn/interrupt", {"threadId": thread_id, "turnId": turn_id}
                 )
-            except RunnerError as error:
-                if not str(error).endswith("no active turn to interrupt"):
+            except AppServerRequestError as error:
+                if error.reason != "no_active_turn":
                     raise
         elif status not in {"completed", "interrupted"}:
             raise RunnerError(f"App Server {phase} turn ended with {status!r}")
@@ -132,9 +146,13 @@ class AppServer:
 
     def require_user_message_count(self, thread_id: str, expected: int) -> None:
         for _ in range(20):
-            result = self.request(
-                "thread/read", {"threadId": thread_id, "includeTurns": True}
-            )
+            try:
+                result = self.request(
+                    "thread/read", {"threadId": thread_id, "includeTurns": True}
+                )
+            except AppServerRequestError:
+                time.sleep(0.05)
+                continue
             thread = result.get("thread")
             turns = thread.get("turns") if isinstance(thread, Mapping) else None
             if isinstance(turns, list):
