@@ -31,6 +31,8 @@ import sys
 root = os.path.dirname(os.path.realpath(sys.argv[0]))
 with open(os.path.join(root, "fake-config.json"), encoding="utf-8") as file:
     config = json.load(file)
+with open(os.path.join(root, "argv.json"), "w", encoding="utf-8") as file:
+    json.dump(sys.argv[1:], file)
 capture = os.path.join(root, "requests.jsonl")
 scenario = config["scenario"]
 parent = "parent-thread"
@@ -149,6 +151,11 @@ fn captured_requests(root: &Path) -> Vec<Value> {
         .collect()
 }
 
+fn captured_arguments(root: &Path) -> Value {
+    serde_json::from_str(&fs::read_to_string(root.join("argv.json")).expect("read argv capture"))
+        .expect("captured argv JSON")
+}
+
 fn request(target: &Path, objective: &str) -> ChildForkRequest {
     ChildForkRequest::new("parent-thread", target, objective).expect("valid child request")
 }
@@ -171,6 +178,15 @@ fn creates_a_persisted_isolated_child_and_migrates_only_its_goal_transactionally
         child_cwd.canonicalize().expect("canonical cwd")
     );
     assert_eq!(outcome.child_goal().objective(), Some(objective));
+    assert_eq!(
+        captured_arguments(&root),
+        json!([
+            "-c",
+            "model_reasoning_effort=\"max\"",
+            "app-server",
+            "--stdio"
+        ])
+    );
 
     let requests = captured_requests(&root);
     let methods: Vec<_> = requests

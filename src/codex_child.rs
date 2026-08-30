@@ -287,7 +287,7 @@ impl CodexChildAdapter {
         &self,
         request: ChildForkRequest,
     ) -> Result<ChildMigration, ChildAdapterError> {
-        let mut server = AppServer::start(&self.program)?;
+        let mut server = AppServer::start(&self.program, &request.worker_policy)?;
         let result = (|| {
             server.initialize()?;
             let parent_goal = server.get_goal(&request.parent_thread_id)?;
@@ -325,7 +325,7 @@ impl CodexChildAdapter {
         &self,
         request: ChildTurnRequest,
     ) -> Result<ChildTurnStart, ChildAdapterError> {
-        let mut server = AppServer::start(&self.program)?;
+        let mut server = AppServer::start(&self.program, &request.worker_policy)?;
         let result = (|| {
             server.initialize()?;
             server.resume_child(&request)?;
@@ -355,8 +355,8 @@ struct AppServer {
 }
 
 impl AppServer {
-    fn start(program: &OsString) -> Result<Self, ChildAdapterError> {
-        let mut child = spawn_app_server(program).map_err(|error| {
+    fn start(program: &OsString, policy: &WorkerPolicy) -> Result<Self, ChildAdapterError> {
+        let mut child = spawn_app_server(program, policy).map_err(|error| {
             ChildAdapterError::protocol(format!("could not launch Codex App Server: {error}"))
         })?;
         let stdin = child
@@ -702,11 +702,12 @@ impl AppServer {
     }
 }
 
-fn spawn_app_server(program: &OsString) -> std::io::Result<Child> {
+fn spawn_app_server(program: &OsString, policy: &WorkerPolicy) -> std::io::Result<Child> {
     const MAX_ATTEMPTS: usize = 3;
+    let effort_override = format!("model_reasoning_effort={}", json!(policy.effort()));
     for attempt in 1..=MAX_ATTEMPTS {
         let result = Command::new(program)
-            .args(["app-server", "--stdio"])
+            .args(["-c", &effort_override, "app-server", "--stdio"])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
