@@ -34,6 +34,15 @@ class NativeLongSessionRunnerTests(unittest.TestCase):
                 self.assertTrue(arm["agent_succeeded"])
                 self.assertTrue(arm["native_checkpoint"]["source_workspace_clean"])
                 self.assertTrue(arm["native_checkpoint"]["injection"]["accepted"])
+                self.assertEqual(
+                    arm["worker_policy"],
+                    {
+                        "approval_policy": "never",
+                        "effort": "max",
+                        "model": "gpt-5.6-luna",
+                        "sandbox": "workspace-write",
+                    },
+                )
                 self.assertEqual(len(arm["verifiers"]), 3)
                 self.assertTrue(all(item["passed"] for item in arm["verifiers"]))
                 self.assertTrue(
@@ -83,6 +92,10 @@ class NativeLongSessionRunnerTests(unittest.TestCase):
                 "Do not edit files", requests[3]["params"]["input"][0]["text"]
             )
             self.assertIn("Late steering", requests[5]["params"]["input"][0]["text"])
+            self.assertEqual(requests[2]["params"]["model"], "gpt-5.6-luna")
+            self.assertEqual(requests[2]["params"]["effort"], "max")
+            self.assertEqual(requests[2]["params"]["sandbox"], "workspace-write")
+            self.assertEqual(requests[2]["params"]["approvalPolicy"], "never")
             commands = read_json_lines(fixture / "driftctl-requests.jsonl")
             self.assertEqual(
                 commands[0]["arguments"][:4],
