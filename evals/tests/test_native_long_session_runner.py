@@ -12,8 +12,13 @@ import sys
 import tempfile
 import textwrap
 import unittest
+from unittest import mock
 
-from evals.runner.run_native_long_session import score_projection_fidelity
+from evals.runner.run_native_long_session import (
+    load_case,
+    review_candidate,
+    score_projection_fidelity,
+)
 
 ROOT = Path(__file__).resolve().parents[2]
 RUNNER = ROOT / "evals" / "runner" / "run_native_long_session.py"
@@ -101,7 +106,14 @@ class NativeLongSessionRunnerTests(unittest.TestCase):
                     ["external_verifier", "mutation_scope", "external_verifier"],
                 )
                 self.assertEqual(arm["requirement_pass_rate"], 1.0)
-                self.assertEqual(arm["review"]["status"], "not_evaluated")
+                self.assertEqual(arm["review"]["status"], "completed")
+                self.assertTrue(arm["review"]["review_passed"])
+                self.assertTrue(arm["review"]["coverage_complete"])
+                self.assertEqual(arm["review"]["required_count"], 0)
+                self.assertTrue(arm["review"]["raw_private_retained"])
+                self.assertNotIn(
+                    "Authentication failures may be replayed.", json.dumps(arm["review"])
+                )
                 self.assertTrue(
                     all(item["elapsed_ms"] == 1 for item in arm["verifiers"])
                 )
@@ -212,9 +224,108 @@ class NativeLongSessionRunnerTests(unittest.TestCase):
             self.assertTrue((private_run / "source-workspace").is_dir())
             self.assertTrue((private_run / "state").is_dir())
             self.assertEqual(stat.S_IMODE((private_run / "tmp").stat().st_mode), 0o700)
+            review_private = list((private_run / "reviews").glob("review-*.jsonl"))
+            self.assertEqual(len(review_private), 2)
+            self.assertEqual(stat.S_IMODE((private_run / "reviews").stat().st_mode), 0o700)
+            self.assertTrue(
+                all(stat.S_IMODE(path.stat().st_mode) == 0o600 for path in review_private)
+            )
             self.assertTrue(
                 all(item["tmpdir"] == str(private_run / "tmp") for item in commands)
             )
+
+            review_calls = read_json_lines(fixture / "codex-exec.jsonl")
+            self.assertEqual(len(review_calls), 2)
+            for call in review_calls:
+                self.assertEqual(call["cwd"], call["candidate"])
+                self.assertEqual(call["arguments"][:10], [
+                    "-c",
+                    'model_reasoning_effort="max"',
+                    "-c",
+                    'approval_policy="never"',
+                    "exec",
+                    "--json",
+                    "--model",
+                    "gpt-5.6-luna",
+                    "--sandbox",
+                    "read-only",
+                ])
+                self.assertIn("--ephemeral", call["arguments"])
+                self.assertNotIn("baseline", call["prompt"])
+                self.assertNotIn("workflow", call["prompt"])
+                self.assertNotIn("Plain summary", call["prompt"])
+                self.assertNotIn("steering", call["prompt"])
+                self.assertNotIn("gold", call["prompt"])
+                self.assertNotIn("test_integration", call["prompt"])
+
+    def test_reviewer_timeout_fails_closed_and_retains_partial_output(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="driftctl-review-timeout-") as temporary:
+            root = Path(temporary)
+            candidate = root / "candidate"
+            candidate.mkdir()
+            (candidate / "service_client.py").write_text("# candidate\n", encoding="utf-8")
+            gold = json.loads(
+                (CASE / "calibration/gold/active_projection.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            timeout = subprocess.TimeoutExpired(
+                ["codex"], 600, output='{"partial":true}\n', stderr="timed out"
+            )
+            with mock.patch(
+                "evals.runner.run_native_long_session.subprocess.run",
+                side_effect=timeout,
+            ) as invoked:
+                review = review_candidate(
+                    "codex",
+                    candidate,
+                    load_case(CASE),
+                    gold,
+                    [],
+                    {
+                        "approval_policy": "never",
+                        "effort": "max",
+                        "model": "gpt-5.6-luna",
+                        "sandbox": "workspace-write",
+                    },
+                    {},
+                    root / "reviews",
+                )
+
+            self.assertEqual(invoked.call_args.kwargs["timeout"], 600)
+            self.assertEqual(review["status"], "invalid")
+            self.assertEqual(review["failure_kind"], "timeout")
+            self.assertTrue(review["candidate_unchanged"])
+            self.assertTrue(review["raw_private_retained"])
+
+    def test_required_review_finding_blocks_verified_completion(self) -> None:
+        with temporary_fixture() as fixture:
+            _, outputs = run_fixture(fixture, {"FAKE_REVIEW_REQUIRED": "1"})
+            for output in outputs.values():
+                arm = json.loads(output.read_text(encoding="utf-8"))
+                self.assertEqual(arm["review"]["status"], "completed")
+                self.assertFalse(arm["review"]["review_passed"])
+                self.assertEqual(arm["review"]["required_count"], 1)
+                self.assertFalse(arm["verified_completion"])
+                self.assertEqual(arm["status"], "completed")
+
+    def test_incomplete_reviewer_coverage_fails_closed(self) -> None:
+        with temporary_fixture() as fixture:
+            _, outputs = run_fixture(fixture, {"FAKE_REVIEW_INCOMPLETE": "1"})
+            for output in outputs.values():
+                arm = json.loads(output.read_text(encoding="utf-8"))
+                self.assertEqual(arm["review"]["status"], "invalid")
+                self.assertEqual(arm["review"]["failure_kind"], "coverage")
+                self.assertFalse(arm["verified_completion"])
+
+    def test_reviewer_candidate_mutation_fails_closed(self) -> None:
+        with temporary_fixture() as fixture:
+            _, outputs = run_fixture(fixture, {"FAKE_REVIEW_MUTATE": "1"})
+            for output in outputs.values():
+                arm = json.loads(output.read_text(encoding="utf-8"))
+                self.assertEqual(arm["review"]["status"], "invalid")
+                self.assertEqual(arm["review"]["failure_kind"], "candidate_mutated")
+                self.assertFalse(arm["verified_completion"])
 
     def test_continues_when_context_injection_is_not_supported(self) -> None:
         with temporary_fixture() as fixture:
@@ -325,7 +436,11 @@ class NativeLongSessionRunnerTests(unittest.TestCase):
             prompt = control_turns[0]["params"]["input"][0]["text"]
             self.assertIn("Continue the task from this checkpoint", prompt)
             self.assertIn("Never retry 401 or 403", prompt)
-            invocations = read_json_lines(fixture / "codex-invocations.jsonl")
+            invocations = [
+                invocation
+                for invocation in read_json_lines(fixture / "codex-invocations.jsonl")
+                if "app-server" in invocation
+            ]
             self.assertEqual(invocations[0], ["app-server", "--stdio"])
             self.assertEqual(
                 invocations[1],
@@ -434,7 +549,11 @@ class temporary_fixture:
             path.write_text(textwrap.dedent(contents), encoding="utf-8")
             path.chmod(path.stat().st_mode | stat.S_IXUSR)
         for name in ("baseline-candidate", "workflow-candidate"):
-            (root / name).mkdir()
+            candidate = root / name
+            candidate.mkdir()
+            (candidate / "service_client.py").write_text(
+                "# candidate fixture\n", encoding="utf-8"
+            )
         return root
 
     def __exit__(self, *_: object) -> None:
@@ -451,6 +570,7 @@ def run_fixture(
     environment = os.environ | {
         "FAKE_CODEX_REQUESTS": str(root / "codex-requests.jsonl"),
         "FAKE_CODEX_INVOCATIONS": str(root / "codex-invocations.jsonl"),
+        "FAKE_CODEX_EXEC": str(root / "codex-exec.jsonl"),
         "FAKE_DRIFTCTL_REQUESTS": str(root / "driftctl-requests.jsonl"),
         "FAKE_BASELINE_CANDIDATE": str(root / "baseline-candidate"),
         "FAKE_WORKFLOW_CANDIDATE": str(root / "workflow-candidate"),
@@ -501,10 +621,48 @@ FAKE_CODEX = """\
 #!/usr/bin/env python3
 import json
 import os
+from pathlib import Path
 import sys
 
 with open(os.environ["FAKE_CODEX_INVOCATIONS"], "a", encoding="utf-8") as output:
     output.write(json.dumps(sys.argv[1:]) + "\\n")
+
+if "exec" in sys.argv:
+    prompt = sys.argv[-1]
+    with open(os.environ["FAKE_CODEX_EXEC"], "a", encoding="utf-8") as output:
+        output.write(json.dumps({
+            "arguments": sys.argv[1:],
+            "candidate": os.getcwd(),
+            "cwd": os.getcwd(),
+            "prompt": prompt,
+        }) + "\\n")
+    if os.environ.get("FAKE_REVIEW_MUTATE"):
+        Path("reviewer-mutation.txt").write_text("mutated\\n", encoding="utf-8")
+    requirements = ["01.retry-transient", "01.scope", "01.auth-non-retry"]
+    if os.environ.get("FAKE_REVIEW_INCOMPLETE"):
+        requirements = requirements[:2]
+    findings = []
+    if os.environ.get("FAKE_REVIEW_REQUIRED"):
+        findings.append({
+            "id": "F-001",
+            "severity": "Required",
+            "requirement_ids": ["01.auth-non-retry"],
+            "category": "correctness",
+            "path": "service_client.py",
+            "line": 1,
+            "rationale": "Authentication failures may be replayed.",
+        })
+    review = {
+        "schema_version": 1,
+        "verdict": "fail" if findings else "pass",
+        "coverage": [{"requirement_id": item, "assessed": True} for item in requirements],
+        "findings": findings,
+    }
+    print(json.dumps({
+        "type": "item.completed",
+        "item": {"type": "agent_message", "text": json.dumps(review)},
+    }))
+    raise SystemExit(0)
 
 turns_path = os.environ["FAKE_CODEX_REQUESTS"] + ".turns"
 try:
