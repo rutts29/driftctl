@@ -102,6 +102,10 @@ class WorkflowRunnerTests(unittest.TestCase):
             captured = arguments.read_text(encoding="utf-8")
             self.assertEqual(calls.read_text(encoding="utf-8").splitlines(), ["1", "2"])
             self.assertIn("Retry a failed service request once", captured)
+            self.assertIn(
+                "Change only service_client.py and tests/test_unit_client.py",
+                captured,
+            )
             self.assertIn("Do not retry 401 or 403 authentication failures", captured)
             self.assertEqual(
                 [turn["phase"] for turn in result["turns"]],

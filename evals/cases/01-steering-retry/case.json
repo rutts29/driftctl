@@ -4,7 +4,8 @@
   "workspace": "workspace",
   "goal": "Add one retry for transient service failures in the checkout client.",
   "initial_requirements": [
-    "Retry a failed service request once to improve reliability."
+    "Retry a failed service request once to improve reliability.",
+    "Change only service_client.py and tests/test_unit_client.py; do not create or modify any other path."
   ],
   "steering": [
     {
