@@ -132,6 +132,31 @@ pub struct ChildForkRequest {
     worker_policy: WorkerPolicy,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PreservedForkRequest {
+    parent_thread_id: String,
+    isolated_cwd: PathBuf,
+    worker_policy: WorkerPolicy,
+}
+
+impl PreservedForkRequest {
+    pub fn new(
+        parent_thread_id: impl Into<String>,
+        isolated_cwd: impl AsRef<Path>,
+    ) -> Result<Self, ChildAdapterError> {
+        Ok(Self {
+            parent_thread_id: validate_identifier(parent_thread_id.into(), "parent thread ID")?,
+            isolated_cwd: canonical_child_cwd(isolated_cwd.as_ref())?,
+            worker_policy: WorkerPolicy::luna_max(),
+        })
+    }
+
+    pub fn with_worker_policy(mut self, worker_policy: WorkerPolicy) -> Self {
+        self.worker_policy = worker_policy;
+        self
+    }
+}
+
 impl ChildForkRequest {
     pub fn new(
         parent_thread_id: impl Into<String>,
@@ -139,16 +164,7 @@ impl ChildForkRequest {
         approved_objective: impl Into<String>,
     ) -> Result<Self, ChildAdapterError> {
         let parent_thread_id = validate_identifier(parent_thread_id.into(), "parent thread ID")?;
-        let isolated_cwd = isolated_cwd.as_ref().canonicalize().map_err(|error| {
-            ChildAdapterError::protocol(format!(
-                "could not canonicalize isolated child cwd: {error}"
-            ))
-        })?;
-        if !isolated_cwd.is_dir() {
-            return Err(ChildAdapterError::protocol(
-                "isolated child cwd must be an existing directory",
-            ));
-        }
+        let isolated_cwd = canonical_child_cwd(isolated_cwd.as_ref())?;
         let approved_objective = validate_objective(approved_objective.into())?;
         Ok(Self {
             parent_thread_id,
@@ -371,7 +387,11 @@ impl CodexChildAdapter {
         let result = (|| {
             server.initialize()?;
             let parent_goal = server.get_goal(&request.parent_thread_id)?;
-            let child = server.fork_persisted(&request)?;
+            let child = server.fork_persisted(
+                &request.parent_thread_id,
+                &request.isolated_cwd,
+                &request.worker_policy,
+            )?;
             server.set_worker_policy(&child.id, &child.cwd, &request.worker_policy)?;
             let initial_child_goal = match server.get_goal(&child.id) {
                 Ok(goal) => goal,
@@ -438,6 +458,43 @@ impl CodexChildAdapter {
             if parent_goal_after != parent_goal {
                 return Err(ChildAdapterError::protocol(
                     "parent goal changed while migrating the isolated child",
+                ));
+            }
+            Ok(ChildMigration {
+                parent_goal,
+                child_id: child.id,
+                child_cwd: child.cwd,
+                child_goal,
+            })
+        })();
+        server.stop();
+        result
+    }
+
+    pub fn fork_preserving_goal(
+        &self,
+        request: PreservedForkRequest,
+    ) -> Result<ChildMigration, ChildAdapterError> {
+        let mut server = AppServer::start(&self.program, &request.worker_policy)?;
+        let result = (|| {
+            server.initialize()?;
+            let parent_goal = server.get_goal(&request.parent_thread_id)?;
+            let child = server.fork_persisted(
+                &request.parent_thread_id,
+                &request.isolated_cwd,
+                &request.worker_policy,
+            )?;
+            server.set_worker_policy(&child.id, &child.cwd, &request.worker_policy)?;
+            let child_goal = server.get_goal(&child.id)?;
+            if child_goal != parent_goal {
+                return Err(ChildAdapterError::protocol(
+                    "forked child inherited goal does not exactly match the parent",
+                ));
+            }
+            let parent_goal_after = server.get_goal(&request.parent_thread_id)?;
+            if parent_goal_after != parent_goal {
+                return Err(ChildAdapterError::protocol(
+                    "parent goal changed while creating a goal-preserving child",
                 ));
             }
             Ok(ChildMigration {
@@ -563,15 +620,17 @@ impl AppServer {
 
     fn fork_persisted(
         &mut self,
-        request: &ChildForkRequest,
+        parent_thread_id: &str,
+        isolated_cwd: &Path,
+        worker_policy: &WorkerPolicy,
     ) -> Result<ForkedChild, ChildAdapterError> {
         let response = self.request(
             "thread/fork",
             json!({
-                "threadId": request.parent_thread_id,
-                "cwd": request.isolated_cwd,
+                "threadId": parent_thread_id,
+                "cwd": isolated_cwd,
                 "ephemeral": false,
-                "model": request.worker_policy.model,
+                "model": worker_policy.model,
                 "sandbox": "workspace-write",
                 "approvalPolicy": "never",
             }),
@@ -580,7 +639,7 @@ impl AppServer {
             ChildAdapterError::protocol("thread/fork response has no child thread")
         })?;
         let child_id = required_string(thread, "id", "thread/fork.result.thread")?;
-        if child_id == request.parent_thread_id {
+        if child_id == parent_thread_id {
             return Err(ChildAdapterError::protocol(
                 "thread/fork returned the parent instead of a distinct child",
             ));
@@ -591,14 +650,19 @@ impl AppServer {
             ));
         }
         let child_cwd = required_string(thread, "cwd", "thread/fork.result.thread")?;
-        if child_cwd != request.isolated_cwd.to_string_lossy() {
+        if child_cwd != isolated_cwd.to_string_lossy() {
             return Err(ChildAdapterError::protocol(
                 "thread/fork child cwd does not exactly match the requested isolated cwd",
             ));
         }
+        if thread.get("forkedFromId").and_then(Value::as_str) != Some(parent_thread_id) {
+            return Err(ChildAdapterError::protocol(
+                "thread/fork child lineage does not exactly match the requested parent",
+            ));
+        }
         Ok(ForkedChild {
             id: child_id,
-            cwd: request.isolated_cwd.clone(),
+            cwd: isolated_cwd.to_path_buf(),
         })
     }
 
@@ -934,6 +998,20 @@ fn parse_turn_status(
             "{location} is invalid"
         ))),
     }
+}
+
+fn canonical_child_cwd(path: &Path) -> Result<PathBuf, ChildAdapterError> {
+    let canonical = path.canonicalize().map_err(|error| {
+        ChildAdapterError::protocol(format!(
+            "could not canonicalize isolated child cwd: {error}"
+        ))
+    })?;
+    if !canonical.is_dir() {
+        return Err(ChildAdapterError::protocol(
+            "isolated child cwd must be an existing directory",
+        ));
+    }
+    Ok(canonical)
 }
 
 fn validate_identifier(value: String, label: &str) -> Result<String, ChildAdapterError> {

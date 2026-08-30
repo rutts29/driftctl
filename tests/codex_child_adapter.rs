@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use driftctl::codex_child::{
-    ChildForkRequest, ChildTurnRequest, CodexChildAdapter, ManualGoalState,
+    ChildForkRequest, ChildTurnRequest, CodexChildAdapter, ManualGoalState, PreservedForkRequest,
 };
 use serde_json::{Value, json};
 
@@ -58,7 +58,7 @@ for raw in sys.stdin:
     if method == "initialize":
         result = {"userAgent":"fake", "codexHome":"/not-used", "platformFamily":"unix", "platformOs":"linux"}
     elif method == "thread/fork":
-        result = {"thread": {"id": child if scenario != "wrong-child" else parent, "cwd": target_cwd if scenario != "wrong-cwd" else "/wrong", "ephemeral": scenario == "ephemeral"}}
+        result = {"thread": {"id": child if scenario != "wrong-child" else parent, "cwd": target_cwd if scenario != "wrong-cwd" else "/wrong", "ephemeral": scenario == "ephemeral", "forkedFromId": "wrong-parent" if scenario == "wrong-lineage" else parent}}
     elif method == "thread/resume":
         observed_model = "gpt-5.6-sol" if scenario == "policy-mismatch" else request["params"]["model"]
         result = {
@@ -93,7 +93,7 @@ for raw in sys.stdin:
                 result = {"wrong": None}
                 print(json.dumps({"id": request["id"], "result": result}), flush=True)
                 continue
-            objective = approved
+            objective = "different inherited objective" if scenario == "preserved-goal-mismatch" else approved
             if scenario == "mismatched-readback" and method == "thread/goal/get":
                 if child_gets > 1:
                     objective = "different objective"
@@ -163,6 +163,81 @@ fn captured_arguments(root: &Path) -> Value {
 
 fn request(target: &Path, objective: &str) -> ChildForkRequest {
     ChildForkRequest::new("parent-thread", target, objective).expect("valid child request")
+}
+
+fn preserved_request(target: &Path) -> PreservedForkRequest {
+    PreservedForkRequest::new("parent-thread", target).expect("valid preserved fork request")
+}
+
+#[test]
+fn creates_an_idle_persisted_fork_with_verified_lineage_and_preserved_goal() {
+    let root = temporary_directory("preserved-child-success");
+    let child_cwd = root.join("isolated-child");
+    fs::create_dir(&child_cwd).expect("create child fixture");
+    let adapter = configure_fake(&root, "preserve-success", &child_cwd, "parent objective");
+
+    let outcome = adapter
+        .fork_preserving_goal(preserved_request(&child_cwd))
+        .expect("preserved fork succeeds");
+    assert_eq!(outcome.parent_goal().objective(), Some("parent objective"));
+    assert_eq!(outcome.child_goal(), outcome.parent_goal());
+    assert_eq!(outcome.child_id(), "child-thread");
+    assert_eq!(
+        outcome.child_cwd(),
+        child_cwd.canonicalize().expect("canonical child cwd")
+    );
+
+    let requests = captured_requests(&root);
+    assert_eq!(
+        requests
+            .iter()
+            .map(|request| request["method"].as_str())
+            .collect::<Vec<_>>(),
+        vec![
+            Some("initialize"),
+            Some("initialized"),
+            Some("thread/goal/get"),
+            Some("thread/fork"),
+            Some("thread/settings/update"),
+            Some("thread/resume"),
+            Some("thread/goal/get"),
+            Some("thread/goal/get"),
+        ]
+    );
+    assert_eq!(requests[3]["params"]["threadId"], "parent-thread");
+    assert!(
+        !requests.iter().any(|request| matches!(
+            request["method"].as_str(),
+            Some("thread/goal/clear") | Some("thread/goal/set") | Some("turn/start")
+        )),
+        "preserved fork mutated a goal or started a turn"
+    );
+
+    fs::remove_dir_all(root).expect("remove test directory");
+}
+
+#[test]
+fn rejects_wrong_lineage_or_changed_inherited_goal_without_starting_a_turn() {
+    for scenario in ["wrong-lineage", "preserved-goal-mismatch"] {
+        let root = temporary_directory(&format!("preserved-child-{scenario}"));
+        let child_cwd = root.join("isolated-child");
+        fs::create_dir(&child_cwd).expect("create child fixture");
+        let adapter = configure_fake(&root, scenario, &child_cwd, "parent objective");
+
+        let error = adapter
+            .fork_preserving_goal(preserved_request(&child_cwd))
+            .expect_err("invalid preserved fork must fail");
+        assert!(
+            error.to_string().contains("lineage") || error.to_string().contains("inherited goal"),
+            "unexpected {scenario} error: {error}"
+        );
+        assert!(
+            !captured_requests(&root)
+                .iter()
+                .any(|request| request["method"] == "turn/start")
+        );
+        fs::remove_dir_all(root).expect("remove test directory");
+    }
 }
 
 #[test]
