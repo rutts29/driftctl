@@ -30,6 +30,7 @@ const THREAD_SOURCE_KINDS: [&str; 10] = [
 pub(crate) struct ImportedSession {
     session_id: String,
     repository_digest: String,
+    native_goal: NativeGoal,
     user_records: Vec<ImportedUserRecord>,
 }
 
@@ -68,9 +69,7 @@ impl ImportedSession {
             SourceProvider::Codex,
             &self.session_id,
             &self.repository_digest,
-            // GoalController observation is not integrated at the App Server
-            // intake boundary yet, so absence must not be inferred.
-            NativeGoal::Unknown,
+            self.native_goal.clone(),
             records,
         )
         .map_err(|error| SourceError::new(format!("invalid imported Codex bundle: {error}")))
@@ -144,7 +143,8 @@ pub(crate) fn inspect(
             SessionSelection::Explicit(id) => validate_explicit_session_id(id)?,
         };
         let thread = server.read_thread(&selected_id)?;
-        let imported = parse_imported_session(thread, canonical_root, &selected_id)?;
+        let native_goal = server.observe_goal(&selected_id)?;
+        let imported = parse_imported_session(thread, canonical_root, &selected_id, native_goal)?;
         // Convert at the provider boundary. This validates the exact neutral
         // handoff without classifying intent or changing public inspect output.
         imported.neutral_bundle()?;
@@ -152,6 +152,19 @@ pub(crate) fn inspect(
     })();
     server.stop();
     result
+}
+
+/// Re-import the exact selected parent after a paid resolver call and reject
+/// a stale result without exposing the private session locator.
+pub(crate) fn verify_unchanged(root: &Path, expected: &ImportedSession) -> Result<(), SourceError> {
+    let observed = inspect(root, SessionSelection::Explicit(&expected.session_id))?;
+    if &observed == expected {
+        Ok(())
+    } else {
+        Err(SourceError::new(
+            "Codex source session or native goal changed during inspect",
+        ))
+    }
 }
 
 fn validate_explicit_session_id(id: &str) -> Result<String, SourceError> {
@@ -284,6 +297,22 @@ impl AppServer {
                 "includeTurns": true,
             }),
         )
+    }
+
+    fn observe_goal(&mut self, thread_id: &str) -> Result<NativeGoal, SourceError> {
+        let response = match self.request(
+            "thread/goal/get",
+            json!({
+                "threadId": thread_id,
+            }),
+        ) {
+            Ok(response) => response,
+            Err(error) if error.to_string() == "Codex App Server rejected thread/goal/get" => {
+                return Ok(NativeGoal::Unknown);
+            }
+            Err(error) => return Err(error),
+        };
+        parse_native_goal(response, thread_id)
     }
 
     fn request(&mut self, method: &str, params: Value) -> Result<Value, SourceError> {
@@ -429,6 +458,7 @@ fn parse_imported_session(
     response: Value,
     canonical_root: &str,
     requested_id: &str,
+    native_goal: NativeGoal,
 ) -> Result<ImportedSession, SourceError> {
     let thread = response
         .get("thread")
@@ -471,8 +501,27 @@ fn parse_imported_session(
     Ok(ImportedSession {
         session_id: id,
         repository_digest: repository_digest(canonical_root),
+        native_goal,
         user_records,
     })
+}
+
+fn parse_native_goal(response: Value, requested_id: &str) -> Result<NativeGoal, SourceError> {
+    let Some(goal) = response.get("goal") else {
+        return Err(SourceError::new("thread/goal/get.result.goal is missing"));
+    };
+    if goal.is_null() {
+        return Ok(NativeGoal::Absent);
+    }
+    let thread_id = required_string(goal, "threadId", "thread/goal/get.result.goal")?;
+    if thread_id != requested_id {
+        return Err(SourceError::new(
+            "thread/goal/get returned a goal for a different session",
+        ));
+    }
+    let objective = required_text(goal, "objective", "thread/goal/get.result.goal")?;
+    NativeGoal::known(objective)
+        .map_err(|error| SourceError::new(format!("invalid Codex native goal: {error}")))
 }
 
 fn repository_digest(canonical_root: &str) -> String {

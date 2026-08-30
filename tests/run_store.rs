@@ -122,6 +122,55 @@ fn creates_and_reopens_an_xdg_local_run_without_storing_the_repository_path() {
 }
 
 #[test]
+fn creates_a_fresh_nested_state_root() {
+    let outer = temporary_directory("fresh-state-root");
+    let state_root = outer.join("missing/state/driftctl");
+    let repository = outer.join("repository");
+    fs::create_dir(&repository).expect("create repository");
+    let history = history();
+
+    let store = RunStore::create(
+        &state_root,
+        &repository,
+        "run_01",
+        &history,
+        &projection(&history),
+    )
+    .expect("create run under a previously absent state root");
+
+    assert!(store.path().is_dir());
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        for directory in [
+            state_root.as_path(),
+            store.path(),
+            &store.path().join("history"),
+        ] {
+            assert_eq!(
+                fs::metadata(directory).unwrap().permissions().mode() & 0o077,
+                0,
+                "private state directory: {}",
+                directory.display()
+            );
+        }
+        for file in [
+            store.path().join("projection.json"),
+            store.path().join("pending.jsonl"),
+        ] {
+            assert_eq!(
+                fs::metadata(&file).unwrap().permissions().mode() & 0o077,
+                0,
+                "private state file: {}",
+                file.display()
+            );
+        }
+    }
+    fs::remove_dir_all(outer).expect("remove isolated test directory");
+}
+
+#[test]
 fn derives_a_stable_repository_digest_and_rejects_path_like_run_ids() {
     let root = temporary_directory("identifiers");
     let repository = root.join("repository");

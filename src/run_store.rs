@@ -589,7 +589,7 @@ impl RunStore {
         History::replay(records)?;
 
         let pending = self.pending_path();
-        ensure_regular_or_missing(&pending)?;
+        ensure_private_regular_or_missing(&pending)?;
         let mut file = OpenOptions::new()
             .create(true)
             .append(true)
@@ -612,6 +612,8 @@ impl RunStore {
         let pending = self.read_pending()?;
         if !pending.is_empty() {
             let segment = self.history_path().join(segment_name(&pending)?);
+            // Presence is itself the immutable-history error; the existing
+            // segment is never opened or trusted on this write path.
             ensure_regular_or_missing(&segment)?;
             if segment.exists() {
                 return Err(RunStoreError::ImmutableHistorySegment { path: segment });
@@ -664,15 +666,17 @@ impl RunStore {
         let history = History::replay(all_records)?;
 
         let projection_path = self.projection_path();
-        ensure_regular(&projection_path)?;
+        ensure_private_regular(&projection_path)?;
         let contents = fs::read_to_string(&projection_path)
             .map_err(|error| io_error("read projection", &projection_path, error))?;
         let projection: ActiveProjection = serde_json::from_str(&contents)
             .map_err(|error| RunStoreError::Serialization(error.to_string()))?;
 
         let budget = projection.overflow.budget;
-        let accepted_projection = project(&accepted_history, budget)?;
-        let current_projection = project(&history, budget)?;
+        let mut accepted_projection = project(&accepted_history, budget)?;
+        accepted_projection.generated_by = projection.generated_by.clone();
+        let mut current_projection = project(&history, budget)?;
+        current_projection.generated_by = projection.generated_by.clone();
         if projection != accepted_projection && projection != current_projection {
             return Err(RunStoreError::ProjectionMismatch);
         }
@@ -686,7 +690,7 @@ impl RunStore {
 
     fn write_projection(&self, projection: &ActiveProjection) -> Result<(), RunStoreError> {
         let projection_path = self.projection_path();
-        ensure_regular_or_missing(&projection_path)?;
+        ensure_private_regular_or_missing(&projection_path)?;
         let bytes = serde_json::to_vec(projection)
             .map_err(|error| RunStoreError::Serialization(error.to_string()))?;
         let temporary = self.temporary_projection_path();
@@ -710,7 +714,7 @@ impl RunStore {
 
     fn read_history_segments(&self) -> Result<Vec<EventRecord>, RunStoreError> {
         let history = self.history_path();
-        ensure_directory(&history)?;
+        ensure_private_directory(&history)?;
         let mut paths = fs::read_dir(&history)
             .map_err(|error| io_error("read history directory", &history, error))?
             .map(|entry| {
@@ -729,7 +733,7 @@ impl RunStore {
             {
                 return Err(RunStoreError::InvalidStateComponent { path });
             }
-            ensure_regular(&path)?;
+            ensure_private_regular(&path)?;
             let input = fs::read_to_string(&path)
                 .map_err(|error| io_error("read history segment", &path, error))?;
             let segment_records = parse_jsonl(&input)?;
@@ -748,7 +752,7 @@ impl RunStore {
     fn read_pending(&self) -> Result<Vec<EventRecord>, RunStoreError> {
         let pending = self.pending_path();
         match fs::symlink_metadata(&pending) {
-            Ok(_) => ensure_regular(&pending)?,
+            Ok(_) => ensure_private_regular(&pending)?,
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
             Err(error) => return Err(io_error("inspect pending delta", &pending, error)),
         }
@@ -822,7 +826,10 @@ fn validate_projection(
     history: &History,
     projection: &ActiveProjection,
 ) -> Result<(), RunStoreError> {
-    let expected = project(history, projection.overflow.budget)?;
+    let mut expected = project(history, projection.overflow.budget)?;
+    // Resolver provenance is observational metadata, not folded intent. It
+    // survives persistence without weakening any semantic field comparison.
+    expected.generated_by = projection.generated_by.clone();
     if &expected == projection {
         Ok(())
     } else {
@@ -849,33 +856,32 @@ fn create_run_directory(path: &Path) -> Result<(), RunStoreError> {
         .ok_or_else(|| RunStoreError::InvalidStateComponent {
             path: path.to_path_buf(),
         })?;
-    ensure_directory(repositories.parent().ok_or_else(|| {
+    ensure_private_directory(repositories.parent().ok_or_else(|| {
         RunStoreError::InvalidStateComponent {
             path: path.to_path_buf(),
         }
     })?)?;
-    ensure_directory(repositories)?;
-    ensure_directory(path.parent().and_then(Path::parent).ok_or_else(|| {
+    ensure_private_directory(repositories)?;
+    ensure_private_directory(path.parent().and_then(Path::parent).ok_or_else(|| {
         RunStoreError::InvalidStateComponent {
             path: path.to_path_buf(),
         }
     })?)?;
-    ensure_directory(
-        path.parent()
-            .ok_or_else(|| RunStoreError::InvalidStateComponent {
-                path: path.to_path_buf(),
-            })?,
-    )?;
+    ensure_private_directory(path.parent().ok_or_else(|| {
+        RunStoreError::InvalidStateComponent {
+            path: path.to_path_buf(),
+        }
+    })?)?;
 
     match fs::create_dir(path) {
-        Ok(()) => {}
+        Ok(()) => set_private_directory_permissions(path)?,
         Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
             ensure_not_symlink(path)?;
             return Err(RunStoreError::RunAlreadyExists);
         }
         Err(error) => return Err(io_error("create run directory", path, error)),
     }
-    ensure_directory(&path.join(HISTORY_DIRECTORY))
+    ensure_private_directory(&path.join(HISTORY_DIRECTORY))
 }
 
 fn verify_run_directory(path: &Path) -> Result<(), RunStoreError> {
@@ -899,28 +905,32 @@ fn verify_run_directory(path: &Path) -> Result<(), RunStoreError> {
         .ok_or_else(|| RunStoreError::InvalidStateComponent {
             path: path.to_path_buf(),
         })?;
-    ensure_directory(state_root)?;
-    ensure_directory(repositories)?;
-    ensure_directory(repository)?;
-    ensure_directory(parent)?;
+    ensure_private_directory(state_root)?;
+    ensure_private_directory(repositories)?;
+    ensure_private_directory(repository)?;
+    ensure_private_directory(parent)?;
     match fs::symlink_metadata(path) {
-        Ok(_) => ensure_directory(path)?,
+        Ok(_) => ensure_private_directory(path)?,
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
             return Err(RunStoreError::RunNotFound);
         }
         Err(error) => return Err(io_error("inspect run directory", path, error)),
     }
-    ensure_directory(&path.join(HISTORY_DIRECTORY))
+    ensure_private_directory(&path.join(HISTORY_DIRECTORY))
 }
 
 fn acquire_lock(run_path: &Path) -> Result<File, RunStoreError> {
     let lock = run_path.join(LOCK_FILE);
-    ensure_regular_or_missing(&lock)?;
-    let file = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
+    ensure_private_regular_or_missing(&lock)?;
+    let mut options = OpenOptions::new();
+    options.read(true).write(true).create(true).truncate(false);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+
+        options.mode(0o600);
+    }
+    let file = options
         .open(&lock)
         .map_err(|error| io_error("open writer lock", &lock, error))?;
     match file.try_lock_exclusive() {
@@ -940,10 +950,33 @@ fn ensure_directory(path: &Path) -> Result<(), RunStoreError> {
             path: path.to_path_buf(),
         }),
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            if let Some(parent) = path.parent()
+                && parent != path
+            {
+                ensure_directory(parent)?;
+            }
             fs::create_dir(path).map_err(|error| io_error("create state directory", path, error))
         }
         Err(error) => Err(io_error("inspect state directory", path, error)),
     }
+}
+
+fn ensure_private_directory(path: &Path) -> Result<(), RunStoreError> {
+    ensure_directory(path)?;
+    set_private_directory_permissions(path)
+}
+
+#[cfg(unix)]
+fn set_private_directory_permissions(path: &Path) -> Result<(), RunStoreError> {
+    use std::os::unix::fs::PermissionsExt;
+
+    fs::set_permissions(path, fs::Permissions::from_mode(0o700))
+        .map_err(|error| io_error("set private state directory permissions", path, error))
+}
+
+#[cfg(not(unix))]
+fn set_private_directory_permissions(_path: &Path) -> Result<(), RunStoreError> {
+    Ok(())
 }
 
 fn ensure_not_symlink(path: &Path) -> Result<(), RunStoreError> {
@@ -1024,29 +1057,43 @@ fn write_new_file_bytes(
     action: &'static str,
 ) -> Result<(), RunStoreError> {
     ensure_regular_or_missing(path)?;
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(path)
-        .map_err(|error| {
-            if error.kind() == io::ErrorKind::AlreadyExists
-                && path
-                    .extension()
-                    .is_some_and(|extension| extension == "jsonl")
-            {
-                RunStoreError::ImmutableHistorySegment {
-                    path: path.to_path_buf(),
-                }
-            } else {
-                io_error(action, path, error)
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+
+        options.mode(0o600);
+    }
+    let mut file = options.open(path).map_err(|error| {
+        if error.kind() == io::ErrorKind::AlreadyExists
+            && path
+                .extension()
+                .is_some_and(|extension| extension == "jsonl")
+        {
+            RunStoreError::ImmutableHistorySegment {
+                path: path.to_path_buf(),
             }
-        })?;
+        } else {
+            io_error(action, path, error)
+        }
+    })?;
     file.write_all(contents)
         .map_err(|error| io_error(action, path, error))?;
     file.flush()
         .map_err(|error| io_error("flush state file", path, error))?;
     file.sync_all()
-        .map_err(|error| io_error("sync state file", path, error))
+        .map_err(|error| io_error("sync state file", path, error))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        fs::set_permissions(path, fs::Permissions::from_mode(0o600))
+            .map_err(|error| io_error("set private state permissions", path, error))?;
+        file.sync_all()
+            .map_err(|error| io_error("sync private state permissions", path, error))?;
+    }
+    Ok(())
 }
 
 fn write_new_private_file_bytes(
