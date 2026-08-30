@@ -32,6 +32,8 @@ class NativeLongSessionRunnerTests(unittest.TestCase):
                 self.assertEqual(arm["mode"], mode)
                 self.assertTrue(arm["verified_completion"])
                 self.assertTrue(arm["agent_succeeded"])
+                self.assertTrue(arm["scope"]["passed"])
+                self.assertEqual(arm["scope"]["unexpected_changed_paths"], [])
                 self.assertTrue(arm["native_checkpoint"]["source_workspace_clean"])
                 self.assertTrue(arm["native_checkpoint"]["injection"]["accepted"])
                 self.assertEqual(arm["native_checkpoint"]["source_user_turn_count"], 2)
@@ -143,6 +145,18 @@ class NativeLongSessionRunnerTests(unittest.TestCase):
             self.assertTrue(injection["attempted"])
             self.assertFalse(injection["accepted"])
             self.assertEqual(injection["reason"], "unsupported_or_rejected")
+
+    def test_scope_violation_blocks_verified_completion(self) -> None:
+        with temporary_fixture() as fixture:
+            _, outputs = run_fixture(fixture, {"FAKE_EXTRA_CHANGED_PATH": "tasks/plan.md"})
+            for output in outputs.values():
+                arm = json.loads(output.read_text(encoding="utf-8"))
+                self.assertFalse(arm["scope"]["passed"])
+                self.assertEqual(
+                    arm["scope"]["unexpected_changed_paths"], ["tasks/plan.md"]
+                )
+                self.assertFalse(arm["verified_completion"])
+                self.assertEqual(arm["status"], "completed")
 
     def test_accepts_a_source_turn_that_finished_before_interrupt(self) -> None:
         with temporary_fixture() as fixture:
@@ -291,9 +305,12 @@ arguments = sys.argv[1:]
 with open(os.environ["FAKE_DRIFTCTL_REQUESTS"], "a", encoding="utf-8") as output:
     output.write(json.dumps({"arguments": arguments, "tmpdir": os.environ.get("TMPDIR")}) + "\\n")
 if arguments[0] == "compare":
+    changed_paths = ["service_client.py"]
+    if os.environ.get("FAKE_EXTRA_CHANGED_PATH"):
+        changed_paths.append(os.environ["FAKE_EXTRA_CHANGED_PATH"])
     result = {
-        "baseline": {"child_thread_id": "baseline-child", "child_cwd": os.environ["FAKE_BASELINE_CANDIDATE"], "turn_status": "completed", "changed_paths": ["service_client.py"]},
-        "workflow": {"child_thread_id": "workflow-child", "child_cwd": os.environ["FAKE_WORKFLOW_CANDIDATE"], "turn_status": "completed", "changed_paths": ["service_client.py"]},
+        "baseline": {"child_thread_id": "baseline-child", "child_cwd": os.environ["FAKE_BASELINE_CANDIDATE"], "turn_status": "completed", "changed_paths": changed_paths},
+        "workflow": {"child_thread_id": "workflow-child", "child_cwd": os.environ["FAKE_WORKFLOW_CANDIDATE"], "turn_status": "completed", "changed_paths": changed_paths},
     }
     print(json.dumps(result))
     raise SystemExit(0)

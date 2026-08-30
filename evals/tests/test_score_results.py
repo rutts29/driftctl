@@ -34,6 +34,7 @@ class ScoreResultsTests(unittest.TestCase):
                         "cached_input_tokens": 4,
                         "output_tokens": 3,
                     },
+                    "scope": {"passed": True},
                     "verifiers": [{"name": "integration", "passed": False}],
                 },
             )
@@ -50,6 +51,7 @@ class ScoreResultsTests(unittest.TestCase):
                         "cached_input_tokens": 8,
                         "output_tokens": 5,
                     },
+                    "scope": {"passed": True},
                     "verifiers": [{"name": "integration", "passed": True}],
                 },
             )
@@ -95,6 +97,73 @@ class ScoreResultsTests(unittest.TestCase):
                 [("baseline", False), ("workflow", True)],
             )
             self.assertTrue(result["cases"][1]["agent_succeeded"])
+            self.assertTrue(result["cases"][1]["scope_passed"])
+
+    def test_scope_failure_overrides_explicit_verified_completion(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="driftctl-score-test-") as temporary:
+            result_path = Path(temporary) / "scope-failure.json"
+            self._write(
+                result_path,
+                {
+                    "mode": "workflow",
+                    "case_id": "scope-failure",
+                    "status": "verified",
+                    "elapsed_seconds": 1,
+                    "scope": {"passed": False},
+                    "token_usage": {},
+                    "verified_completion": True,
+                    "verifiers": [{"name": "integration", "passed": True}],
+                },
+            )
+
+            completed = subprocess.run(
+                [sys.executable, str(SCORER), str(result_path)],
+                cwd=REPOSITORY_ROOT,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            outcome = json.loads(completed.stdout)["cases"][0]
+            self.assertFalse(outcome["scope_passed"])
+            self.assertFalse(outcome["verified_completion"])
+
+    def test_rejects_missing_or_malformed_scope(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="driftctl-score-test-") as temporary:
+            directory = Path(temporary)
+            missing = directory / "missing-scope.json"
+            malformed = directory / "malformed-scope.json"
+            base = {
+                "mode": "baseline",
+                "case_id": "scope-case",
+                "status": "completed",
+                "elapsed_seconds": 1,
+                "token_usage": {},
+                "verifiers": [{"name": "integration", "passed": True}],
+            }
+            self._write(missing, base)
+            self._write(malformed, base | {"scope": {"passed": "yes"}})
+
+            missing_run = subprocess.run(
+                [sys.executable, str(SCORER), str(missing)],
+                cwd=REPOSITORY_ROOT,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            malformed_run = subprocess.run(
+                [sys.executable, str(SCORER), str(malformed)],
+                cwd=REPOSITORY_ROOT,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+
+            self.assertEqual(missing_run.returncode, 1)
+            self.assertIn("scope", json.loads(missing_run.stdout)["error"])
+            self.assertEqual(malformed_run.returncode, 1)
+            self.assertIn("scope", json.loads(malformed_run.stdout)["error"])
 
     def test_rejects_duplicate_case_and_malformed_result(self) -> None:
         with tempfile.TemporaryDirectory(prefix="driftctl-score-test-") as temporary:
@@ -107,6 +176,7 @@ class ScoreResultsTests(unittest.TestCase):
                 "case_id": "same",
                 "status": "completed",
                 "elapsed_seconds": 1,
+                "scope": {"passed": True},
                 "verifiers": [{"passed": True}],
             }
             self._write(first, content)

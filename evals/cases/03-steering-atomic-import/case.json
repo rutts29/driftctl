@@ -11,6 +11,10 @@
       "requirement": "Validate the complete import before mutating the store, raise ValueError for malformed rows or duplicate emails, and leave existing users exactly unchanged when any row is invalid."
     }
   ],
+  "allowed_changed_paths": [
+    "import_users.py",
+    "tests/test_unit_import.py"
+  ],
   "verifiers": [
     {
       "name": "unit",

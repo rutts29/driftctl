@@ -11,6 +11,10 @@
       "requirement": "Keep the caller's filters unchanged and suppress duplicate item IDs when pages overlap while preserving first-seen order."
     }
   ],
+  "allowed_changed_paths": [
+    "catalog_service.py",
+    "tests/test_unit_catalog.py"
+  ],
   "verifiers": [
     {
       "name": "unit",

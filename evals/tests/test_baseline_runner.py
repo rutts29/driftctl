@@ -5,12 +5,15 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import shutil
 import stat
 import subprocess
 import sys
 import tempfile
 import textwrap
 import unittest
+
+from evals.runner.run_baseline import RunnerError, load_case
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
@@ -20,6 +23,29 @@ CASE = REPOSITORY_ROOT / "evals" / "cases" / "01-steering-retry"
 
 class BaselineRunnerTests(unittest.TestCase):
     """Exercise fresh interrupted turns against a deterministic Codex substitute."""
+
+    def test_rejects_ambiguous_or_non_file_scope_paths(self) -> None:
+        invalid_values = (
+            [],
+            ["service_client.py", "service_client.py"],
+            ["../service_client.py"],
+            ["*.py"],
+            ["tests"],
+            ["missing.py"],
+        )
+        for value in invalid_values:
+            with self.subTest(value=value), tempfile.TemporaryDirectory(
+                prefix="driftctl-case-scope-test-"
+            ) as temporary:
+                case = Path(temporary) / "case"
+                shutil.copytree(CASE, case)
+                case_path = case / "case.json"
+                definition = json.loads(case_path.read_text(encoding="utf-8"))
+                definition["allowed_changed_paths"] = value
+                case_path.write_text(json.dumps(definition), encoding="utf-8")
+
+                with self.assertRaises(RunnerError):
+                    load_case(case)
 
     def test_runs_fresh_turn_after_interruption_then_verifies_workspace(self) -> None:
         with tempfile.TemporaryDirectory(prefix="driftctl-baseline-test-") as temporary:
@@ -65,6 +91,18 @@ class BaselineRunnerTests(unittest.TestCase):
             self.assertEqual(result["lost_steering_count"], 1)
             self.assertEqual(result["thread_id"], "fixture-thread")
             self.assertEqual(result["changed_paths"], ["service_client.py"])
+            self.assertEqual(
+                result["scope"],
+                {
+                    "allowed_changed_paths": [
+                        "service_client.py",
+                        "tests/test_unit_client.py",
+                    ],
+                    "passed": True,
+                    "unexpected_changed_paths": [],
+                },
+            )
+            self.assertTrue(result["verified_completion"])
             self.assertEqual(
                 result["trajectory_files"],
                 [

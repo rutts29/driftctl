@@ -72,6 +72,8 @@ class WorkflowRunnerTests(unittest.TestCase):
             self.assertEqual(result["case_id"], "01-steering-retry")
             self.assertEqual(result["mode"], "workflow")
             self.assertEqual(result["changed_paths"], ["service_client.py"])
+            self.assertTrue(result["scope"]["passed"])
+            self.assertEqual(result["scope"]["unexpected_changed_paths"], [])
             self.assertEqual(result["recovered_steering_count"], 1)
             self.assertEqual(result["status"], "verified")
             self.assertTrue(result["verified_completion"])

@@ -11,6 +11,11 @@
       "requirement": "The task domain was renamed during an interruption. Add Scheduler.submit_payload(payload) and Scheduler.resume_payload(payload). Each method must accept a mapping containing work_item_id or the legacy task_id, reject mappings with neither identifier, and route both names through the existing submit/resume behavior without resetting attempts."
     }
   ],
+  "allowed_changed_paths": [
+    "scheduler.py",
+    "tests/test_unit_scheduler.py",
+    "work_queue.py"
+  ],
   "verifiers": [
     {
       "name": "unit",
