@@ -9,7 +9,7 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
 use crate::intent_history::{SourceProvider, SourceRole};
-use crate::session_bundle::{BundleRecord, NeutralSessionBundle};
+use crate::session_bundle::{BundleRecord, NativeGoal, NeutralSessionBundle};
 
 const MAX_PROTOCOL_LINE_BYTES: usize = 1024 * 1024;
 const MAX_THREAD_LIST_PAGES: usize = 100;
@@ -64,10 +64,13 @@ impl ImportedSession {
             .map(|record| BundleRecord::new(&record.id, SourceRole::User, &record.text))
             .collect::<Result<Vec<_>, _>>()
             .map_err(|error| SourceError::new(format!("invalid imported Codex record: {error}")))?;
-        NeutralSessionBundle::from_records(
+        NeutralSessionBundle::from_records_with_native_goal(
             SourceProvider::Codex,
             &self.session_id,
             &self.repository_digest,
+            // GoalController observation is not integrated at the App Server
+            // intake boundary yet, so absence must not be inferred.
+            NativeGoal::Unknown,
             records,
         )
         .map_err(|error| SourceError::new(format!("invalid imported Codex bundle: {error}")))

@@ -18,6 +18,94 @@ pub const SESSION_BUNDLE_SCHEMA_VERSION: u32 = 1;
 const MAX_IDENTIFIER_BYTES: usize = 16 * 1024;
 const MAX_CONTENT_BYTES: usize = 1024 * 1024;
 
+/// The observed state of a provider-native goal at intake time.
+///
+/// `Unknown` is distinct from `Absent`: it means the provider goal has not
+/// been observed. Only `Known` carries goal text.
+#[derive(Clone, Eq, PartialEq, Serialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum NativeGoal {
+    Known { text: String },
+    Absent,
+    Unknown,
+}
+
+impl NativeGoal {
+    pub fn known(text: impl Into<String>) -> Result<Self, SessionBundleError> {
+        let text = text.into();
+        validate_native_goal_text(&text)?;
+        Ok(Self::Known { text })
+    }
+
+    #[must_use]
+    pub fn state(&self) -> &'static str {
+        match self {
+            Self::Known { .. } => "known",
+            Self::Absent => "absent",
+            Self::Unknown => "unknown",
+        }
+    }
+
+    #[must_use]
+    pub fn text(&self) -> Option<&str> {
+        match self {
+            Self::Known { text } => Some(text),
+            Self::Absent | Self::Unknown => None,
+        }
+    }
+
+    fn validate(&self) -> Result<(), SessionBundleError> {
+        if let Self::Known { text } = self {
+            validate_native_goal_text(text)?;
+        }
+        Ok(())
+    }
+}
+
+impl fmt::Debug for NativeGoal {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("NativeGoal")
+            .field("state", &self.state())
+            .finish()
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WireNativeGoal {
+    state: String,
+    #[serde(default)]
+    text: Option<Option<String>>,
+}
+
+impl<'de> Deserialize<'de> for NativeGoal {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let wire = WireNativeGoal::deserialize(deserializer)?;
+        let native_goal = match (wire.state.as_str(), wire.text) {
+            ("known", Some(Some(text))) => NativeGoal::Known { text },
+            ("absent", None) => NativeGoal::Absent,
+            ("unknown", None) => NativeGoal::Unknown,
+            ("known", _) => {
+                return Err(serde::de::Error::custom(
+                    "native_goal known state requires text",
+                ));
+            }
+            ("absent" | "unknown", _) => {
+                return Err(serde::de::Error::custom(
+                    "native_goal text is only allowed for known state",
+                ));
+            }
+            _ => return Err(serde::de::Error::custom("unsupported native_goal state")),
+        };
+        native_goal.validate().map_err(serde::de::Error::custom)?;
+        Ok(native_goal)
+    }
+}
+
 /// The private provenance shared by every record in a bundle.
 #[derive(Clone, Eq, PartialEq, Serialize)]
 pub struct BundleSource {
@@ -140,6 +228,7 @@ impl fmt::Debug for BundleRecord {
 pub struct NeutralSessionBundle {
     schema_version: u32,
     source: BundleSource,
+    native_goal: NativeGoal,
     records: Vec<BundleRecord>,
 }
 
@@ -151,7 +240,25 @@ impl NeutralSessionBundle {
         repository_digest: impl Into<String>,
         records: Vec<BundleRecord>,
     ) -> Result<Self, SessionBundleError> {
+        Self::from_records_with_native_goal(
+            provider,
+            session_ref,
+            repository_digest,
+            NativeGoal::Unknown,
+            records,
+        )
+    }
+
+    /// Builds a bundle with an already-observed native goal state.
+    pub fn from_records_with_native_goal(
+        provider: SourceProvider,
+        session_ref: impl Into<String>,
+        repository_digest: impl Into<String>,
+        native_goal: NativeGoal,
+        records: Vec<BundleRecord>,
+    ) -> Result<Self, SessionBundleError> {
         validate_records(&records)?;
+        native_goal.validate()?;
         let session_ref = session_ref.into();
         let repository_digest = repository_digest.into();
         validate_identifier(&session_ref, "source session_ref")?;
@@ -170,6 +277,7 @@ impl NeutralSessionBundle {
         Ok(Self {
             schema_version: SESSION_BUNDLE_SCHEMA_VERSION,
             source,
+            native_goal,
             records,
         })
     }
@@ -189,6 +297,11 @@ impl NeutralSessionBundle {
     #[must_use]
     pub fn source(&self) -> &BundleSource {
         &self.source
+    }
+
+    #[must_use]
+    pub fn native_goal(&self) -> &NativeGoal {
+        &self.native_goal
     }
 
     #[must_use]
@@ -240,6 +353,7 @@ impl NeutralSessionBundle {
             repository_digest: self.source.repository_digest.clone(),
             source_head: self.source.head.clone(),
             source_digest: self.source.digest.clone(),
+            native_goal_state: self.native_goal.state(),
             record_count: self.records.len(),
             authoritative_user_record_count: self.authoritative_records().len(),
         }
@@ -252,6 +366,7 @@ impl fmt::Debug for NeutralSessionBundle {
             .debug_struct("NeutralSessionBundle")
             .field("schema_version", &self.schema_version)
             .field("source", &self.source)
+            .field("native_goal", &self.native_goal)
             .field("record_count", &self.records.len())
             .field(
                 "authoritative_user_record_count",
@@ -269,6 +384,7 @@ pub struct SanitizedBundleSummary {
     repository_digest: String,
     source_head: String,
     source_digest: String,
+    native_goal_state: &'static str,
     record_count: usize,
     authoritative_user_record_count: usize,
 }
@@ -277,12 +393,13 @@ impl fmt::Display for SanitizedBundleSummary {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             formatter,
-            "schema_version: {}\nprovider: {:?}\nrepository_digest: {}\nsource_head: {}\nsource_digest: {}\nrecords: {}\nauthoritative_user_records: {}",
+            "schema_version: {}\nprovider: {:?}\nrepository_digest: {}\nsource_head: {}\nsource_digest: {}\nnative_goal_state: {}\nrecords: {}\nauthoritative_user_records: {}",
             self.schema_version,
             self.provider,
             self.repository_digest,
             self.source_head,
             self.source_digest,
+            self.native_goal_state,
             self.record_count,
             self.authoritative_user_record_count,
         )
@@ -343,6 +460,7 @@ impl std::error::Error for SessionBundleError {}
 struct WireBundle {
     schema_version: u32,
     source: WireSource,
+    native_goal: NativeGoal,
     records: Vec<WireRecord>,
 }
 
@@ -382,6 +500,7 @@ impl TryFrom<WireBundle> for NeutralSessionBundle {
         if wire.schema_version != SESSION_BUNDLE_SCHEMA_VERSION {
             return Err(SessionBundleError::UnsupportedSchema(wire.schema_version));
         }
+        wire.native_goal.validate()?;
         validate_identifier(&wire.source.session_ref, "source session_ref")?;
         validate_sha256(&wire.source.repository_digest, "source repository_digest")?;
         validate_identifier(&wire.source.head, "source head")?;
@@ -428,6 +547,7 @@ impl TryFrom<WireBundle> for NeutralSessionBundle {
                 head: wire.source.head,
                 digest: wire.source.digest,
             },
+            native_goal: wire.native_goal,
             records,
         })
     }
@@ -459,6 +579,13 @@ fn validate_identifier(value: &str, field: &'static str) -> Result<(), SessionBu
 fn validate_content(value: &str) -> Result<(), SessionBundleError> {
     if value.is_empty() || value.len() > MAX_CONTENT_BYTES || value.contains('\0') {
         return Err(SessionBundleError::InvalidField("record content"));
+    }
+    Ok(())
+}
+
+fn validate_native_goal_text(value: &str) -> Result<(), SessionBundleError> {
+    if value.is_empty() || value.len() > MAX_CONTENT_BYTES || value.contains('\0') {
+        return Err(SessionBundleError::InvalidField("native_goal text"));
     }
     Ok(())
 }
