@@ -245,6 +245,69 @@ class NativeLongSessionRunnerTests(unittest.TestCase):
             ):
                 run_fixture(fixture, {"FAKE_UNEQUAL_MANIFEST": "1"})
 
+    def test_runs_one_information_matched_plain_summary_control(self) -> None:
+        with temporary_fixture() as fixture:
+            case = fixture / "case"
+            shutil.copytree(CASE, case)
+            summary = case / "plain-summary.txt"
+            summary.write_text(
+                "Retry transient service failures once. Never retry 401 or 403.\n",
+                encoding="utf-8",
+            )
+
+            result, outputs = run_fixture(
+                fixture,
+                case=case,
+                plain_summary_file=summary,
+            )
+
+            self.assertEqual(
+                set(result["result_files"]),
+                {"baseline", "plain_summary", "workflow"},
+            )
+            control = json.loads(
+                outputs["plain_summary"].read_text(encoding="utf-8")
+            )
+            self.assertEqual(control["mode"], "plain_summary")
+            self.assertTrue(control["verified_completion"])
+            self.assertEqual(control["control_context"]["kind"], "flat_plain_summary")
+            self.assertEqual(
+                control["control_context"]["sha256"],
+                "sha256:13d27fea77ce8815376f260447b03592d3064e9b8b18c16939bd91bde10cf5e8",
+            )
+            self.assertNotIn(summary.read_text(encoding="utf-8"), json.dumps(control))
+
+            requests = read_json_lines(fixture / "codex-requests.jsonl")
+            control_turns = [
+                request
+                for request in requests
+                if request.get("method") == "turn/start"
+                and request.get("params", {}).get("threadId") == "summary-child"
+            ]
+            self.assertEqual(len(control_turns), 1)
+            prompt = control_turns[0]["params"]["input"][0]["text"]
+            self.assertIn("Continue the task from this checkpoint", prompt)
+            self.assertIn("Never retry 401 or 403", prompt)
+
+    def test_waits_for_plain_summary_control_terminal_notification(self) -> None:
+        with temporary_fixture() as fixture:
+            case = fixture / "case"
+            shutil.copytree(CASE, case)
+            summary = case / "plain-summary.txt"
+            summary.write_text("Preserve all active constraints.\n", encoding="utf-8")
+
+            _, outputs = run_fixture(
+                fixture,
+                {"FAKE_SUMMARY_IN_PROGRESS": "1"},
+                case,
+                summary,
+            )
+
+            control = json.loads(
+                outputs["plain_summary"].read_text(encoding="utf-8")
+            )
+            self.assertEqual(control["turn_status"], "completed")
+
     def test_accepts_a_source_turn_that_finished_before_interrupt(self) -> None:
         with temporary_fixture() as fixture:
             result, outputs = run_fixture(fixture, {"FAKE_NO_ACTIVE_TURN": "1"})
@@ -292,6 +355,7 @@ def run_fixture(
     root: Path,
     extra: dict[str, str] | None = None,
     case: Path = CASE,
+    plain_summary_file: Path | None = None,
 ) -> tuple[dict[str, object], dict[str, Path]]:
     results = root / "results"
     environment = os.environ | {
@@ -302,8 +366,7 @@ def run_fixture(
     }
     if extra:
         environment.update(extra)
-    completed = subprocess.run(
-        [
+    arguments = [
             sys.executable,
             str(RUNNER),
             "--case",
@@ -318,7 +381,11 @@ def run_fixture(
             "64",
             "--artifacts",
             str(root / "artifacts"),
-        ],
+        ]
+    if plain_summary_file is not None:
+        arguments.extend(["--plain-summary-file", str(plain_summary_file)])
+    completed = subprocess.run(
+        arguments,
         cwd=ROOT,
         env=environment,
         capture_output=True,
@@ -345,7 +412,14 @@ import json
 import os
 import sys
 
-turns = []
+turns_path = os.environ["FAKE_CODEX_REQUESTS"] + ".turns"
+try:
+    with open(turns_path, encoding="utf-8") as source:
+        turns = json.load(source)
+except FileNotFoundError:
+    turns = []
+child_cwd = None
+child_goal = None
 read_count = 0
 for raw in sys.stdin:
     request = json.loads(raw)
@@ -359,8 +433,13 @@ for raw in sys.stdin:
     elif method == "thread/start":
         result = {"thread": {"id": "source-thread", "cwd": request["params"]["cwd"], "ephemeral": False}}
     elif method == "turn/start":
-        turns.append({"items": [{"type": "userMessage", "content": request["params"]["input"]}]})
-        result = {"turn": {"id": "source-" + str(request["id"]), "status": "inProgress"}}
+        if request["params"]["threadId"] == "source-thread":
+            turns.append({"items": [{"type": "userMessage", "content": request["params"]["input"]}]})
+            with open(turns_path, "w", encoding="utf-8") as output:
+                json.dump(turns, output)
+            result = {"turn": {"id": "source-" + str(request["id"]), "status": "inProgress"}}
+        else:
+            result = {"turn": {"id": "summary-turn", "status": "inProgress" if os.environ.get("FAKE_SUMMARY_IN_PROGRESS") else "completed"}}
     elif method == "turn/interrupt":
         if os.environ.get("FAKE_NO_ACTIVE_TURN"):
             print(json.dumps({"id": request["id"], "error": {"message": "no active turn to interrupt"}}), flush=True)
@@ -378,10 +457,34 @@ for raw in sys.stdin:
             continue
         retained = turns[:1] if os.environ.get("FAKE_MISSING_SECOND_USER") and len(turns) == 2 else turns
         result = {"thread": {"id": "source-thread", "turns": retained}}
+    elif method == "thread/fork":
+        child_cwd = request["params"]["cwd"]
+        result = {"thread": {"id": "summary-child", "cwd": request["params"]["cwd"], "ephemeral": False}}
+    elif method == "thread/goal/get":
+        result = {"goal": None if child_goal is None else {"threadId": "summary-child", "objective": child_goal}}
+    elif method == "thread/goal/clear":
+        child_goal = None
+        result = {"cleared": True}
+    elif method == "thread/goal/set":
+        child_goal = request["params"]["objective"]
+        result = {"goal": {"threadId": "summary-child", "objective": child_goal}}
+    elif method == "thread/settings/update":
+        result = {}
+    elif method == "thread/resume":
+        result = {
+            "approvalPolicy": request["params"]["approvalPolicy"],
+            "cwd": child_cwd,
+            "model": request["params"]["model"],
+            "reasoningEffort": "max",
+            "sandbox": {"type": "workspaceWrite"},
+            "thread": {"id": "summary-child", "cwd": child_cwd, "ephemeral": False},
+        }
     else:
         print(json.dumps({"id": request["id"], "error": {"message": "unexpected"}}), flush=True)
         continue
     print(json.dumps({"id": request["id"], "result": result}), flush=True)
+    if method == "turn/start" and request["params"]["threadId"] == "summary-child" and os.environ.get("FAKE_SUMMARY_IN_PROGRESS"):
+        print(json.dumps({"method": "turn/completed", "params": {"threadId": "summary-child", "turn": {"id": "summary-turn", "status": "completed"}}}), flush=True)
 """
 
 FAKE_DRIFTCTL = """\
