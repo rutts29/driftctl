@@ -35,7 +35,7 @@ NEUTRAL_CONTINUATION_PROMPT = (
 
 EVALUATION_POLICY = {
     "approval_policy": "never",
-    "context_bytes": 32768,
+    "context_bytes": 131072,
     "effort": "max",
     "model": "gpt-5.6-luna",
     "provider": "Codex",
