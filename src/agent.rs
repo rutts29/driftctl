@@ -371,13 +371,21 @@ fn validate_codex_jsonl(bytes: &[u8]) -> Result<TerminalEvent, AgentError> {
 
 fn persist_trajectory(root: &Path, bytes: &[u8]) -> Result<PathBuf, AgentError> {
     let directory = root.join(".driftctl/trajectories");
-    fs::create_dir_all(&directory).map_err(|error| AgentError::new(error.to_string()))?;
+    prepare_private_trajectory_directory(&directory)?;
 
     for sequence in 1_u32..=9999 {
         let path = directory.join(format!("run-{sequence:04}.jsonl"));
-        let file = OpenOptions::new().write(true).create_new(true).open(&path);
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let file = options.open(&path);
         match file {
             Ok(mut file) => {
+                set_private_trajectory_file_permissions(&file)?;
                 file.write_all(bytes)
                     .map_err(|error| AgentError::new(error.to_string()))?;
                 file.sync_data()
@@ -389,6 +397,54 @@ fn persist_trajectory(root: &Path, bytes: &[u8]) -> Result<PathBuf, AgentError> 
         }
     }
     Err(AgentError::new("trajectory sequence exhausted"))
+}
+
+fn prepare_private_trajectory_directory(path: &Path) -> Result<(), AgentError> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => {
+            return Err(AgentError::new(
+                "trajectory directory must be a real directory",
+            ));
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            let mut builder = fs::DirBuilder::new();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::DirBuilderExt;
+                builder.mode(0o700);
+            }
+            builder
+                .create(path)
+                .map_err(|error| AgentError::new(error.to_string()))?;
+        }
+        Err(error) => return Err(AgentError::new(error.to_string())),
+    }
+    set_private_trajectory_directory_permissions(path)
+}
+
+#[cfg(unix)]
+fn set_private_trajectory_directory_permissions(path: &Path) -> Result<(), AgentError> {
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(path, fs::Permissions::from_mode(0o700))
+        .map_err(|error| AgentError::new(error.to_string()))
+}
+
+#[cfg(not(unix))]
+fn set_private_trajectory_directory_permissions(_path: &Path) -> Result<(), AgentError> {
+    Ok(())
+}
+
+#[cfg(unix)]
+fn set_private_trajectory_file_permissions(file: &fs::File) -> Result<(), AgentError> {
+    use std::os::unix::fs::PermissionsExt;
+    file.set_permissions(fs::Permissions::from_mode(0o600))
+        .map_err(|error| AgentError::new(error.to_string()))
+}
+
+#[cfg(not(unix))]
+fn set_private_trajectory_file_permissions(_file: &fs::File) -> Result<(), AgentError> {
+    Ok(())
 }
 
 pub(crate) fn display_path(root: &Path, path: &Path) -> String {
