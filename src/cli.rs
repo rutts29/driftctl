@@ -911,9 +911,10 @@ fn continue_codex(root: &Path, arguments: &[String]) -> CliOutput {
         return CliOutput::blocked(error.to_string());
     }
 
+    let continuation_completed = turn.completed();
     let output = json!({
         "schema_version":1,
-        "status":"started",
+        "status":if continuation_completed { "started" } else { "invalid_continuation" },
         "run_id":run_id,
         "child_thread_id":migration.child_id(),
         "child_cwd":migration.child_cwd(),
@@ -922,18 +923,29 @@ fn continue_codex(root: &Path, arguments: &[String]) -> CliOutput {
         "turn_status":format!("{:?}", turn.status()).to_ascii_lowercase(),
         "parent_unchanged":true,
         "source_unchanged":true,
-        "adoption":"manual",
+        "adoption":if continuation_completed { "manual" } else { "none" },
     });
     if options.json {
         match serde_json::to_string(&output) {
-            Ok(output) => CliOutput::success(output),
+            Ok(stdout) => CliOutput {
+                exit_code: if continuation_completed { 0 } else { 2 },
+                stdout,
+                stderr: String::new(),
+            },
             Err(_) => CliOutput::error("could not serialize continuation result"),
         }
-    } else {
+    } else if continuation_completed {
         CliOutput::success(format!(
             "started child {} in {}\nparent and source unchanged; adoption remains manual",
             migration.child_id(),
             migration.child_cwd().display()
+        ))
+    } else {
+        CliOutput::blocked(format!(
+            "child {} ended {:?} in {}; parent and source remain unchanged; adoption: none",
+            migration.child_id(),
+            turn.status(),
+            migration.child_cwd().display(),
         ))
     }
 }
