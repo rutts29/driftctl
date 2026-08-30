@@ -430,6 +430,8 @@ verified =
 | B: plain summary | same checkpoint | matching manifest | same neutral prompt | information-matched flat summary |
 | C: Driftctl | same checkpoint | matching manifest | same neutral prompt | bounded active projection |
 
+The runner rejects unequal manifests, prompts, worker policy, tool policy, or provider turn-completion policy. Both arms currently wait for the provider terminal event; the evaluator adds a 1,800-second outer subprocess timeout. This proves policy parity, not enumerated tool inventories or an independent per-arm deadline.
+
 ### Claim boundaries
 
 - Five cases: descriptive evidence.

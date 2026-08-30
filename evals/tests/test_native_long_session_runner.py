@@ -15,7 +15,10 @@ import unittest
 from unittest import mock
 
 from evals.runner.run_native_long_session import (
+    RunnerError,
+    invoke,
     load_case,
+    require_comparison_fairness,
     review_candidate,
     score_projection_fidelity,
 )
@@ -27,6 +30,36 @@ SCORER = ROOT / "evals" / "runner" / "score_results.py"
 
 
 class NativeLongSessionRunnerTests(unittest.TestCase):
+    def test_comparison_fairness_requires_equal_tool_and_timeout_controls(self) -> None:
+        worker_policy = {
+            "model": "gpt-5.6-luna",
+            "effort": "max",
+            "sandbox": "workspace-write",
+            "approval_policy": "never",
+        }
+        comparison = {
+            "fairness": {
+                "starting_manifest_equal": True,
+                "neutral_prompt_equal": True,
+                "worker_policy": worker_policy | {"verified_readback": True},
+                "only_intended_input_difference": "workflow receives the bounded active-intent projection",
+            },
+            "parent_unchanged": True,
+            "source_unchanged": True,
+        }
+
+        with self.assertRaisesRegex(RunnerError, "tool"):
+            require_comparison_fairness(comparison, worker_policy)
+
+    def test_runner_process_timeout_fails_closed(self) -> None:
+        timeout = subprocess.TimeoutExpired(["hung"], 1800, output="partial", stderr="private")
+        with mock.patch(
+            "evals.runner.run_native_long_session.subprocess.run", side_effect=timeout
+        ) as invoked:
+            with self.assertRaisesRegex(RunnerError, "timed out"):
+                invoke(["hung"], ROOT, os.environ, "run hung process")
+        self.assertEqual(invoked.call_args.kwargs["timeout"], 1800)
+
     def test_rejects_context_above_the_bounded_stress_limit(self) -> None:
         with tempfile.TemporaryDirectory(prefix="driftctl-native-limit-test-") as temporary:
             completed = subprocess.run(
@@ -106,6 +139,8 @@ class NativeLongSessionRunnerTests(unittest.TestCase):
                     ["external_verifier", "mutation_scope", "external_verifier"],
                 )
                 self.assertEqual(arm["requirement_pass_rate"], 1.0)
+                self.assertTrue(arm["full_regression_suite_passed"])
+                self.assertEqual(arm["human_interventions"], 0)
                 self.assertEqual(arm["review"]["status"], "completed")
                 self.assertTrue(arm["review"]["review_passed"])
                 self.assertTrue(arm["review"]["coverage_complete"])
@@ -134,6 +169,15 @@ class NativeLongSessionRunnerTests(unittest.TestCase):
                 rendered = json.dumps(arm)
                 self.assertNotIn(str(fixture / "baseline-candidate"), rendered)
                 self.assertNotIn("source-thread", rendered)
+            self.assertNotIn("projection_fidelity", baseline)
+            self.assertEqual(
+                workflow["projection_fidelity"],
+                {
+                    "available": True,
+                    "overall_pass": True,
+                    "scope": "workflow_input_projection",
+                },
+            )
             self.assertEqual(
                 baseline["source_session_sha256"], workflow["source_session_sha256"]
             )
@@ -953,6 +997,9 @@ if arguments[0] == "compare":
         "fairness": {
             "starting_manifest_equal": not bool(os.environ.get("FAKE_UNEQUAL_MANIFEST")),
             "neutral_prompt_equal": True,
+            "tool_policy_equal": True,
+            "turn_timeout_equal": True,
+            "turn_timeout_policy": "provider_terminal_event",
             "worker_policy": {
                 "model": "gpt-5.6-luna",
                 "effort": "max",

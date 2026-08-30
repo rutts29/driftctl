@@ -839,6 +839,12 @@ fn compare_runs_equal_isolated_children_with_only_the_projection_added() {
     assert_eq!(document["status"], "completed");
     assert_eq!(document["fairness"]["starting_manifest_equal"], true);
     assert_eq!(document["fairness"]["neutral_prompt_equal"], true);
+    assert_eq!(document["fairness"]["tool_policy_equal"], true);
+    assert_eq!(document["fairness"]["turn_timeout_equal"], true);
+    assert_eq!(
+        document["fairness"]["turn_timeout_policy"],
+        "provider_terminal_event"
+    );
     assert_eq!(
         document["fairness"]["worker_policy"],
         json!({
