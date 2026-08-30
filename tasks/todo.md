@@ -44,3 +44,14 @@
 - [x] U05 exact `$driftctl off` detaches only the invoking session; later hooks stay no-op.
 - [x] U06 control prompts remain source-accounted but never become semantic intent, including detach and reactivation.
 - [x] U07 installed bundle contains the skill and hooks; packaged binary passes the isolated entrypoint flow without changing the active Codex profile.
+
+## Prospective Paired A/B
+
+- [ ] A01 CLI accepts only `ab prepare codex` with one source selection and `ab report --run ... -- <verifier>`; malformed or repeated options fail before mutation.
+- [ ] A02 prepare resolves one stable source, copies equal candidate checkpoints, creates distinct persisted children with verified common-parent lineage, preserves inherited native goal/policy, starts no turn, and leaves source unchanged.
+- [ ] A03 prepare creates no enrollment; exact `$driftctl on` enrolls only workflow; baseline, source, and unrelated sessions remain detached.
+- [ ] A04 private durable experiment state records digests/counts/IDs/CWDs/policy without transcript text; partial failure is explicit and non-runnable.
+- [ ] A05 report rejects wrong/missing workflow enrollment, enrolled baseline, changed source, wrong child CWD/session, unequal starting digest, or missing verifier.
+- [ ] A06 one identical external verifier runs independently in both candidates; verifier/candidate mutation fails; same-command retry is cached and a different command cannot overwrite evidence.
+- [ ] A07 report emits `prospective_paired`, per-arm verified completion, source/enrollment invariants, post-fork record/user-prompt counts, verifier timing, and measured keeper call/token overhead or explicit unavailable fields.
+- [ ] A08 packaged entrypoint completes a disposable provider rehearsal and one real Codex checkpoint → two forks → baseline detached/workflow explicit-on → report lifecycle without installing into the active Codex profile; temporary test resources are removed after evidence retention.

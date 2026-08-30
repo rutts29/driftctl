@@ -109,6 +109,32 @@ Codex App Server        → provider state authority
 | `compare` | evaluation only |
 | verification | optional closure evidence |
 
+## Paired A/B Evaluation
+
+```text
+persisted midpoint session
+  → resolve checkpoint
+  → snapshot equal candidate repositories
+  → fork A + B without starting turns or changing inherited goals
+  → persist private experiment manifest
+  → A: normal resume
+  → B: normal resume → exact $driftctl on
+  → same external verifier against A and B
+  → validate enrollment/source/candidate boundaries
+  → persist immutable report + print outcome and secondary metrics
+```
+
+| State | Required fields |
+|---|---|
+| experiment | source head/digest/counts; equal starting digest; arm thread IDs/CWDs; inherited goal; worker policy |
+| report | command/verifier digests; per-arm status/exit/elapsed; post-fork record counts; keeper usage; invariants |
+
+- State root: `${XDG_STATE_HOME:-$HOME/.local/state}/driftctl/ab/<ab-run-id>/`.
+- Experiment state excludes transcript text.
+- Arm IDs and candidate paths remain private local evidence.
+- A partial prepare is blocked and cannot be reported.
+- Once either verifier runs, its evidence is retained; report never silently reruns one arm alone.
+
 ## Failure Rules
 
 | Failure | Attached session behavior |

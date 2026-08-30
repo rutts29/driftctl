@@ -19,6 +19,10 @@ P0 contract/tests
   → P5 native-goal approval
   → P6 real E2E/package
   → P7 explicit in-session plugin controls
+  → A0 paired A/B contract
+  → A1 goal-preserving idle forks
+  → A2 durable prepare/report
+  → A3 packaged + real-provider proof
 ```
 
 ## Slices
@@ -33,6 +37,10 @@ P0 contract/tests
 | P5 | Operator conflict and native-goal resolution | P4 | operator-executed same-session goal handoff; Driftctl read-only verification; wrong/stale approval cannot mutate |
 | P6 | Installed real-session acceptance and private package | P5 | full attached lifecycle passes; one Daybreak release-blocker review |
 | P7 | `$driftctl on|off|status`; exact-session opt-in UX | P6 | isolated plugin/process tests prove explicit activation, no automatic activation, exact detach, resume/compact continuity, and package contents |
+| A0 | Freeze prospective paired experiment contract | P7 | `SPEC.md`, architecture, and A01–A08 agree |
+| A1 | Preserve inherited goal while creating two idle persisted forks | A0 | provider process tests prove distinct lineage, equal policy, no turn, no enrollment |
+| A2 | `ab prepare codex`; `ab report` | A1 | installed CLI prepares, resumes, enrolls only B, grades both once, persists honest report |
+| A3 | Production-shaped A/B proof | A2 | disposable real Codex checkpoint/forks plus packaged entrypoint; active profile untouched |
 
 ## Checkpoints
 
@@ -79,3 +87,6 @@ P0 contract/tests
 - Replacement TUI.
 - Automatic merge/push.
 - New efficacy evaluation before the attached product works.
+- Retrospective pairing of unrelated sessions.
+- Arbitrary historical-turn slicing; use a persisted midpoint session.
+- Automatic arm execution or adoption.
