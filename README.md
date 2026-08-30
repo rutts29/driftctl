@@ -26,6 +26,17 @@ driftctl continue codex --last
 
 `compare` creates isolated, equal starting children and leaves adoption manual. `continue` creates one isolated child; ambiguous steering or native-goal changes require an explicit operator action, and no-TTY operation blocks rather than prompting. Existing `AGENTS.md`, `CLAUDE.md`, skills, hooks, permissions, and the user's harness configuration remain authoritative and unchanged.
 
+A completed child is not verified completion. `continue --json` returns its `child_cwd`, changed paths, current evidence, and blockers. Run requirement-specific checks against that candidate before manually adopting it:
+
+```bash
+driftctl verify \
+  --candidate <child_cwd> \
+  --requirement <requirement-id> \
+  --json -- <verification-command> [args...]
+```
+
+`verify` records command, verifier, candidate, stdout, and stderr digests while retaining raw output only in private local artifacts.
+
 Driftctl has no service and no telemetry. Provider calls use the user's existing Codex authentication and usage allowance. Source session, source worktree, and parent native goal are read-only; candidate edits occur in an isolated workspace. Isolation is workspace-only: inherited host-wide or YOLO permissions remain outside Driftctl's containment guarantee.
 
 Older `start`, `steer`, `resume`, `verify`, and `close` commands remain available for the legacy local-ledger workflow; they are not the current native-session flow above.
