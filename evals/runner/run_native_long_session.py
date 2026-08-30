@@ -117,7 +117,9 @@ class AppServer:
     def notify(self, method: str, params: Mapping[str, Any]) -> None:
         self._write({"method": method, "params": params})
 
-    def record_user_turn(self, thread_id: str, text: str, phase: str) -> str:
+    def record_user_turn(
+        self, thread_id: str, text: str, phase: str, expected_count: int
+    ) -> str:
         result = self.request(
             "turn/start",
             {
@@ -133,6 +135,7 @@ class AppServer:
         if not isinstance(turn_id, str) or not turn_id or not isinstance(status, str):
             raise RunnerError(f"App Server {phase} turn is malformed")
         if status == "inProgress":
+            self.require_user_message_count(thread_id, expected_count)
             try:
                 self.request(
                     "turn/interrupt", {"threadId": thread_id, "turnId": turn_id}
@@ -142,6 +145,7 @@ class AppServer:
                     raise
         elif status not in {"completed", "interrupted"}:
             raise RunnerError(f"App Server {phase} turn ended with {status!r}")
+        self.require_user_message_count(thread_id, expected_count)
         return turn_id
 
     def require_user_message_count(self, thread_id: str, expected: int) -> None:
@@ -342,7 +346,7 @@ def seed_native_session(
                 "effort": worker_policy["effort"],
                 "ephemeral": False,
                 "model": worker_policy["model"],
-                "sandbox": worker_policy["sandbox"],
+                "sandbox": "read-only",
             },
         )
         thread = started.get("thread")
@@ -352,14 +356,12 @@ def seed_native_session(
                 "App Server thread/start response has no persisted thread ID"
             )
         initial = server.record_user_turn(
-            thread_id, source_prompt(definition, False), "initial"
+            thread_id, source_prompt(definition, False), "initial", 1
         )
-        server.require_user_message_count(thread_id, 1)
         injection = inject_non_authoritative_context(server, thread_id, context_bytes)
         steering = server.record_user_turn(
-            thread_id, source_prompt(definition, True), "steering"
+            thread_id, source_prompt(definition, True), "steering", 2
         )
-        server.require_user_message_count(thread_id, 2)
         return thread_id, [initial, steering], injection
     finally:
         server.close()

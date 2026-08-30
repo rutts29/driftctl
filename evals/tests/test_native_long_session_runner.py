@@ -85,10 +85,12 @@ class NativeLongSessionRunnerTests(unittest.TestCase):
                     "initialized",
                     "thread/start",
                     "turn/start",
+                    "thread/read",
                     "turn/interrupt",
                     "thread/read",
                     "thread/inject_items",
                     "turn/start",
+                    "thread/read",
                     "turn/interrupt",
                     "thread/read",
                 ],
@@ -98,12 +100,12 @@ class NativeLongSessionRunnerTests(unittest.TestCase):
             self.assertNotIn(
                 "Do not edit files", requests[3]["params"]["input"][0]["text"]
             )
-            self.assertIn("Late steering", requests[7]["params"]["input"][0]["text"])
+            self.assertIn("Late steering", requests[8]["params"]["input"][0]["text"])
             self.assertNotIn("collaborationMode", requests[3]["params"])
-            self.assertNotIn("collaborationMode", requests[7]["params"])
+            self.assertNotIn("collaborationMode", requests[8]["params"])
             self.assertEqual(requests[2]["params"]["model"], "gpt-5.6-luna")
             self.assertEqual(requests[2]["params"]["effort"], "max")
-            self.assertEqual(requests[2]["params"]["sandbox"], "workspace-write")
+            self.assertEqual(requests[2]["params"]["sandbox"], "read-only")
             self.assertEqual(requests[2]["params"]["approvalPolicy"], "never")
             commands = read_json_lines(fixture / "driftctl-requests.jsonl")
             self.assertEqual(
