@@ -30,6 +30,7 @@ Usage:\n\
   driftctl bundle --run <run-id> --json\n\
   driftctl compare codex (--last | --session <id>) [--json]\n\
   driftctl continue codex (--last | --session <id>) [--approve-goal | --edit-goal <text> | --retain-goal | --cancel] [--json]\n\
+  driftctl verify --candidate <path> --requirement <id> [--json] -- <program> [args...]\n\
   driftctl run codex\n\
   driftctl close";
 
@@ -89,6 +90,7 @@ pub fn execute(root: &Path, arguments: impl IntoIterator<Item = String>) -> CliO
         "bundle" => return bundle(root, &arguments),
         "compare" => return compare_codex(root, &arguments),
         "continue" => return continue_codex(root, &arguments),
+        "verify" => return verify_requirement(&arguments),
         "run" => run(root, &arguments),
         "close" => return close(root, &arguments),
         _ => Err(format!("unknown command: {command}\n\n{USAGE}")),
@@ -482,6 +484,77 @@ fn bundle(root: &Path, arguments: &[String]) -> CliOutput {
     match serde_json::to_string(&output) {
         Ok(output) => CliOutput::success(output),
         Err(_) => CliOutput::error("could not serialize sanitized run bundle"),
+    }
+}
+
+fn verify_requirement(arguments: &[String]) -> CliOutput {
+    let separator = match arguments.iter().position(|argument| argument == "--") {
+        Some(index) => index,
+        None => return CliOutput::error("verify requires -- before the verifier command"),
+    };
+    let (options, command_with_separator) = arguments.split_at(separator);
+    let command = &command_with_separator[1..];
+    if command.is_empty() {
+        return CliOutput::error("verify requires a verifier command after --");
+    }
+    let mut candidate = None;
+    let mut requirement = None;
+    let mut json_output = false;
+    let mut index = 0;
+    while index < options.len() {
+        match options[index].as_str() {
+            "--candidate" if candidate.is_none() => {
+                index += 1;
+                candidate = options.get(index).cloned();
+            }
+            "--requirement" if requirement.is_none() => {
+                index += 1;
+                requirement = options.get(index).cloned();
+            }
+            "--json" if !json_output => json_output = true,
+            option => return CliOutput::error(format!("unsupported verify option: {option}")),
+        }
+        index += 1;
+    }
+    let Some(candidate) = candidate else {
+        return CliOutput::error("verify requires --candidate <path>");
+    };
+    let Some(requirement) = requirement else {
+        return CliOutput::error("verify requires exactly one --requirement <id>");
+    };
+    let artifact_root = match RunStore::default_state_root() {
+        Ok(root) => root.join("verification-artifacts"),
+        Err(error) => return CliOutput::error(error.to_string()),
+    };
+    let request = match crate::verification::VerificationRequest::new(
+        candidate,
+        requirement,
+        command.iter().map(std::ffi::OsString::from),
+        artifact_root,
+    ) {
+        Ok(request) => request,
+        Err(error) => return CliOutput::error(error.to_string()),
+    };
+    let result = match crate::verification::verify(&request) {
+        Ok(result) => result,
+        Err(error) => return CliOutput::error(error.to_string()),
+    };
+    let exit_code = if result.passed() { 0 } else { 2 };
+    let stdout = if json_output {
+        match serde_json::to_string(&result) {
+            Ok(output) => output,
+            Err(_) => return CliOutput::error("could not serialize verification result"),
+        }
+    } else {
+        format!(
+            "requirement {}: {:?}; artifact {}",
+            result.requirement_id, result.status, result.artifact_id
+        )
+    };
+    CliOutput {
+        exit_code,
+        stdout,
+        stderr: String::new(),
     }
 }
 

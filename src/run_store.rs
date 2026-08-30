@@ -961,7 +961,7 @@ fn ensure_directory(path: &Path) -> Result<(), RunStoreError> {
     }
 }
 
-fn ensure_private_directory(path: &Path) -> Result<(), RunStoreError> {
+pub(crate) fn ensure_private_directory(path: &Path) -> Result<(), RunStoreError> {
     ensure_directory(path)?;
     set_private_directory_permissions(path)
 }
