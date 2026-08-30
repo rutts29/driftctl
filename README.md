@@ -24,6 +24,19 @@ driftctl compare codex --last
 driftctl continue codex --last
 ```
 
+For a first manual trial, use a separate terminal and target an inactive old session; do not invoke Driftctl from inside the parent session being inspected because that conversation would change while its preservation is being attested. Run `inspect --json` into a private local directory, review any conflicts, then run `continue` only after the ledger is acceptable:
+
+```bash
+mkdir -p /tmp/driftctl-manual-private
+chmod 700 /tmp/driftctl-manual-private
+driftctl inspect codex --last --json \
+  > /tmp/driftctl-manual-private/inspect.json
+driftctl continue codex --last --json \
+  > /tmp/driftctl-manual-private/continue.json
+```
+
+`inspect` may exit `2` with conflict, native-goal, or overflow blockers; that is a review state, not a successful continuation. Use the explicit conflict and goal actions described below. `continue` creates and edits only an isolated child; the selected parent session and source worktree remain read-only. Keep both JSON files private because an inspection result contains source-linked intent text and local identifiers. Use `--session <id>` instead of `--last` when the desired inactive session is not the latest exact-CWD match.
+
 For another harness, export its approved local transcript into the strict schema-v1 neutral session bundle defined in [`SPEC.md`](SPEC.md), set `provider` to `bundle`, and run:
 
 ```bash
@@ -91,6 +104,8 @@ One separate no-TTY conflict safety case passed: `continue` exited blocked befor
 The archived five-case hard-loss result remains historical fault-injection evidence only: workflow 5/5 versus worktree-only baseline 3/5. It predates the current exact-scope and independent-review gates and is not combined with the intact-session result.
 
 One immutable organic snapshot with 42 authoritative user records reached the installed Luna Max resolver. Two retained attempts failed strict validation; after source-accounting and semantic-key prompt defects were fixed, a third attempt produced a fully validated projection in one call and exited safely blocked on three semantic conflicts, native-goal mismatch, and a 27,822-byte projection over the 16 KiB default. This proves real default-model intake, proposal validation, and blocking behavior for that checkpoint. It does not prove continuation efficacy because no coding arm was allowed to start.
+
+A final pre-manual attempt tested a 32 KiB default and native-goal preservation guidance but exhausted its one repair on a later invalid history transition after 991.576 seconds. The retained proposals had exact 42/42 source coverage; both incorrectly superseded an item already made conflicted. Prompt schema v4 now states that ambiguity resolved by later explicit steering must collapse to the resolved final intent rather than a transient conflict. That fix is process-tested but intentionally has not consumed another provider run; the next acceptance evidence is the operator's manual trial.
 
 The native runner uses `gpt-5.6-luna` at `max` reasoning by default. Recorded environment versions include Rust/Cargo 1.97.1, Python 3.14.4 (3.11+ required), Git 2.53.0, and `codex-cli 0.150.1`; live behavior, timing, and usage depend on the executing user's Codex account and configuration.
 
