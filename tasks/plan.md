@@ -1,116 +1,79 @@
-# Implementation Plan: Long-Session Drift Resistance
+# Implementation Plan: Same-Session Keeper
 
-## Contract
+## Boundary
 
-- Behavior and acceptance: `SPEC.md`.
-- State, interfaces, isolation, evaluation design: `ARCHITECTURE.md`.
-- Detailed local work queue: ignored `tasks/LOCAL-IMPLEMENTATION-CHECKLIST.md`.
-- Duration: 48 hours.
-- Native provider: Codex.
-- Portable boundary: neutral JSON bundle.
-- Cases: five long-session checkpoints; retain every existing pilot case/result.
-- Runtime: local CLI using the user's provider authentication and allowance.
-- Scope: continuity and source isolation; no general security harness.
-- Completion: focused tests plus one production-shaped run through the shipped CLI and real process/filesystem/permission boundaries.
-- Scope freeze: only a concrete failure from that run may add MVP work; an unavailable boundary blocks its gate.
+- Contract: `SPEC.md`.
+- Runtime: `ARCHITECTURE.md`.
+- Acceptance matrix: `tasks/todo.md`.
+- Existing checkpoint/fork code remains available; it does not define completion.
+- Scope additions require a concrete failure against the locked flow.
 
-## Tasks
+## Build Order
 
-| ID | Deliverable | Depends on | Complete when |
+```text
+P0 contract/tests
+  → P1 installed hook handshake
+  → P2 exact-session enrollment isolation
+  → P3 semantic prompt path
+  → P4 restart/resume/compaction recovery
+  → P5 native-goal approval
+  → P6 real E2E/package
+```
+
+## Slices
+
+| ID | Slice | Depends | Proof |
 |---|---|---|---|
-| T00 | Freeze pilot evidence | — | current tests pass; cases/results retained; pilot rescored |
-| T01 | Codex session-source spike | T00 | one existing session imports read-only; malformed fixtures fail |
-| T02 | Child-fork/workdir spike | T00 | two isolated children share one source checkpoint; parent unchanged |
-| T03 | Native-goal capability spike | T00 | read/clear/set/read-back proven or manual fallback selected |
-| T04 | Domain and history v2 | T01, T03 | typed transitions replay deterministically; provenance required |
-| T05 | Bounded active projection | T04 | supersession, withdrawal, conflict, evidence, overflow tests pass |
-| T06 | Neutral bundle and Codex importer | T01, T04 | strict round trip; source roles and refs preserved |
-| T07 | Semantic resolver and compaction | T05, T06 | projection-plus-delta stays bounded; invalid proposals cannot commit |
-| T08 | Conflict and goal gate | T03, T07 | ambiguity requires authority; parent goal never changes |
-| T09 | Read-only workspace isolation | T02 | paired manifests match; source pre/post manifest matches |
-| T10 | Requirement-specific verification | T04, T05 | closure uses mapped evidence and external facts |
-| T11 | `inspect` | T06–T08 | one command returns projection/blocker without source mutation |
-| T12 | `compare` | T09–T11 | native/projected children run from an equal checkpoint |
-| T13 | `continue` and bundle handoff | T08, T09, T11 | resumable child or explicit blocker; adoption remains manual |
-| T14 | Five long-session cases | T05–T07 | gold intent, reference/negative patches, stable hidden graders frozen |
-| T15 | Evaluation runner and scorer | T10, T12, T14 | fair A/C pairs and flagship B control produce auditable results |
-| T16 | Live evaluation | T15 | all valid runs retained; metrics and limitations published |
-| T17 | Reproduction and trajectories | T16 | clean one-case run works; publishable artifacts pass manual review |
-| T18 | Release packaging | T13 | checksummed binaries, verified installer, Homebrew path work |
-| T19 | Submission and acceptance review | T17, T18 | deliverables complete; no Critical/Required finding remains |
+| P0 | Replace drifted contract; freeze test IDs | — | docs agree; every requirement maps to test |
+| P1 | Package hooks; handle one real `UserPromptSubmit` | P0 | installed plugin injects sentinel context into an exact disposable session |
+| P2 | `integrate`, `attach`, `status`, `detach`; exact-session enrollment | P1 | two same-repo sessions plus unenrolled session remain isolated |
+| P3 | Reconcile → keeper proposal → validate → commit → inject/block | P2 | additive, supersession, conflict, invalid-output process tests |
+| P4 | `Stop`, `PreCompact`, `SessionStart`; recovery/idempotence | P3 | restart, missed records, worker kill, native compaction E2E |
+| P5 | Operator conflict and native-goal resolution | P4 | exact-session clear/set/read-back; wrong/stale approval cannot mutate |
+| P6 | Installed real-session acceptance and private package | P5 | full attached lifecycle passes; one Daybreak release-blocker review |
 
-## Gates
+## Checkpoints
 
-### G0 — Pilot
+### C1 — Hook boundary
 
-- [x] Rust format, lint, and tests pass.
-- [x] Evaluator tests pass.
-- [x] Existing five-case summary reproduces.
-- [x] Existing valid and discarded artifacts remain present.
+- P1 installed entrypoint passes.
+- Existing Codex hook definitions remain intact.
+- Unenrolled hook invocation is a strict no-op.
 
-### G1 — Feasibility
+### C2 — Attached prompt
 
-- [x] T01–T03 complete.
-- [x] Session discovery, fork isolation, and goal capability branches selected from evidence.
-- [x] Manual child-only goal fallback is explicit, blocked, and requires fresh operator approval when automation is unsupported.
+- P2–P3 pass through installed binary.
+- Same-repository sessions remain isolated.
+- Conflict blocks before model execution.
 
-### G2 — Intent core
+### C3 — Continuity
 
-- [x] T04–T08 complete.
-- [x] Active intent cannot disappear without a source-linked transition.
-- [x] Repeated compaction remains bounded.
-- [x] Ambiguous conflict cannot auto-commit.
+- P4–P5 pass through installed binary.
+- Resume and compact inject the same effective projection.
+- Keeper death loses no accepted ledger state.
+- Goal mutation requires exact operator approval and read-back.
 
-### G3 — Workflow
+### C4 — MVP
 
-- [x] T09–T13 complete.
-- [x] Install → inspect → compare works through the packaged binary boundary.
-- [x] Parent session, goal, source worktree, and harness configuration remain unchanged or the run blocks.
-- [x] Host-wide YOLO limitation is visible.
+- Every `tasks/todo.md` case passes.
+- Real attached session completes the whole lifecycle.
+- Targeted security gate has no unresolved release blocker.
+- Package remains private until operator publication.
 
-### G4 — Evidence
+## Execution Rules
 
-- [x] T14–T17 complete.
-- [x] Five frozen checkpoints were processed once: four coding comparisons and one disclosed pre-coding safety block.
-- [x] Retrospective results are labelled fidelity-only.
-- [x] Pilot and long-session results remain separate.
-- [x] Five-case results are described without significance claims.
+- RED → GREEN → REFACTOR per test ID.
+- Commit each green slice.
+- Run focused tests after each change; full suite once after the final code change.
+- Run installed-entrypoint rehearsal before advancing a checkpoint.
+- One final targeted security review; fix release blockers only; rerun affected and full gates once.
+- Preserve all old tests, eval cases, results, and failure records.
 
-### G5 — Ship
+## Deferred
 
-- [ ] T18–T19 complete.
-- [x] Clean install and reproduction pass.
-- [x] Sanitized artifacts pass manual path/secret review.
-- [x] Every current public claim points to submitted evidence.
-
-## Parallel Waves
-
-| Wave | Root | Lane A | Lane B | Lane C |
-|---|---|---|---|---|
-| 1 | T00, contract ownership | T01 | T02 | T03 |
-| 2 | T04 integration | T05 | T06 | T09 |
-| 3 | integration | T07 | T10 | T14 |
-| 4 | T08 integration | T11 | T12 fixtures | T15 scaffold |
-| 5 | G3 | T13 | T15 | T17 scaffold |
-| 6 | T16 coordination | evaluation runs | T17 | T18 |
-| 7 | T19 review | fixes | evidence audit | packaging audit |
-
-## Cut Order
-
-1. npm wrapper.
-2. Native Claude adapter.
-3. MCP/provider plugin.
-4. Automatic merge/adoption.
-5. More than one plain-summary control.
-6. More than five new cases.
-7. Automatic goal migration when provider support is absent; keep proposal/manual handoff.
-
-## Stop Conditions
-
-- Deterministic active-intent loss: stop reliability claim.
-- Unequal checkpoint/workspace: invalidate pair.
-- Parent/source mutation: stop non-impact claim.
-- Goal without read-back equality: stop migration claim.
-- Hidden grader visible or changed: invalidate run.
-- Credential/private-path leak: block release.
-- Mixed/negative result: publish scoped evidence; retain failures.
+- Claude native hooks.
+- Homebrew/npm/curl publication.
+- Daemon.
+- Replacement TUI.
+- Automatic merge/push.
+- New efficacy evaluation before the attached product works.

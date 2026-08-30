@@ -1,484 +1,122 @@
-# Architecture: driftctl
+# Architecture: Same-Session Keeper
 
-## Status
-
-- Target MVP architecture; not a statement of current implementation.
-- Current implemented behavior and measured pilot: `README.md`.
-- Implementation order and completion gates: `tasks/plan.md`.
-
-## Document Ownership
-
-| Concern | Source of truth |
-|---|---|
-| User, scope, behavior, acceptance | `SPEC.md` |
-| Runtime components, state, interfaces, transitions | `ARCHITECTURE.md` |
-| Dependency order, gates, cuts, parallel lanes | `tasks/plan.md` |
-| Current public use and measured pilot | `README.md` |
-| Pilot reproduction | `REPRODUCING.md` |
-| Experiment history | `IMPROVEMENT-CHANGELOG.md` |
-
-## Runtime Topology
+## Hard Boundary
 
 ```text
-┌──────────────────────────── source boundary ────────────────────────────┐
-│ Codex session store       source repository       native parent goal │
-│ read-only                 read-only               read-only           │
-└───────────┬──────────────────────┬──────────────────────┬────────────┘
-            │                      │                      │
-            ▼                      ▼                      ▼
-     provider importer       workspace snapshot       goal observer
-            │                      │                      │
-            ▼                      │                      │
-     normalized events              manifest                  state
-            │                      │                      │
-            ▼                      │                      │
-     immutable history               │                      │
-            │                      │                      │
- current projection + delta          │                      │
-            │                      │                      │
-            ▼                      │                      │
- semantic resolver → validator → conflict/goal gate ←───────────────┘
-                                    │
-                     accepted or pre-authorized
-                                    │
-                 ┌──────────────────┴──────────────────┐
-                 ▼                                     ▼
-        baseline child/workspace                projected child/workspace
-                 │                                     │
-                 └──────────────────┬──────────────────┘
-                                    ▼
-                    external verifier + scope review
-                                    │
-                                    ▼
-                         result + sanitized export
+install isolated hooks
+  → attach exact persisted session
+  → bootstrap private ledger + bounded projection
+  → UserPromptSubmit
+      → unenrolled: no-op
+      → enrolled: reconcile → keeper proposal → validate
+          → accepted: commit → inject projection → normal agent turn
+          → conflict/failure: persist blocker → stop before model
+  → Stop: record non-authoritative outcome + cursor
+  → PreCompact: flush
+  → SessionStart(resume|compact): recover → reconcile → inject
+  → detach exact session → no-op
 ```
 
-## Mutation Matrix
+## Components
 
-| Resource | `inspect` | `compare` | `continue` | Owner |
-|---|---:|---:|---:|---|
-| Parent session transcript | read | read | read | provider |
-| Parent native `/goal` | read when available | read | read | provider |
-| Source worktree | read | read | read | user |
-| Harness instructions/config | read through provider | read through provider | read through provider | user/provider |
-| Driftctl state | write | write | write | Driftctl |
-| Baseline temp workspace | — | write | — | Driftctl child |
-| Projected temp workspace | — | write | write | Driftctl child |
-| Child provider session | — | persisted, disposable | persisted | provider |
-| Merge/push/publish | — | — | — | user |
+| Component | Owns | Cannot own |
+|---|---|---|
+| Codex plugin | Lifecycle hook declarations | Semantic state or authority |
+| Hook controller | Enrollment check, locking, orchestration, hook output | Intent invention |
+| App Server adapter | Thread read, native goal get/clear/set/read-back | Semantic decisions |
+| Source cursor | Ordered provider record identity and replay position | Projection content |
+| Keeper worker | Structured proposal from projection plus delta | Ledger writes, goal mutation, approval |
+| Proposal validator | Source accounting, lifecycle legality, bounds, stale checks | Provider execution |
+| Intent history | Immutable source-linked semantic transitions | Active prompt selection |
+| Active projection | Bounded current goal, invariants, frontier, conflicts, closure | Immutable history |
+| Enrollment store | Exact provider/session activation | Repository-wide activation |
 
-## Local State Layout
+## Hook Map
+
+| Event | Enrolled action | Output |
+|---|---|---|
+| `UserPromptSubmit` | reconcile; resolve prompt delta; validate; commit | projection context or blocking reason |
+| `Stop` | record assistant/process digest; advance cursor | continue normally |
+| `PreCompact` | flush state | continue or block on durability failure |
+| `SessionStart: startup|resume` | recover; reconcile; inject | projection context |
+| `SessionStart: compact` | recover after native compaction; inject immediately | projection context |
+
+## State
 
 ```text
 ${XDG_STATE_HOME:-$HOME/.local/state}/driftctl/
-└── repositories/<repo-id>/
-    └── runs/<run-id>/
-        ├── manifest.json
-        ├── source.json
-        ├── projection.json
-        ├── pending.jsonl
-        ├── history/
-        │   └── <segment>.jsonl
-        ├── proposals/
-        ├── results/
-        └── trajectories/
-
-${TMPDIR}/driftctl/<run-id>/
-├── baseline/
-└── workflow/
+├── integration/codex.json
+├── enrollments/<session-digest>.json
+└── sessions/<session-digest>/
+    ├── lock
+    ├── source.json
+    ├── projection.json
+    ├── pending.jsonl
+    ├── history/*.jsonl
+    ├── proposals/*.json
+    └── observations.jsonl
 ```
 
-### State rules
+- Session ID remains private; filenames use its digest.
+- One writer per attached session.
+- Separate session IDs never share writable state.
+- Commit: validate base revision/head → atomic projection write → append/rotate history → advance cursor.
+- Recovery: accepted projection + immutable history + pending tail + App Server reconciliation.
+- Duplicate hook delivery is idempotent by session ID, turn ID, event name, and source head.
 
-- Repository ID: stable digest of canonical repository identity; path omitted from public export.
-- Run ID: local opaque identifier.
-- `manifest.json`: schema version, provider, source head, workspace digest, model policy, timestamps.
-- `source.json`: local provider/session locator; excluded from sanitized export.
-- `pending.jsonl`: events after latest accepted projection.
-- `history/`: immutable accepted segments; excluded from model context.
-- `projection.json`: atomically replaced bounded active state.
-- `proposals/`: pending, accepted, rejected, stale goal/projection decisions.
-- Single writer: exclusive run lock; concurrent writer exits with deterministic error.
-- Commit order:
-  1. validate pending sequence;
-  2. validate proposal;
-  3. write temporary projection;
-  4. sync temporary projection;
-  5. rename projection;
-  6. rotate pending segment into history;
-  7. open next pending segment.
-- Recovery: replay committed projection plus unrotated pending delta.
+## State Machine
 
-## Domain Model
+```text
+detached
+  └─ attach exact ID ─► attaching
+       ├─ bootstrap failure ─► detached
+       └─ durable commit ─► attached
+            ├─ accepted steering ─► attached
+            ├─ ambiguity/goal mismatch ─► blocked
+            │    ├─ reject/edit ─► blocked
+            │    └─ approved + verified ─► attached
+            ├─ worker/durability failure ─► blocked
+            ├─ restart/compact ─► recovering ─► attached|blocked
+            └─ detach exact ID ─► detached
+```
 
-### `SourceRef`
+## Authority
 
-| Field | Type | Rule |
-|---|---|---|
-| `provider` | enum | `codex`, `bundle` |
-| `session` | string | local value; redact on export |
-| `record` | string | provider event/message identity or ordinal |
-| `role` | enum | `user`, `assistant`, `tool`, `system_observation` |
-| `content_digest` | string | source-staleness check |
+```text
+user prompt             → intent authority
+operator resolution     → conflict/goal authority
+keeper proposal         → advisory
+assistant/tool output   → observation/evidence only
+validator + state store → commit authority
+Codex App Server        → provider state authority
+```
 
-### `IntentItem`
+## Existing Code Classification
 
-| Field | Type | Rule |
-|---|---|---|
-| `id` | stable string | never reused |
-| `kind` | enum | `outcome`, `constraint`, `invariant`, `scope`, `validation`, `stop_condition` |
-| `text` | string | active semantic statement |
-| `lifecycle` | enum | `active`, `superseded`, `withdrawn`, `conflicted` |
-| `evidence_state` | enum | `unresolved`, `satisfied`, `reopened` |
-| `introduced_by` | `SourceRef[]` | nonempty |
-| `changed_by` | `SourceRef[]` | nonempty after transition |
-| `supersedes` | `IntentId[]` | explicit edges only |
-| `evidence` | `EvidenceRef[]` | requirement-specific |
-
-### `GoalRevision`
-
-| Field | Type | Rule |
-|---|---|---|
-| `revision` | integer | monotonic |
-| `text` | string | current approved objective |
-| `source_refs` | `SourceRef[]` | nonempty |
-| `supersedes_revision` | integer/null | previous accepted revision |
-| `approval` | object/null | required for ambiguous/native-goal change |
-
-### `ActiveProjection`
-
-| Field | Type | Rule |
-|---|---|---|
-| `schema_version` | integer | exact supported version |
-| `revision` | integer | monotonic |
-| `source_head` | object | source record and pending sequence |
-| `goal` | `GoalRevision` | exactly one active goal |
-| `preserve` | `IntentItem[]` | satisfied active invariants/constraints |
-| `frontier` | `IntentItem[]` | unresolved active work |
-| `validation` | `IntentItem[]` | checks and evidence mapping |
-| `conflicts` | `Conflict[]` | unresolved only |
-| `closure` | object | deterministic blockers |
-| `overflow` | object | explicit count/bytes/reason |
-| `generated_by` | object | model, reasoning, prompt/schema versions |
-
-### `ProjectionProposal`
-
-| Field | Type | Rule |
-|---|---|---|
-| `base_projection_revision` | integer | must equal current revision |
-| `base_event_sequence` | integer | must equal pending head |
-| `classification` | enum | `no_change`, `additive`, `supersession`, `withdrawal`, `conflict`, `goal_change` |
-| `adds` | item proposals | source-linked |
-| `supersedes` | transition proposals | source-linked |
-| `withdraws` | transition proposals | source-linked |
-| `reopens` | transition proposals | source-linked |
-| `conflicts` | conflict proposals | at least two alternatives when ambiguous |
-| `proposed_goal` | goal/null | required for `goal_change` |
-| `preserves` | intent IDs | every retained active item accounted for |
-| `confidence` | bounded number | routing hint; never authority |
-| `needs_operator_approval` | boolean | validator may promote `false` to `true` |
-
-### `GoalMigrationProposal`
-
-| Field | Rule |
+| Existing capability | New role |
 |---|---|
-| `proposal_id` | unique local ID |
-| `base_projection_revision` | stale-approval guard |
-| `base_event_sequence` | stale-approval guard |
-| `current_native_goal` | observed value or `unknown` |
-| `current_projected_goal` | accepted projection value |
-| `conflicting_sources` | nonempty source refs |
-| `proposed_goal` | full replacement goal |
-| `superseded_items` | explicit IDs |
-| `preserved_items` | explicit IDs |
-| `rationale` | concise model explanation |
-| `approval` | absent, operator-approved, pre-authorized |
+| Codex importer/App Server | live reconcile and goal adapter |
+| source cursor | missed/duplicate event control |
+| intent history | canonical semantic ledger |
+| semantic resolver | replaceable keeper worker |
+| active projection | injected context |
+| goal-change store | operator proposal state |
+| `inspect` | recovery/debugging |
+| `continue` | isolated recovery/evaluation |
+| `compare` | evaluation only |
+| verification | optional closure evidence |
 
-## Event Model
+## Failure Rules
 
-| Event | Effect | Required validation |
-|---|---|---|
-| `run_started` | create source/run identity | first event; unique run |
-| `source_imported` | advance imported source head | monotonic provider position |
-| `requirement_added` | create intent item | user/approved authority; source exists |
-| `requirement_superseded` | deactivate old; activate replacement | old active; explicit edge |
-| `requirement_withdrawn` | deactivate item | old active; user/approved authority |
-| `conflict_raised` | block affected intent | alternatives and sources exist |
-| `conflict_resolved` | apply approved resolution | matching live proposal |
-| `goal_revised` | advance projected goal | source-linked; approval when required |
-| `evidence_attached` | satisfy mapped requirement | verifier/reviewer source exists |
-| `evidence_invalidated` | reopen requirement | prior evidence exists; reason exists |
-| `projection_committed` | advance bounded projection | proposal fully validated |
-| `closure_attempted` | record blockers/result | closure predicate evaluated |
-| `run_closed` | finalize run | zero blockers |
-
-## Projection Invariants
-
-- Exactly one active goal.
-- Every active item appears in `preserve`, `frontier`, `validation`, or `conflicts`.
-- Every inactive item has an explicit terminal transition.
-- Every synthesized statement has valid source refs.
-- Every referenced source digest matches imported content.
-- Every supersession edge points from newer accepted intent to older active intent.
-- Every active conflicted item blocks continuation.
-- Every overflow blocks continuation.
-- Every projection commit accounts for all previously active IDs.
-- Projection byte count includes rendered prompt payload.
-- Budget failure returns structured overflow; truncation is invalid.
-
-## Compaction Pipeline
-
-```text
-initial import:
-  source records
-    → validate documented provider items
-    → private ordered role/digest cursor
-    → coalesce non-user items into digest evidence batches
-    → chronological bounded user-authoritative chunks
-    → empty/current projection + chunk
-    → proposal
-    → deterministic validation
-    → accepted projection
-
-incremental update:
-  accepted projection + pending delta
-    → no user text: advance source cursor without model call
-    → user text: proposal
-    → deterministic validation
-    → conflict gate
-    → projection commit or blocker
-```
-
-### Priority order
-
-1. Current accepted goal.
-2. Safety and scope invariants.
-3. Unresolved conflicts.
-4. Unresolved frontier.
-5. Validation and stopping conditions.
-6. Satisfied behavior to preserve.
-7. Descriptive context.
-
-### Model execution
-
-- Provider: installed Codex CLI.
-- Sandbox: read-only.
-- Output: JSON constrained by local schema.
-- Default: Luna Max.
-- Optional preset: Terra High.
-- Optional Terra effort: Medium.
-- Sol: explicit advanced override.
-- Input: active projection, bounded delta, schema, source map.
-- Non-user input: digest-only batch counts; compaction markers remain non-authoritative.
-- Output authority: proposal only.
-- Retry: one schema-repair attempt; semantic ambiguity routes to conflict gate.
-- Usage: local provider account; record calls/tokens/time when observable.
-
-## Conflict State Machine
-
-```text
-new steering
-  ├── additive/compatible → validate → commit
-  ├── explicit supersession → validate → commit
-  ├── ambiguous → proposal → operator edit/approve/reject/cancel
-  └── native-goal conflict → goal proposal
-                                  ├── interactive approval
-                                  ├── unattended preauthorization + unambiguous
-                                  └── blocked report
-```
-
-### Approval rules
-
-- Per-event approval default for native-goal changes.
-- Up-front unattended approval limited to disposable child goal rewrites.
-- Ambiguous alternatives remain blocked in unattended mode.
-- New source event invalidates pending approval.
-- Operator edit creates a new proposal revision.
-- Rejection records new steering as rejected; current goal remains active.
-- Model confidence cannot waive required approval.
-
-### Child goal transaction
-
-```text
-preconditions
-  → create/identify child
-  → observe child goal
-  → pause when provider requires
-  → clear child goal
-  → set approved goal
-  → read back
-  → exact normalized equality
-  → continue
-```
-
-- Programmatic provider support absent: emit commands; stop before continuation.
-- Failed clear/set/read-back: child blocked; parent unchanged.
-- Codex implementation: App Server `thread/goal/get`, `clear`, `set`, then `get`.
-- Codex goal-bearing children are persisted; ephemeral threads reject native goals.
-- Codex forked children do not inherit the parent goal; observe and seed explicitly.
-- Comparison deletes its persisted disposable children only after evidence export.
-- Automatic rollback: excluded.
-- Restore-old-goal action: new explicit approval.
-
-## Provider Capabilities
-
-| Capability | Values | Blocked operation when absent |
-|---|---|---|
-| session discovery | yes/no | `--last` |
-| transcript import | yes/no | `inspect` |
-| native fork | yes/no | native `compare`/`continue` |
-| workdir rebinding | yes/no | isolated fork execution |
-| native goal read | yes/no | verified alignment |
-| native goal clear/set | yes/no | automatic goal migration |
-| JSONL trajectory | yes/no | automated evidence capture |
-
-## Neutral Session Bundle
-
-```json
-{
-  "schema_version": 1,
-  "source": {
-    "provider": "codex",
-    "session_ref": "local-private-value",
-    "repository_id": "local-repository-digest",
-    "head": "provider-record-position"
-  },
-  "native_goal": {
-    "state": "known|absent|unknown",
-    "text": "value-when-known"
-  },
-  "records": [
-    {
-      "id": "provider-record-id",
-      "role": "user|assistant|tool|system_observation",
-      "content": "normalized-content",
-      "content_digest": "digest"
-    }
-  ]
-}
-```
-
-### Bundle rules
-
-- Local bundle may contain session locator and full normalized content.
-- Public fixture uses synthetic/approved content and redacted locator.
-- Unknown fields: reject for current schema unless explicitly forward-compatible.
-- Record order: preserved.
-- Empty user-content set: invalid for projection.
-- Provider-specific tool payload: normalize or retain as opaque evidence; never grant intent authority.
-
-## Workspace Isolation
-
-### Snapshot inputs
-
-- Git HEAD.
-- Tracked working-tree bytes.
-- Selected untracked, non-ignored files.
-- File mode and symlink metadata.
-- Candidate-copy exclusions:
-  - `.git/` internals;
-  - Driftctl state;
-  - provider credentials/configuration;
-  - explicit secret patterns;
-  - evaluator hidden graders.
-- Source attestation streams every excluded protected path into an opaque digest; paths and contents are not retained or rendered.
-- `.git/` internals are outside both candidate copies and source attestation.
-
-### Snapshot outputs
-
-- Baseline root.
-- Workflow root.
-- Identical pre-run manifest digest.
-- Opaque source pre/post attestation covering the candidate-visible manifest plus protected excluded paths.
-- Candidate diff per arm.
-
-### Execution policy
-
-- `inspect`: resolver in read-only sandbox.
-- `compare`: provider workspace-write sandbox or external container; identical across arms.
-- `continue`: user-selected provider execution policy.
-- Driftctl does not add YOLO permission.
-- Host-wide provider permission voids containment guarantee.
-- Source non-mutation still checked and reported after every run.
-- Observable child native goal is re-read after the child turn and before each run-bound completion decision.
-
-## Closure Model
-
-```text
-verified =
-  agent_process_succeeded
-  AND active_conflicts == 0
-  AND projection_overflow == false
-  AND every(active_requirement -> mapped_evidence_passed)
-  AND regression_suite_passed
-  AND integration_checks_passed
-  AND protected_scope_passed
-  AND unresolved_required_review_findings == 0
-  AND native_goal_alignment != false
-```
-
-- `close` records predicate inputs and result.
-- Evidence includes command, exit status, artifact digest, timestamp, requirement IDs.
-- Review includes finding ID, severity, source location, status.
-- Shared aggregate evidence string: invalid.
-- Provider `turn.completed`: process fact only.
-
-## Evaluation Architecture
-
-### Checkpoint branch experiment
-
-| Arm | Native history | Workspace | Continuation prompt | Added context |
-|---|---|---|---|---|
-| A: native | same checkpoint | matching manifest | same neutral prompt | none |
-| B: plain summary | same checkpoint | matching manifest | same neutral prompt | information-matched flat summary |
-| C: Driftctl | same checkpoint | matching manifest | same neutral prompt | bounded active projection |
-
-The runner rejects unequal manifests, prompts, worker policy, tool policy, or provider turn-completion policy. Both arms currently wait for the provider terminal event; the evaluator adds a 1,800-second outer subprocess timeout. This proves policy parity, not enumerated tool inventories or an independent per-arm deadline.
-
-### Claim boundaries
-
-- Five cases: descriptive evidence.
-- Retrospective projection score: fidelity evidence only.
-- Recorded continuation: no counterfactual claim.
-- Checkpoint fork comparison: conditional causal evidence for tested cases/configuration.
-- Driftctl versus plain summary: product-specific evidence.
-- Driftctl versus native only: salience-intervention evidence.
-- Closure gate: deterministic enforcement evidence; not correctness truth.
-
-## Failure Semantics
-
-| Failure | Result | Source impact |
-|---|---|---|
-| ambiguous session selection | block; list candidates | none |
-| malformed transcript | block; source location | none |
-| resolver schema error | one repair; then block | none |
-| invented/missing provenance | reject proposal | none |
-| projection overflow | block; report budget/items | none |
-| unresolved intent conflict | prompt or unattended report | none |
-| stale approval | reject; regenerate proposal | none |
-| unsupported goal mutation | manual child handoff | none |
-| partial child goal migration | block child | none |
-| unequal workspace manifests | invalidate comparison | none |
-| agent process failure | retain trajectory; fail arm | none |
-| verifier failure | retain candidate; block closure | none |
-| source post-hash mismatch | critical failure; invalidate run | detected mutation |
-| sanitizer failure | retain private artifact only | none |
-| ephemeral Codex goal request | reject configuration; require persisted child | none |
-
-## Architecture Decisions
-
-| Decision | Selected | Rejected/deferred | Reason |
-|---|---|---|---|
-| Product form | local Rust CLI | service, MCP, provider plugin | lowest integration and trust burden |
-| Source relation | independent adaptation | public mirror of private harness | reproducibility and scope |
-| Native scope | Codex adapter | multi-provider MVP | 48-hour constraint |
-| Portability | neutral JSON bundle | universal native claim | stable minimal boundary |
-| Continuity mechanism | native history plus salience projection | replacement summary | target is drift with history present |
-| Storage | immutable history plus bounded projection | ever-growing prompt ledger | auditability without prompt growth |
-| Semantic authority | model proposal plus validation/approval | model self-authority | conflict safety |
-| Conflict default | interactive | silent latest-wins | ambiguous user intent |
-| YOLO support | child-only preauthorization | parent mutation | autonomy with recoverability |
-| Evaluation | checkpoint branch comparison | retrospective outcome backtest | counterfactual validity |
-| Main case count | five strong cases | ten shallow cases | weekend quality constraint |
-| Distribution | x86_64 Linux release + verified curl | Homebrew, npm MVP, unbuilt targets | only the shipped binary/install boundary is claimed |
-| Security | source isolation and explicit limits | full security harness | product focus and schedule |
+| Failure | Attached session behavior |
+|---|---|
+| Unenrolled session | no-op |
+| Unknown/wrong session | reject; no state created |
+| Keeper failure | block with retry/detach |
+| Invalid proposal | block; no commit |
+| Conflict | block; preserve alternatives and sources |
+| Projection overflow | block; no silent truncation |
+| Stale operator approval | reject |
+| Goal read-back mismatch | remain blocked |
+| Torn tail/lock conflict | recover verified prefix or block |
+| Plugin removed/detached | normal Codex behavior |
