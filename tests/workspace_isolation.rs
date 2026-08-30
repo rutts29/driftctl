@@ -121,6 +121,12 @@ fn isolates_an_equal_read_only_snapshot_with_dirty_untracked_ignored_and_symlink
 
     for candidate in [pair.baseline(), pair.workflow()] {
         let root = candidate.root();
+        assert!(
+            root.join(".git").is_dir(),
+            "candidate must support normal Git tooling"
+        );
+        assert_eq!(git(root, &["status", "--porcelain=v1"]), "");
+        assert_eq!(git(root, &["rev-list", "--count", "HEAD"]).trim(), "1");
         assert_eq!(
             fs::read_to_string(root.join("tracked.txt")).expect("read candidate tracked file"),
             "dirty working-tree bytes\n"
