@@ -205,6 +205,7 @@ fn creates_an_idle_persisted_fork_with_verified_lineage_and_preserved_goal() {
         ]
     );
     assert_eq!(requests[3]["params"]["threadId"], "parent-thread");
+    assert!(requests[3]["params"].get("lastTurnId").is_none());
     assert!(
         !requests.iter().any(|request| matches!(
             request["method"].as_str(),
@@ -212,6 +213,34 @@ fn creates_an_idle_persisted_fork_with_verified_lineage_and_preserved_goal() {
         )),
         "preserved fork mutated a goal or started a turn"
     );
+
+    fs::remove_dir_all(root).expect("remove test directory");
+}
+
+#[test]
+fn creates_a_persisted_fork_through_one_explicit_completed_turn() {
+    let root = temporary_directory("preserved-child-through-turn");
+    let child_cwd = root.join("isolated-child");
+    fs::create_dir(&child_cwd).expect("create child fixture");
+    let adapter = configure_fake(&root, "preserve-success", &child_cwd, "parent objective");
+    let request = preserved_request(&child_cwd)
+        .through_turn("turn-completed-1")
+        .expect("valid completed turn ID");
+
+    adapter
+        .fork_preserving_goal(request)
+        .expect("historical preserved fork succeeds");
+
+    let requests = captured_requests(&root);
+    let fork = requests
+        .iter()
+        .find(|request| request["method"] == "thread/fork")
+        .expect("captured fork request");
+    assert_eq!(fork["params"]["lastTurnId"], "turn-completed-1");
+    assert!(!requests.iter().any(|request| matches!(
+        request["method"].as_str(),
+        Some("turn/start") | Some("thread/goal/clear") | Some("thread/goal/set")
+    )));
 
     fs::remove_dir_all(root).expect("remove test directory");
 }
