@@ -23,6 +23,10 @@ P0 contract/tests
   → A1 goal-preserving idle forks
   → A2 durable prepare/report
   → A3 packaged + real-provider proof
+  → H0 historical checkpoint contract
+  → H1 exact-turn provider fork
+  → H2 historical source snapshot + report
+  → H3 packaged + real-provider proof
 ```
 
 ## Slices
@@ -41,6 +45,10 @@ P0 contract/tests
 | A1 | Preserve inherited goal while creating two idle persisted forks | A0 | provider process tests prove distinct lineage, equal policy, no turn, no enrollment |
 | A2 | `ab prepare codex`; `ab report` | A1 | installed CLI prepares, resumes, enrolls only B, grades both once, persists honest report |
 | A3 | Production-shaped A/B proof | A2 | disposable real Codex checkpoint/forks plus packaged entrypoint; active profile untouched |
+| H0 | Freeze historical checkpoint contract | A3 | `SPEC.md`, architecture, and H01–H06 agree |
+| H1 | Add completed-turn preflight and `lastTurnId` | H0 | adapter/process tests prove exact selection and mutation-free active-turn rejection |
+| H2 | Bind an explicit Git commit and prefix-aware report | H1 | installed CLI creates equal historical arms and reports against the exact prefix |
+| H3 | Production-shaped historical proof | H2 | disposable real Codex multi-turn session → historical A/B prepare through packaged entrypoint |
 
 ## Checkpoints
 
@@ -88,5 +96,5 @@ P0 contract/tests
 - Automatic merge/push.
 - New efficacy evaluation before the attached product works.
 - Retrospective pairing of unrelated sessions.
-- Arbitrary historical-turn slicing; use a persisted midpoint session.
 - Automatic arm execution or adoption.
+- Automatic recovery of historical uncommitted files.

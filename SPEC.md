@@ -27,7 +27,7 @@ driftctl attach codex --session <exact-id>
 driftctl status codex --session <exact-id>
 driftctl resolve codex --session <exact-id> ...
 driftctl detach codex --session <exact-id>
-driftctl ab prepare codex (--last | --session <id> [--allow-ancestor-cwd]) [--json]
+driftctl ab prepare codex (--last | --session <id> [--allow-ancestor-cwd]) [--through-turn <completed-turn-id> --source-ref <git-ref>] [--json]
 driftctl ab report --run <ab-run-id> [--json] -- <program> [args...]
 ```
 
@@ -50,6 +50,9 @@ The Codex hook event is read from stdin and validated before enrollment lookup.
 7. Repeating report with the same command returns stored evidence; a different command cannot replace it.
 8. Primary result: verified completion. Post-checkpoint prompts, verifier time, and keeper calls/tokens are secondary evidence only.
 9. Result label: `prospective_paired`. Retrospective session pairing is deferred.
+10. `--through-turn` requires an exact `--session` plus `--source-ref`; both arms receive history through that completed turn and an equal snapshot of the resolved commit.
+11. A missing, non-completed, or concurrently changed selected turn fails before experiment state, workspaces, or forks are created. An in-progress turn reports the latest preceding completed turn when available.
+12. Historical source binding is explicit: Driftctl resolves the supplied Git ref once to a commit; it does not infer or reconstruct uncommitted historical filesystem state.
 
 ## Runtime Contract
 
@@ -171,4 +174,4 @@ pub fn handle(event: HookEvent, state: &mut SessionState) -> Result<HookOutput, 
 - Autonomous merge, push, or publication.
 - Claude native adapter in this MVP.
 - Statistical efficacy claim before real comparative evidence exists.
-- Arbitrary historical-turn slicing; select or create the persisted midpoint session first.
+- Reconstruction of uncommitted historical filesystem state.

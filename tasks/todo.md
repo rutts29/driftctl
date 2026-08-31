@@ -55,3 +55,12 @@
 - [x] A06 one identical external verifier runs independently in both candidates; verifier/candidate mutation fails; same-command retry is cached and a different command cannot overwrite evidence.
 - [x] A07 report emits `prospective_paired`, per-arm verified completion, source/enrollment invariants, post-fork record/user-prompt counts, verifier timing, and measured keeper call/token overhead or explicit unavailable fields.
 - [x] A08 packaged entrypoint completes a disposable provider rehearsal and one real Codex checkpoint → two forks → baseline detached/workflow explicit-on → report lifecycle without installing into the active Codex profile; temporary test resources are removed after evidence retention.
+
+## Historical Paired A/B
+
+- [ ] H01 CLI accepts `--through-turn <id>` only with exact `--session <id>` and `--source-ref <git-ref>`; malformed combinations fail before mutation.
+- [ ] H02 selected turn must exist and have status `completed`; in-progress selection fails actionably before resolver, experiment state, workspace, or fork, with the preceding completed turn when available.
+- [ ] H03 both persisted forks receive the same exact `lastTurnId`, preserve lineage/goal/policy, start no turn, and exclude all later source records.
+- [ ] H04 source ref resolves once to an immutable commit; both candidate repositories start from that commit while the source session, worktree, Git ref, and private configuration remain unchanged.
+- [ ] H05 report compares child tails against the historical prefix, detects later source-session/repository changes, and retains `prospective_paired` with explicit historical checkpoint provenance.
+- [ ] H06 checksum-packaged CLI completes a disposable real Codex multi-turn → historical prepare flow; active Codex profile remains untouched and temporary provider resources are removed.
