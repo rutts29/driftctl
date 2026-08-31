@@ -21,6 +21,10 @@
     "i02_parent_path_preflight": {
       "red_on_v0_5_0": true,
       "green_on_v0_5_1": true,
+      "nested_tool_cwd_blocked": true,
+      "equivalent_dotdot_path_blocked": true,
+      "symlink_escaped_space_and_case_variants_covered": true,
+      "structural_provider_cwd_allowed": true,
       "experiment_state_created": false,
       "candidate_workspace_created": false,
       "provider_fork_created": false
@@ -28,11 +32,13 @@
   },
   "packaged_rehearsal": {
     "version": "0.5.1",
-    "commit": "30b59f4b90ddd81edf6d735373304be010f798f4",
+    "commit": "ba66f967896859a841fc76d9dd074bc21a32ab0f",
     "target": "x86_64-unknown-linux-gnu",
-    "archive_sha256": "9a802a06c19fe26c1a8564c194b2c4b1629cdacb6bd7e250e04dd967a590cb92",
-    "binary_sha256": "cf0961ac6438be92a62b6362a84a2347442653beac5904afcf3d7c7b68f3771d",
+    "archive_sha256": "1b45d592fb11a81a1deec990cd89e4e945e762c06bc7b0b90420f3c1b591f5c7",
+    "binary_sha256": "836a3e2cd4f3f4d3ed6c9bdbace551f118f9c9dda6082f1d95211f0a6deab79b",
     "isolated_codex_plugin_install": "passed",
+    "installed_namespaced_control": "passed",
+    "installed_parent_path_preflight": "passed",
     "safe_ab_control": "passed",
     "active_profile_unchanged": true,
     "isolated_plugin_removed": true
