@@ -20,9 +20,8 @@
 driftctl integrate codex install
 driftctl integrate codex status
 driftctl integrate codex remove
-$driftctl on
-$driftctl status
-$driftctl off
+$driftctl on|status|off
+$driftctl-codex:driftctl on|status|off
 driftctl attach codex --session <exact-id>
 driftctl status codex --session <exact-id>
 driftctl resolve codex --session <exact-id> ...
@@ -44,7 +43,7 @@ The Codex hook event is read from stdin and validated before enrollment lookup.
 1. `ab prepare` resolves one persisted source checkpoint before creating either arm.
 2. It materializes equal baseline/workflow repositories and creates two distinct persisted Codex forks with the same inherited history, native goal, model, effort, sandbox, and approval policy.
 3. Prepare starts no agent turn, creates no enrollment, and leaves source session/worktree unchanged.
-4. Baseline continues normally. Workflow continues only after exact `$driftctl on` inside that fork.
+4. Baseline continues normally. Workflow continues only after an exact supported control invocation inside that fork.
 5. `ab report` requires baseline detached and workflow attached to its exact candidate repository.
 6. One verifier command runs independently against both candidates. Its program is canonicalized from the report invocation directory, must be one regular file outside both candidates, and is content-pinned across arms. Candidate-resolved inputs, verifier mutation, candidate mutation, or nonzero exit fail closed.
 7. Repeating report with the same command returns stored evidence; a different command cannot replace it.
@@ -53,11 +52,12 @@ The Codex hook event is read from stdin and validated before enrollment lookup.
 10. `--through-turn` requires an exact `--session` plus `--source-ref`; both arms receive history through that completed turn and an equal snapshot of the resolved commit.
 11. A missing, non-completed, or concurrently changed selected turn fails before experiment state, workspaces, or forks are created. An in-progress turn reports the latest preceding completed turn when available.
 12. Historical source binding is explicit: Driftctl resolves the supplied Git ref once to a commit; it does not infer or reconstruct uncommitted historical filesystem state.
+13. Prepare fails before experiment state, workspaces, or forks when inherited provider content contains an absolute path into the parent checkout.
 
 ## Runtime Contract
 
 1. Installation loads the explicit-only skill and hooks but creates no enrollment.
-2. Exact `$driftctl on` at `UserPromptSubmit` uses Codex-supplied `session_id` and `cwd`, reads that persisted thread and native goal, and creates private session-keyed history, cursor, and projection.
+2. Exact `$driftctl on` or Codex-qualified `$driftctl-codex:driftctl on` at `UserPromptSubmit` uses Codex-supplied `session_id` and `cwd`, reads that persisted thread and native goal, and creates private session-keyed history, cursor, and projection.
 3. The external `attach --session` command reaches the same bootstrap path for diagnostics and compatibility.
 4. Hook handlers return immediately with no output when the session is not enrolled.
 5. `UserPromptSubmit` reconciles unseen records, folds the current projection with the new authoritative user prompt, validates the keeper proposal, and either:
@@ -101,7 +101,7 @@ The Codex hook event is read from stdin and validated before enrollment lookup.
 
 - Enrollment key: exact provider plus exact session ID; repository identity is validation data, never the enrollment key.
 - Attaching session A cannot activate session B, including another session in the same repository.
-- Installation, startup, resume, compaction, ordinary prompts, and near-match control text cannot create enrollment.
+- Installation, startup, resume, compaction, ordinary prompts, and text outside either exact supported control grammar cannot create enrollment.
 - Persisted exact control commands are source-accounted system observations, never user task authority.
 - Existing hook definitions, config values, `AGENTS.md`, `CLAUDE.md`, skills, permissions, provider authentication, and worktree remain owned by the user.
 - Integration adds/removes only Driftctl's isolated plugin registration and files.

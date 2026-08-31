@@ -987,6 +987,47 @@ fn prospective_ab_cli_prepares_idle_forks_then_reports_the_explicitly_managed_ar
 }
 
 #[test]
+fn i02_prospective_ab_rejects_parent_absolute_paths_before_workspace_or_fork() {
+    let mut fixture = Fixture::new(vec![base_proposal()]);
+    let canonical = fixture.root.canonicalize().expect("canonical source");
+    let mut source: Value =
+        serde_json::from_str(&fixture.environment["DRIFTCTL_FAKE_READ"]).expect("source fixture");
+    source["thread"]["turns"][0]["items"]
+        .as_array_mut()
+        .expect("source items")
+        .push(json!({
+            "type":"commandExecution",
+            "id":"parent-absolute-command",
+            "command":format!("sed -n '1,20p' {}/README.md", canonical.display()),
+            "commandActions":[],
+            "cwd":canonical,
+            "status":"completed"
+        }));
+    fixture
+        .environment
+        .insert("DRIFTCTL_FAKE_READ", source.to_string());
+
+    let rejected = fixture.run_ab_prepare();
+
+    assert_eq!(rejected.status.code(), Some(2), "{rejected:?}");
+    let stderr = String::from_utf8_lossy(&rejected.stderr);
+    assert!(stderr.contains("absolute path"), "{stderr}");
+    assert!(stderr.contains("parent checkout"), "{stderr}");
+    assert!(
+        !fixture.state_home.join("driftctl/ab").exists(),
+        "unsafe prepare created experiment state"
+    );
+    assert!(
+        !fixture
+            .rpc_calls()
+            .iter()
+            .any(|request| request["method"] == "thread/fork"),
+        "unsafe prepare created a provider fork"
+    );
+    fixture.assert_unchanged();
+}
+
+#[test]
 fn prospective_ab_prepare_retains_an_explicit_blocked_partial_run() {
     let mut fixture = Fixture::new(vec![base_proposal()]);
     fixture

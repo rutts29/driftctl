@@ -64,3 +64,8 @@
 - [x] H04 source ref resolves once to an immutable commit; both candidate repositories start from that commit while the source session, worktree, Git ref, and private configuration remain unchanged.
 - [x] H05 report compares child tails against the historical prefix, detects later source-session/repository changes, and retains `prospective_paired` with explicit historical checkpoint provenance.
 - [x] H06 checksum-packaged CLI completes a disposable real Codex multi-turn → historical prepare flow; active Codex profile remains untouched and temporary provider resources are removed.
+
+## macOS Incident Regressions
+
+- [x] I01 exact Codex-qualified `$driftctl-codex:driftctl on|status|off` controls persist and report the invoking session's real enrollment state; unsupported near matches remain no-ops.
+- [x] I02 A/B prepare rejects inherited absolute paths into the parent checkout before experiment state, candidate workspaces, or provider forks.

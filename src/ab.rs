@@ -246,6 +246,14 @@ pub(crate) fn prepare(
     let canonical_root = root
         .canonicalize()
         .map_err(|error| AbFailure::error(format!("could not canonicalize source: {error}")))?;
+    if imported
+        .references_checkout_path_in_content(&canonical_root)
+        .map_err(|error| AbFailure::error(error.to_string()))?
+    {
+        return Err(AbFailure::blocked(
+            "source session contains an absolute path into the parent checkout; A/B prepare refuses before creating candidates or forks because inherited agents may follow that path outside isolation",
+        ));
+    }
     let source_attestation_digest = crate::workspace::source_attestation_digest(&canonical_root)
         .map_err(|error| AbFailure::error(error.to_string()))?;
     let worker_policy = WorkerPolicy::luna_max();

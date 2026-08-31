@@ -9,7 +9,7 @@ pub(crate) enum PluginControl {
 
 pub(crate) fn parse(prompt: &str) -> Option<PluginControl> {
     let mut fields = prompt.split_whitespace();
-    if fields.next()? != "$driftctl" {
+    if !matches!(fields.next()?, "$driftctl" | "$driftctl-codex:driftctl") {
         return None;
     }
     let action = match fields.next()? {
@@ -30,6 +30,18 @@ mod tests {
         assert_eq!(parse("$driftctl on"), Some(PluginControl::On));
         assert_eq!(parse("  $driftctl\tstatus\n"), Some(PluginControl::Status));
         assert_eq!(parse("$driftctl off"), Some(PluginControl::Off));
+        assert_eq!(
+            parse("$driftctl-codex:driftctl on"),
+            Some(PluginControl::On)
+        );
+        assert_eq!(
+            parse("$driftctl-codex:driftctl status"),
+            Some(PluginControl::Status)
+        );
+        assert_eq!(
+            parse("$driftctl-codex:driftctl off"),
+            Some(PluginControl::Off)
+        );
 
         for prompt in [
             "$driftctl",
@@ -38,6 +50,8 @@ mod tests {
             "please use $driftctl on",
             "`$driftctl on`",
             "$driftctl-on",
+            "$other:driftctl on",
+            "$driftctl-codex:driftctl on now",
         ] {
             assert_eq!(parse(prompt), None, "unexpected control match: {prompt}");
         }

@@ -352,6 +352,98 @@ fn u01_explicit_on_activates_only_the_invoking_session_and_injects_intent() {
 }
 
 #[test]
+fn i01_codex_qualified_on_creates_a_durable_exact_session_enrollment() {
+    let root = temporary_directory("qualified-in-session-on");
+    let session_id = "thread-qualified-explicit-on";
+    let environment = attached_environment(&root, session_id);
+
+    let activated = run_hook_with_environment(
+        &root,
+        &environment,
+        &json!({
+            "session_id": session_id,
+            "transcript_path": null,
+            "cwd": root,
+            "hook_event_name": "UserPromptSubmit",
+            "model": "gpt-5.6-luna",
+            "permission_mode": "default",
+            "turn_id": "turn-qualified-activate",
+            "prompt": "$driftctl-codex:driftctl on"
+        }),
+    );
+    assert_eq!(
+        activated.status.code(),
+        Some(0),
+        "qualified activation failed\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&activated.stdout),
+        String::from_utf8_lossy(&activated.stderr)
+    );
+    let projection = projection_from_hook(&activated);
+    assert_eq!(
+        projection["goal"]["text"],
+        "Preserve the existing CLI behavior."
+    );
+
+    let status = run_cli(
+        &root,
+        &["status", "codex", "--session", session_id, "--json"],
+        &environment,
+    );
+    assert_eq!(status.status.code(), Some(0), "{status:?}");
+    let status: Value = serde_json::from_slice(&status.stdout).expect("status JSON");
+    assert_eq!(status["status"], "attached");
+    assert!(
+        status["run_id"]
+            .as_str()
+            .is_some_and(|run_id| !run_id.is_empty())
+    );
+
+    let namespaced_status = run_hook_with_environment(
+        &root,
+        &environment,
+        &json!({
+            "session_id": session_id,
+            "transcript_path": null,
+            "cwd": root,
+            "hook_event_name": "UserPromptSubmit",
+            "model": "gpt-5.6-luna",
+            "permission_mode": "default",
+            "turn_id": "turn-qualified-status",
+            "prompt": "$driftctl-codex:driftctl status"
+        }),
+    );
+    assert_eq!(namespaced_status.status.code(), Some(0));
+    assert!(additional_context(&namespaced_status).contains("State: on"));
+
+    let disabled = run_hook_with_environment(
+        &root,
+        &environment,
+        &json!({
+            "session_id": session_id,
+            "transcript_path": null,
+            "cwd": root,
+            "hook_event_name": "UserPromptSubmit",
+            "model": "gpt-5.6-luna",
+            "permission_mode": "default",
+            "turn_id": "turn-qualified-off",
+            "prompt": "$driftctl-codex:driftctl off"
+        }),
+    );
+    assert_eq!(disabled.status.code(), Some(0));
+    assert!(additional_context(&disabled).contains("State: off"));
+
+    let status = run_cli(
+        &root,
+        &["status", "codex", "--session", session_id, "--json"],
+        &environment,
+    );
+    let status: Value = serde_json::from_slice(&status.stdout).expect("detached status JSON");
+    assert_eq!(status["status"], "detached");
+
+    fs::remove_dir_all(root).expect("remove isolated test directory");
+}
+
+#[test]
 fn u02_u03_lifecycle_and_near_match_prompts_never_activate_a_session() {
     let root = temporary_directory("no-implicit-activation");
     let state_home = root.join("state");
@@ -394,6 +486,8 @@ fn u02_u03_lifecycle_and_near_match_prompts_never_activate_a_session() {
         "$driftctl on now",
         "please use $driftctl on",
         "`$driftctl on`",
+        "$driftctl-codex:driftctl on now",
+        "$other:driftctl on",
     ]
     .into_iter()
     .enumerate()

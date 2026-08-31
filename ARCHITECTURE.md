@@ -4,7 +4,7 @@
 
 ```text
 install explicit-only skill + isolated hooks (inert)
-  → exact $driftctl on at UserPromptSubmit
+  → exact $driftctl on or $driftctl-codex:driftctl on at UserPromptSubmit
   → bind Codex-supplied session_id + cwd
   → bootstrap exact persisted session
   → bootstrap private ledger + bounded projection
@@ -114,6 +114,7 @@ Codex App Server        → provider state authority
 ```text
 persisted midpoint session
   → resolve checkpoint
+  → reject inherited absolute references into the parent checkout
   → snapshot equal candidate repositories
   → fork A + B without starting turns or changing inherited goals
   → persist private experiment manifest

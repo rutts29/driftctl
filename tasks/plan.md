@@ -27,6 +27,10 @@ P0 contract/tests
   → H1 exact-turn provider fork
   → H2 historical source snapshot + report
   → H3 packaged + real-provider proof
+  → I0 macOS incident regressions
+  → I1 truthful namespaced control
+  → I2 parent-path preflight
+  → I3 isolated installed E2E
 ```
 
 ## Slices
@@ -49,6 +53,10 @@ P0 contract/tests
 | H1 | Add completed-turn preflight and `lastTurnId` | H0 | adapter/process tests prove exact selection and mutation-free active-turn rejection |
 | H2 | Bind an explicit Git commit and prefix-aware report | H1 | installed CLI creates equal historical arms and reports against the exact prefix |
 | H3 | Production-shaped historical proof | H2 | disposable real Codex multi-turn session → historical A/B prepare through packaged entrypoint |
+| I0 | Freeze macOS incident regressions | H3 | I01–I02 fail against v0.5.0 with captured symptoms |
+| I1 | Accept Codex-qualified exact controls | I0 | namespaced on/status/off produce durable exact-session results; near matches stay inert |
+| I2 | Fail closed on inherited parent-checkout paths | I1 | unsafe prepare creates no A/B state, workspace, or fork |
+| I3 | Isolated installed rehearsal | I2 | packaged entrypoint passes without changing the active Codex profile |
 
 ## Checkpoints
 

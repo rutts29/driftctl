@@ -66,6 +66,32 @@ impl ImportedSession {
             .to_owned()
     }
 
+    pub(crate) fn references_checkout_path_in_content(
+        &self,
+        repository: &Path,
+    ) -> Result<bool, SourceError> {
+        let repository = repository
+            .to_str()
+            .ok_or_else(|| SourceError::new("current repository path is not valid UTF-8"))?;
+        if self
+            .native_goal
+            .text()
+            .is_some_and(|goal| text_references_checkout(goal, repository))
+        {
+            return Ok(true);
+        }
+        let turns = required_array(&self.thread_snapshot, "turns", "thread/read.result.thread")?;
+        Ok(turns.iter().any(|turn| {
+            turn.get("items")
+                .and_then(Value::as_array)
+                .is_some_and(|items| {
+                    items
+                        .iter()
+                        .any(|item| value_references_checkout(item, repository))
+                })
+        }))
+    }
+
     /// Converts the App Server's explicit user messages to strict neutral
     /// records before any semantic resolver can inspect them.
     pub(crate) fn neutral_bundle(&self) -> Result<NeutralSessionBundle, SourceError> {
@@ -84,6 +110,31 @@ impl ImportedSession {
         )
         .map_err(|error| SourceError::new(format!("invalid imported Codex bundle: {error}")))
     }
+}
+
+fn value_references_checkout(value: &Value, repository: &str) -> bool {
+    match value {
+        Value::String(text) => text_references_checkout(text, repository),
+        Value::Array(values) => values
+            .iter()
+            .any(|value| value_references_checkout(value, repository)),
+        Value::Object(fields) => fields
+            .iter()
+            .any(|(field, value)| field != "cwd" && value_references_checkout(value, repository)),
+        Value::Null | Value::Bool(_) | Value::Number(_) => false,
+    }
+}
+
+fn text_references_checkout(text: &str, repository: &str) -> bool {
+    text.match_indices(repository).any(|(index, _)| {
+        let trailing = &text[index + repository.len()..];
+        trailing.is_empty()
+            || trailing.starts_with('/')
+            || trailing.chars().next().is_some_and(|character| {
+                character.is_whitespace()
+                    || matches!(character, '"' | '\'' | '`' | ':' | ',' | ')' | ']' | '}')
+            })
+    })
 }
 
 impl fmt::Debug for ImportedSession {
