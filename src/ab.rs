@@ -17,6 +17,7 @@ use crate::codex_child::{CodexChildAdapter, GoalObservation, PreservedForkReques
 use crate::codex_source::{self, SessionSelection};
 use crate::inspect_state::InspectSource;
 use crate::run_store::{RunStore, SourceCursorComparison};
+use crate::workspace::ResolvedSourceRef;
 
 const SCHEMA_VERSION: u32 = 1;
 const EXPERIMENT_KIND: &str = "prospective_paired";
@@ -74,6 +75,14 @@ struct SourceState {
     authoritative_user_record_count: usize,
     allow_ancestor_cwd: bool,
     source_attestation_digest: Option<String>,
+    #[serde(default)]
+    checkpoint_kind: Option<String>,
+    #[serde(default)]
+    through_turn_id: Option<String>,
+    #[serde(default)]
+    source_commit: Option<String>,
+    #[serde(default)]
+    observed_source_digest: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -142,10 +151,25 @@ pub(crate) struct AbOutput {
     pub(crate) text: String,
 }
 
+pub(crate) struct HistoricalCheckpoint {
+    through_turn_id: String,
+    source_ref: ResolvedSourceRef,
+}
+
+impl HistoricalCheckpoint {
+    pub(crate) fn new(through_turn_id: String, source_ref: ResolvedSourceRef) -> Self {
+        Self {
+            through_turn_id,
+            source_ref,
+        }
+    }
+}
+
 pub(crate) fn prepare(
     root: &Path,
     selection: SessionSelection<'_>,
     inspect_run_id: &str,
+    historical: Option<HistoricalCheckpoint>,
 ) -> Result<AbOutput, AbFailure> {
     let allow_ancestor_cwd = matches!(
         &selection,
@@ -154,8 +178,31 @@ pub(crate) fn prepare(
             ..
         }
     );
-    let imported = codex_source::inspect(root, selection)
-        .map_err(|error| AbFailure::error(error.to_string()))?;
+    let imported = match historical.as_ref() {
+        Some(checkpoint) => {
+            codex_source::inspect_through_turn(root, selection, &checkpoint.through_turn_id)
+        }
+        None => codex_source::inspect(root, selection),
+    }
+    .map_err(|error| {
+        if error.is_blocked() {
+            AbFailure::blocked(error.to_string())
+        } else {
+            AbFailure::error(error.to_string())
+        }
+    })?;
+    let observed_source = if historical.is_some() {
+        codex_source::inspect(
+            root,
+            SessionSelection::Explicit {
+                id: imported.session_id(),
+                allow_ancestor_cwd,
+            },
+        )
+        .map_err(|error| AbFailure::error(error.to_string()))?
+    } else {
+        imported.clone()
+    };
     let bundle = imported
         .neutral_bundle()
         .map_err(|error| AbFailure::error(error.to_string()))?;
@@ -199,6 +246,8 @@ pub(crate) fn prepare(
     let canonical_root = root
         .canonicalize()
         .map_err(|error| AbFailure::error(format!("could not canonicalize source: {error}")))?;
+    let source_attestation_digest = crate::workspace::source_attestation_digest(&canonical_root)
+        .map_err(|error| AbFailure::error(error.to_string()))?;
     let worker_policy = WorkerPolicy::luna_max();
     let state = ExperimentState {
         schema_version: SCHEMA_VERSION,
@@ -215,7 +264,19 @@ pub(crate) fn prepare(
             record_count: bundle.records().len(),
             authoritative_user_record_count: bundle.authoritative_records().len(),
             allow_ancestor_cwd,
-            source_attestation_digest: None,
+            source_attestation_digest: Some(source_attestation_digest.clone()),
+            checkpoint_kind: Some(if historical.is_some() {
+                "historical_turn".to_owned()
+            } else {
+                "full_session".to_owned()
+            }),
+            through_turn_id: historical
+                .as_ref()
+                .map(|checkpoint| checkpoint.through_turn_id.clone()),
+            source_commit: historical
+                .as_ref()
+                .map(|checkpoint| checkpoint.source_ref.commit().to_owned()),
+            observed_source_digest: Some(observed_source.source_digest()),
         },
         starting: None,
         worker_policy: WorkerPolicyState {
@@ -234,8 +295,15 @@ pub(crate) fn prepare(
     let workspaces = store.path.join("workspaces");
     crate::run_store::ensure_private_directory(&workspaces)
         .map_err(|error| store.blocked(error.to_string()))?;
-    let pair = crate::workspace::isolate_workspace(&canonical_root, &workspaces)
-        .map_err(|error| store.blocked(error.to_string()))?;
+    let pair = match historical.as_ref() {
+        Some(checkpoint) => crate::workspace::isolate_workspace_at_ref(
+            &canonical_root,
+            &workspaces,
+            &checkpoint.source_ref,
+        ),
+        None => crate::workspace::isolate_workspace(&canonical_root, &workspaces),
+    }
+    .map_err(|error| store.blocked(error.to_string()))?;
     if pair.baseline().manifest() != pair.workflow().manifest() {
         return Err(store.blocked("candidate starting manifests are not equal"));
     }
@@ -246,8 +314,6 @@ pub(crate) fn prepare(
     if baseline_digest != workflow_digest {
         return Err(store.blocked("candidate starting digests are not equal"));
     }
-    store.state.source.source_attestation_digest =
-        Some(pair.source_attestation().digest().to_owned());
     store.state.starting = Some(StartingState {
         workspace_manifest_digest: pair.baseline().manifest().digest().to_owned(),
         candidate_digest: baseline_digest,
@@ -257,9 +323,14 @@ pub(crate) fn prepare(
     store.persist()?;
 
     let adapter = CodexChildAdapter::from_environment();
-    let baseline_request = PreservedForkRequest::new(source_session_id, pair.baseline().root())
+    let mut baseline_request = PreservedForkRequest::new(source_session_id, pair.baseline().root())
         .map_err(|error| store.blocked(error.to_string()))?
         .with_worker_policy(worker_policy.clone());
+    if let Some(checkpoint) = historical.as_ref() {
+        baseline_request = baseline_request
+            .through_turn(&checkpoint.through_turn_id)
+            .map_err(|error| store.blocked(error.to_string()))?;
+    }
     let baseline = adapter
         .fork_preserving_goal(baseline_request)
         .map_err(|error| store.blocked(error.to_string()))?;
@@ -269,9 +340,14 @@ pub(crate) fn prepare(
     });
     store.persist()?;
 
-    let workflow_request = PreservedForkRequest::new(source_session_id, pair.workflow().root())
+    let mut workflow_request = PreservedForkRequest::new(source_session_id, pair.workflow().root())
         .map_err(|error| store.blocked(error.to_string()))?
         .with_worker_policy(worker_policy);
+    if let Some(checkpoint) = historical.as_ref() {
+        workflow_request = workflow_request
+            .through_turn(&checkpoint.through_turn_id)
+            .map_err(|error| store.blocked(error.to_string()))?;
+    }
     let workflow = adapter
         .fork_preserving_goal(workflow_request)
         .map_err(|error| store.blocked(error.to_string()))?;
@@ -296,6 +372,30 @@ pub(crate) fn prepare(
         cwd: workflow.child_cwd().to_owned(),
     });
 
+    if historical.is_some() {
+        for (session_id, cwd) in [
+            (baseline.child_id(), baseline.child_cwd()),
+            (workflow.child_id(), workflow.child_cwd()),
+        ] {
+            let child = codex_source::inspect(
+                cwd,
+                SessionSelection::Explicit {
+                    id: session_id,
+                    allow_ancestor_cwd: false,
+                },
+            )
+            .map_err(|error| store.blocked(error.to_string()))?;
+            let child_bundle = child
+                .neutral_bundle()
+                .map_err(|error| store.blocked(error.to_string()))?;
+            if child_bundle.records() != bundle.records() {
+                return Err(store.blocked(
+                    "historical A/B child does not contain the exact selected source prefix",
+                ));
+            }
+        }
+    }
+
     for session_id in [baseline.child_id(), workflow.child_id()] {
         if crate::enrollment::load(session_id)
             .map_err(|error| store.blocked(error.to_string()))?
@@ -306,8 +406,13 @@ pub(crate) fn prepare(
     }
     codex_source::verify_unchanged(&canonical_root, &imported)
         .map_err(|error| store.blocked(error.to_string()))?;
-    crate::workspace::verify_source_attestation(&canonical_root, pair.source_attestation())
+    codex_source::verify_unchanged(&canonical_root, &observed_source)
         .map_err(|error| store.blocked(error.to_string()))?;
+    let observed_attestation = crate::workspace::source_attestation_digest(&canonical_root)
+        .map_err(|error| store.blocked(error.to_string()))?;
+    if observed_attestation != source_attestation_digest {
+        return Err(store.blocked("source repository changed during A/B prepare"));
+    }
     store.state.status = ExperimentStatus::Ready;
     store.persist()?;
     Ok(prepare_output(&store.state))
@@ -387,14 +492,31 @@ pub(crate) fn report(run_id: &str, command: Vec<OsString>) -> Result<AbOutput, A
     let keeper_usage = crate::keeper_metrics::load(&workflow_run).map_err(AbFailure::error)?;
     drop(workflow_run);
 
-    let source_imported = codex_source::inspect(
-        &store.state.source.repository,
-        SessionSelection::Explicit {
-            id: &store.state.source.session_id,
-            allow_ancestor_cwd: store.state.source.allow_ancestor_cwd,
-        },
-    )
+    let source_selection = SessionSelection::Explicit {
+        id: &store.state.source.session_id,
+        allow_ancestor_cwd: store.state.source.allow_ancestor_cwd,
+    };
+    let source_imported = match store.state.source.through_turn_id.as_deref() {
+        Some(turn_id) => codex_source::inspect_through_turn(
+            &store.state.source.repository,
+            source_selection,
+            turn_id,
+        ),
+        None => codex_source::inspect(&store.state.source.repository, source_selection),
+    }
     .map_err(|error| AbFailure::blocked(error.to_string()))?;
+    let observed_source = if store.state.source.through_turn_id.is_some() {
+        codex_source::inspect(
+            &store.state.source.repository,
+            SessionSelection::Explicit {
+                id: &store.state.source.session_id,
+                allow_ancestor_cwd: store.state.source.allow_ancestor_cwd,
+            },
+        )
+        .map_err(|error| AbFailure::blocked(error.to_string()))?
+    } else {
+        source_imported.clone()
+    };
     let source_bundle = source_imported
         .neutral_bundle()
         .map_err(|error| AbFailure::error(error.to_string()))?;
@@ -404,6 +526,17 @@ pub(crate) fn report(run_id: &str, command: Vec<OsString>) -> Result<AbOutput, A
         || source_bundle.authoritative_records().len()
             != store.state.source.authoritative_user_record_count
     {
+        return Err(AbFailure::blocked(
+            "source session changed after A/B prepare; this pair is no longer controlled",
+        ));
+    }
+    let expected_observed_source_digest = store
+        .state
+        .source
+        .observed_source_digest
+        .as_deref()
+        .unwrap_or(&store.state.source.source_digest);
+    if observed_source.source_digest() != expected_observed_source_digest {
         return Err(AbFailure::blocked(
             "source session changed after A/B prepare; this pair is no longer controlled",
         ));
@@ -466,6 +599,8 @@ pub(crate) fn report(run_id: &str, command: Vec<OsString>) -> Result<AbOutput, A
         ));
     }
     codex_source::verify_unchanged(&store.state.source.repository, &source_imported)
+        .map_err(|error| AbFailure::blocked(error.to_string()))?;
+    codex_source::verify_unchanged(&store.state.source.repository, &observed_source)
         .map_err(|error| AbFailure::blocked(error.to_string()))?;
     codex_source::verify_unchanged(&baseline_cwd, &baseline_imported)
         .map_err(|error| AbFailure::blocked(error.to_string()))?;
@@ -598,6 +733,12 @@ pub(crate) fn report(run_id: &str, command: Vec<OsString>) -> Result<AbOutput, A
         "status":"evaluated",
         "run_id":store.state.run_id,
         "cached":false,
+        "checkpoint":{
+            "kind":store.state.source.checkpoint_kind.as_deref().unwrap_or("full_session"),
+            "through_turn_id":store.state.source.through_turn_id,
+            "source_commit":store.state.source.source_commit,
+            "native_goal_basis":if store.state.source.through_turn_id.is_some() {"current_at_prepare"} else {"checkpoint"},
+        },
         "source_unchanged":true,
         "fairness":{
             "starting_candidate_digest_equal":true,
@@ -798,6 +939,12 @@ fn prepare_output(state: &ExperimentState) -> AbOutput {
         "experiment_kind":EXPERIMENT_KIND,
         "status":"ready",
         "run_id":state.run_id,
+        "checkpoint":{
+            "kind":state.source.checkpoint_kind.as_deref().unwrap_or("full_session"),
+            "through_turn_id":state.source.through_turn_id,
+            "source_commit":state.source.source_commit,
+            "native_goal_basis":if state.source.through_turn_id.is_some() {"current_at_prepare"} else {"checkpoint"},
+        },
         "fairness":{
             "starting_candidate_digest_equal":true,
             "inherited_goal_equal":true,

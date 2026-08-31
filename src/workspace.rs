@@ -19,6 +19,18 @@ use sha2::{Digest, Sha256};
 
 static CANDIDATE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ResolvedSourceRef {
+    commit: String,
+}
+
+impl ResolvedSourceRef {
+    #[must_use]
+    pub fn commit(&self) -> &str {
+        &self.commit
+    }
+}
+
 /// A deterministic digest of the selected source workspace.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WorkspaceManifest {
@@ -353,6 +365,130 @@ pub fn isolate_workspace(
         baseline_diff,
         workflow_diff,
     })
+}
+
+/// Resolve one operator-supplied Git ref to an immutable commit before any
+/// candidate workspace is created.
+pub fn resolve_source_ref(
+    source: impl AsRef<Path>,
+    source_ref: &str,
+) -> Result<ResolvedSourceRef, WorkspaceError> {
+    if source_ref.is_empty() || source_ref.len() > 4096 || source_ref.chars().any(char::is_control)
+    {
+        return Err(WorkspaceError::Git {
+            action: "resolve historical source ref",
+            message: "invalid Git ref".to_owned(),
+        });
+    }
+    let source = source
+        .as_ref()
+        .canonicalize()
+        .map_err(|error| io_error("canonicalize source root", source.as_ref(), error))?;
+    let commit_expression = format!("{source_ref}^{{commit}}");
+    let commit = git_text_with_action(
+        &source,
+        &[
+            "rev-parse",
+            "--verify",
+            "--end-of-options",
+            &commit_expression,
+        ],
+        "resolve historical source ref",
+    )?;
+    if !(40..=64).contains(&commit.len()) || !commit.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(WorkspaceError::Git {
+            action: "resolve historical source ref",
+            message: "Git returned an invalid commit object ID".to_owned(),
+        });
+    }
+    Ok(ResolvedSourceRef { commit })
+}
+
+/// Materialize both candidates from one already-resolved historical commit.
+/// The source repository and worktree are read-only; a private disposable
+/// clone is removed before this function returns.
+pub fn isolate_workspace_at_ref(
+    source: impl AsRef<Path>,
+    candidate_parent: impl AsRef<Path>,
+    resolved: &ResolvedSourceRef,
+) -> Result<WorkspacePair, WorkspaceError> {
+    let source = source
+        .as_ref()
+        .canonicalize()
+        .map_err(|error| io_error("canonicalize source root", source.as_ref(), error))?;
+    let candidate_parent = candidate_parent.as_ref().canonicalize().map_err(|error| {
+        io_error(
+            "canonicalize candidate parent",
+            candidate_parent.as_ref(),
+            error,
+        )
+    })?;
+    if candidate_parent.starts_with(&source) {
+        return Err(WorkspaceError::CandidateRootInsideSource {
+            source,
+            candidate_parent,
+        });
+    }
+    let checkout = allocate_temporary_checkout(&candidate_parent)?;
+    let clone = Command::new("git")
+        .args(["clone", "--quiet", "--no-hardlinks", "--no-checkout", "--"])
+        .arg(&source)
+        .arg(&checkout)
+        .output()
+        .map_err(|error| WorkspaceError::Git {
+            action: "clone historical source commit",
+            message: error.to_string(),
+        })?;
+    if !clone.status.success() {
+        let _ = remove_temporary_checkout(&checkout);
+        return Err(WorkspaceError::Git {
+            action: "clone historical source commit",
+            message: String::from_utf8_lossy(&clone.stderr).trim().to_owned(),
+        });
+    }
+    let result = (|| {
+        git_output(
+            &checkout,
+            &["checkout", "--quiet", "--detach", resolved.commit()],
+            "checkout historical source commit",
+        )?;
+        let observed = git_text(&checkout, &["rev-parse", "--verify", "HEAD"])?;
+        if observed != resolved.commit {
+            return Err(WorkspaceError::Git {
+                action: "checkout historical source commit",
+                message: "resolved commit changed during checkout".to_owned(),
+            });
+        }
+        isolate_workspace(&checkout, &candidate_parent)
+    })();
+    remove_temporary_checkout(&checkout)?;
+    result
+}
+
+fn allocate_temporary_checkout(parent: &Path) -> Result<PathBuf, WorkspaceError> {
+    for _ in 0..1024 {
+        let sequence = CANDIDATE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let path = parent.join(format!(
+            ".driftctl-source-checkout-{}-{sequence}",
+            std::process::id()
+        ));
+        if !path.exists() {
+            return Ok(path);
+        }
+    }
+    Err(WorkspaceError::Io {
+        action: "allocate historical source checkout",
+        path: parent.to_path_buf(),
+        message: "could not allocate a unique checkout path".to_owned(),
+    })
+}
+
+fn remove_temporary_checkout(path: &Path) -> Result<(), WorkspaceError> {
+    match fs::remove_dir_all(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(io_error("remove historical source checkout", path, error)),
+    }
 }
 
 /// Re-attest the complete protected source boundary after external work.
@@ -822,7 +958,15 @@ fn attest_file_contents(path: &Path, hasher: &mut Sha256) -> Result<(), Workspac
 }
 
 fn git_text(root: &Path, arguments: &[&str]) -> Result<String, WorkspaceError> {
-    let output = git_output(root, arguments, "read Git HEAD")?;
+    git_text_with_action(root, arguments, "read Git HEAD")
+}
+
+fn git_text_with_action(
+    root: &Path,
+    arguments: &[&str],
+    action: &'static str,
+) -> Result<String, WorkspaceError> {
+    let output = git_output(root, arguments, action)?;
     String::from_utf8(output)
         .map(|text| text.trim_end_matches(['\r', '\n']).to_owned())
         .map_err(|error| WorkspaceError::Git {

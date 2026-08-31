@@ -173,6 +173,32 @@ fn ab_prepare(root: &Path, arguments: &[String]) -> CliOutput {
         Ok(options) => options,
         Err(error) => return CliOutput::error(error),
     };
+    let historical = match (&options.through_turn, &options.source_ref) {
+        (Some(through_turn), Some(source_ref)) => {
+            let preflight = codex_source::inspect_through_turn(
+                root,
+                options.selection.as_borrowed(options.allow_ancestor_cwd),
+                through_turn,
+            );
+            if let Err(error) = preflight {
+                return if error.is_blocked() {
+                    CliOutput::blocked(error.to_string())
+                } else {
+                    CliOutput::error(error.to_string())
+                };
+            }
+            let resolved = match crate::workspace::resolve_source_ref(root, source_ref) {
+                Ok(resolved) => resolved,
+                Err(error) => return CliOutput::error(error.to_string()),
+            };
+            Some(crate::ab::HistoricalCheckpoint::new(
+                through_turn.clone(),
+                resolved,
+            ))
+        }
+        (None, None) => None,
+        _ => unreachable!("historical option pairing was validated"),
+    };
     let inspection = inspect(root, &options.inspect_arguments());
     if inspection.exit_code != 0 {
         return inspection;
@@ -188,6 +214,7 @@ fn ab_prepare(root: &Path, arguments: &[String]) -> CliOutput {
         root,
         options.selection.as_borrowed(options.allow_ancestor_cwd),
         inspect_run_id,
+        historical,
     ) {
         Ok(output) => output,
         Err(error) if error.is_blocked() => return CliOutput::blocked(error.message()),
@@ -215,8 +242,13 @@ fn inspect_codex(root: &Path, arguments: &[String]) -> CliOutput {
     let Ok(options) = parsed else {
         return CliOutput::error(parsed.expect_err("checked error"));
     };
-    let imported = match codex_source::inspect(root, options.selection) {
+    let imported = match options.through_turn {
+        Some(turn_id) => codex_source::inspect_through_turn(root, options.selection, turn_id),
+        None => codex_source::inspect(root, options.selection),
+    };
+    let imported = match imported {
         Ok(imported) => imported,
+        Err(error) if error.is_blocked() => return CliOutput::blocked(error.to_string()),
         Err(error) => return CliOutput::error(error.to_string()),
     };
     let bundle = match imported.neutral_bundle() {
@@ -2499,6 +2531,7 @@ fn prompt_for_goal_action(pending: Option<&PendingGoalChange>) -> Result<Continu
 #[derive(Debug)]
 struct InspectOptions<'a> {
     selection: SessionSelection<'a>,
+    through_turn: Option<&'a str>,
     json: bool,
     compactor: CompactorConfig,
 }
@@ -2515,6 +2548,7 @@ fn parse_inspect_arguments(arguments: &[String]) -> Result<InspectOptions<'_>, S
     let mut compactor = None;
     let mut reasoning = None;
     let mut allow_ancestor_cwd = false;
+    let mut through_turn = None;
     let mut index = 1;
     while index < arguments.len() {
         match arguments[index].as_str() {
@@ -2535,6 +2569,13 @@ fn parse_inspect_arguments(arguments: &[String]) -> Result<InspectOptions<'_>, S
             "--allow-ancestor-cwd" if !allow_ancestor_cwd => {
                 allow_ancestor_cwd = true;
                 index += 1;
+            }
+            "--through-turn" if through_turn.is_none() => {
+                let Some(value) = arguments.get(index + 1).filter(|value| !value.is_empty()) else {
+                    return Err("missing value for --through-turn".to_owned());
+                };
+                through_turn = Some(value.as_str());
+                index += 2;
             }
             "--json" if !json => {
                 json = true;
@@ -2563,6 +2604,9 @@ fn parse_inspect_arguments(arguments: &[String]) -> Result<InspectOptions<'_>, S
             "--allow-ancestor-cwd" => {
                 return Err("--allow-ancestor-cwd may only be supplied once".to_owned());
             }
+            "--through-turn" => {
+                return Err("--through-turn may only be supplied once".to_owned());
+            }
             option => return Err(format!("unknown inspect option: {option}")),
         }
     }
@@ -2578,9 +2622,13 @@ fn parse_inspect_arguments(arguments: &[String]) -> Result<InspectOptions<'_>, S
             allow_ancestor_cwd,
         },
     };
+    if through_turn.is_some() && matches!(selection, SessionSelection::Last) {
+        return Err("--through-turn requires an explicit --session <id>".to_owned());
+    }
     let compactor = CompactorConfig::new(compactor.unwrap_or("luna"), reasoning)?;
     Ok(InspectOptions {
         selection,
+        through_turn,
         json,
         compactor,
     })
@@ -2657,6 +2705,9 @@ fn attach_codex(root: &Path, arguments: &[String]) -> CliOutput {
         Ok(options) => options,
         Err(error) => return CliOutput::error(error),
     };
+    if options.through_turn.is_some() {
+        return CliOutput::error("attach does not support --through-turn");
+    }
     let (session_id, allow_ancestor_cwd) = match options.selection {
         SessionSelection::Explicit {
             id,

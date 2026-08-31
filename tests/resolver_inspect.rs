@@ -131,6 +131,19 @@ if "app-server" in sys.argv and "--stdio" in sys.argv:
                 continue
             child_id = "continued-child" if not children else "continued-child-" + str(len(children) + 1)
             source_thread = json.loads(os.environ["DRIFTCTL_FAKE_READ"])["thread"]
+            last_turn_id = request["params"].get("lastTurnId")
+            if last_turn_id is not None:
+                selected_index = next(
+                    (index for index, turn in enumerate(source_thread["turns"]) if turn.get("id") == last_turn_id),
+                    None,
+                )
+                if selected_index is None:
+                    print(json.dumps({"id":request["id"],"error":{"code":-32602,"message":"unknown lastTurnId"}}), flush=True)
+                    continue
+                if source_thread["turns"][selected_index].get("status") == "inProgress":
+                    print(json.dumps({"id":request["id"],"error":{"code":-32602,"message":"lastTurnId is in progress"}}), flush=True)
+                    continue
+                source_thread["turns"] = source_thread["turns"][:selected_index + 1]
             result = {"thread":source_thread | {"id":child_id,"cwd":request["params"]["cwd"],"ephemeral":False,"forkedFromId":request["params"]["threadId"]}}
             children[child_id] = result["thread"]
             with open(children_path, "w", encoding="utf-8") as child_file:
@@ -278,6 +291,21 @@ fn session(id: &str, root: &Path, messages: &[(&str, &str)]) -> Value {
         })
         .collect();
     json!({"thread":{"id":id,"cwd":root,"turns":[{"items":items}]}})
+}
+
+fn historical_session(id: &str, root: &Path, final_status: &str) -> Value {
+    json!({"thread":{"id":id,"cwd":root,"turns":[
+        {"id":"turn-1","status":"completed","items":[
+            {"type":"userMessage","id":"u1","content":[{"type":"text","text":"private raw goal that public output must not echo"}]},
+            {"type":"userMessage","id":"u2","content":[{"type":"text","text":"private additive steering"}]}
+        ]},
+        {"id":"turn-2","status":final_status,"items":[
+            {"type":"userMessage","id":"u3","content":[{"type":"text","text":"private explicit supersession"}]}
+        ]},
+        {"id":"turn-3","status":"completed","items":[
+            {"type":"userMessage","id":"u4","content":[{"type":"text","text":"later source record must be omitted"}]}
+        ]}
+    ]}})
 }
 
 fn non_user_change_sequence(fixture: &Fixture, stable_reads: usize) -> String {
@@ -458,6 +486,10 @@ impl Fixture {
     }
 
     fn run_ab_prepare(&self) -> Output {
+        self.run_ab_prepare_with(&[])
+    }
+
+    fn run_ab_prepare_with(&self, options: &[&str]) -> Output {
         let mut command = Command::new(driftctl_bin());
         command.current_dir(&self.root).args([
             "ab",
@@ -465,8 +497,8 @@ impl Fixture {
             "codex",
             "--session",
             &self.session_id,
-            "--json",
         ]);
+        command.args(options).arg("--json");
         for (name, value) in &self.environment {
             command.env(name, value);
         }
@@ -637,6 +669,169 @@ impl Drop for Fixture {
         let _ = fs::remove_dir_all(&self.root);
         let _ = fs::remove_dir_all(&self.fake_root);
     }
+}
+
+#[test]
+fn historical_ab_rejects_an_in_progress_turn_before_any_mutation() {
+    let mut fixture = Fixture::new(vec![base_proposal()]);
+    let canonical = fixture.root.canonicalize().expect("canonical source");
+    let mut source = historical_session(&fixture.session_id, &canonical, "inProgress");
+    source["thread"]["turns"]
+        .as_array_mut()
+        .expect("historical turns")
+        .pop();
+    fixture
+        .environment
+        .insert("DRIFTCTL_FAKE_READ", source.to_string());
+
+    let rejected =
+        fixture.run_ab_prepare_with(&["--through-turn", "turn-2", "--source-ref", "HEAD"]);
+
+    assert_eq!(rejected.status.code(), Some(2), "{rejected:?}");
+    let stderr = String::from_utf8_lossy(&rejected.stderr);
+    assert!(stderr.contains("turn-2 is still in progress"), "{stderr}");
+    assert!(stderr.contains("turn-1"), "{stderr}");
+    assert!(!fixture.capture.exists(), "semantic worker was invoked");
+    assert!(
+        !fixture.state_home.join("driftctl/ab").exists(),
+        "experiment state was created"
+    );
+    assert!(
+        !fixture
+            .rpc_calls()
+            .iter()
+            .any(|request| request["method"] == "thread/fork"),
+        "provider fork was created"
+    );
+}
+
+#[test]
+fn historical_ab_prepares_two_exact_prefix_forks_at_one_resolved_commit() {
+    let mut fixture = Fixture::new(vec![base_proposal(), base_proposal()]);
+    let initial_commit = Command::new("git")
+        .current_dir(&fixture.root)
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .expect("read initial commit");
+    assert!(initial_commit.status.success());
+    let initial_commit = String::from_utf8(initial_commit.stdout)
+        .expect("commit UTF-8")
+        .trim()
+        .to_owned();
+    fs::write(fixture.root.join("README.md"), "later source repository\n")
+        .expect("write later source state");
+    git(&fixture.root, &["add", "README.md"]);
+    git(
+        &fixture.root,
+        &["commit", "--quiet", "-m", "later source state"],
+    );
+    let source_head_before = Command::new("git")
+        .current_dir(&fixture.root)
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .expect("read source head");
+    let canonical = fixture.root.canonicalize().expect("canonical source");
+    fixture.environment.insert(
+        "DRIFTCTL_FAKE_READ",
+        historical_session(&fixture.session_id, &canonical, "completed").to_string(),
+    );
+
+    let prepared =
+        fixture.run_ab_prepare_with(&["--through-turn", "turn-2", "--source-ref", &initial_commit]);
+
+    assert_eq!(prepared.status.code(), Some(0), "{prepared:?}");
+    let prepared: Value = serde_json::from_slice(&prepared.stdout).expect("historical A/B JSON");
+    assert_eq!(prepared["checkpoint"]["kind"], "historical_turn");
+    assert_eq!(prepared["checkpoint"]["through_turn_id"], "turn-2");
+    assert_eq!(prepared["checkpoint"]["source_commit"], initial_commit);
+    for arm in ["baseline", "workflow"] {
+        let cwd = PathBuf::from(prepared[arm]["cwd"].as_str().expect("candidate cwd"));
+        assert_eq!(
+            fs::read_to_string(cwd.join("README.md")).expect("candidate README"),
+            "source repository\n"
+        );
+    }
+    let forks = fixture
+        .rpc_calls()
+        .into_iter()
+        .filter(|request| request["method"] == "thread/fork")
+        .collect::<Vec<_>>();
+    assert_eq!(forks.len(), 2);
+    assert!(
+        forks
+            .iter()
+            .all(|request| request["params"]["lastTurnId"] == "turn-2")
+    );
+    let children: Value = serde_json::from_slice(
+        &fs::read(format!("{}.children", fixture.rpc_capture.display()))
+            .expect("read historical children"),
+    )
+    .expect("historical children JSON");
+    assert!(
+        children
+            .as_object()
+            .expect("child map")
+            .values()
+            .all(|child| child["turns"]
+                .as_array()
+                .is_some_and(|turns| turns.len() == 2))
+    );
+    let run_id = prepared["run_id"].as_str().expect("historical run ID");
+    let baseline_id = prepared["baseline"]["session_id"]
+        .as_str()
+        .expect("historical baseline ID");
+    let workflow_id = prepared["workflow"]["session_id"]
+        .as_str()
+        .expect("historical workflow ID");
+    let baseline_cwd = PathBuf::from(
+        prepared["baseline"]["cwd"]
+            .as_str()
+            .expect("historical baseline cwd"),
+    );
+    let workflow_cwd = PathBuf::from(
+        prepared["workflow"]["cwd"]
+            .as_str()
+            .expect("historical workflow cwd"),
+    );
+    let activated = fixture.run_hook(
+        &workflow_cwd,
+        workflow_id,
+        "historical-workflow-on",
+        "$driftctl on",
+    );
+    assert_eq!(activated.status.code(), Some(0), "{activated:?}");
+    fs::write(baseline_cwd.join("README.md"), "A/B candidate complete\n")
+        .expect("complete historical baseline candidate");
+    fs::write(workflow_cwd.join("README.md"), "A/B candidate complete\n")
+        .expect("complete historical workflow candidate");
+    fixture.append_child_items(
+        baseline_id,
+        vec![json!({"type":"userMessage","id":"historical-baseline-tail","content":[{"type":"text","text":"Finish from the selected turn"}]})],
+    );
+    fixture.append_child_items(
+        workflow_id,
+        vec![
+            json!({"type":"userMessage","id":"historical-workflow-on","content":[{"type":"text","text":"$driftctl on"}]}),
+            json!({"type":"userMessage","id":"historical-workflow-tail","content":[{"type":"text","text":"Finish from the selected turn"}]})
+        ],
+    );
+    let verifier = fixture.verifier("verify-historical-ab.sh");
+    let reported = fixture.run_ab_report(run_id, &verifier);
+    assert_eq!(reported.status.code(), Some(0), "{reported:?}");
+    let reported: Value = serde_json::from_slice(&reported.stdout).expect("historical report JSON");
+    assert_eq!(reported["checkpoint"]["kind"], "historical_turn");
+    assert_eq!(reported["checkpoint"]["through_turn_id"], "turn-2");
+    assert_eq!(reported["checkpoint"]["source_commit"], initial_commit);
+    assert_eq!(reported["baseline"]["post_checkpoint_user_prompts"], 1);
+    assert_eq!(reported["workflow"]["post_checkpoint_user_prompts"], 1);
+    assert_eq!(reported["workflow"]["explicit_on_recorded"], true);
+    let source_head_after = Command::new("git")
+        .current_dir(&fixture.root)
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .expect("read source head after");
+    assert_eq!(source_head_after.stdout, source_head_before.stdout);
+    fixture.assert_unchanged();
 }
 
 #[test]
