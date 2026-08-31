@@ -1,0 +1,110 @@
+{
+  "schema_version": 1,
+  "release": {
+    "version": "0.5.1",
+    "commit": "ba66f967896859a841fc76d9dd074bc21a32ab0f",
+    "target": "x86_64-unknown-linux-gnu",
+    "binary_sha256": "836a3e2cd4f3f4d3ed6c9bdbace551f118f9c9dda6082f1d95211f0a6deab79b"
+  },
+  "case": {
+    "repository": "pallets/click",
+    "checkpoint": "fd183b2ced1cb5857784fe7fb22f4982f671f098",
+    "tag": "8.2.1",
+    "task": "Repair CliRunner stdin iteration so click.File('r') with '-' reaches normal EOF while interactive prompt readers still translate EOF to EOFError.",
+    "checkpoint_provenance": "reconstructed path-neutral post-investigation checkpoint",
+    "organic_checkpoint": false,
+    "verifier": "evals/verifiers/verify_click_8_2_1_stdin.py"
+  },
+  "method": {
+    "kind": "prospective_paired",
+    "entrypoints": [
+      "driftctl ab prepare codex",
+      "driftctl attach codex",
+      "codex exec resume",
+      "driftctl resolve codex",
+      "Codex /goal clear and /goal",
+      "driftctl ab report"
+    ],
+    "backend_state_edits": false,
+    "same_prompt": true,
+    "same_verifier": true,
+    "same_starting_candidate": true,
+    "starting_candidate_digest": "sha256:879def3f1f93cf4fc111430aa8ca0d3ba0cb67238eedffa83249e9fe5d720891",
+    "starting_workspace_manifest_digest": "sha256:f19a1c77c07aedc65ab4156779eafe80901d768cb189191e77b0a493b6273571",
+    "worker_policy": {
+      "model": "gpt-5.6-luna",
+      "effort": "max",
+      "sandbox": "workspace_write",
+      "approval_policy": "never"
+    }
+  },
+  "primary_result": {
+    "metric": "external verifier pass",
+    "baseline": "pass",
+    "workflow": "fail",
+    "baseline_rate": "1/1",
+    "workflow_rate": "0/1",
+    "verdict": "negative workflow efficacy result"
+  },
+  "baseline": {
+    "candidate_changed": true,
+    "changed_files": [
+      "src/click/testing.py",
+      "tests/test_chain.py",
+      "tests/test_testing.py"
+    ],
+    "diff": {
+      "files": 3,
+      "insertions": 36,
+      "deletions": 11,
+      "check": "pass"
+    },
+    "external_verifier": "pass",
+    "focused_tests": "44 passed, 1 xfailed",
+    "full_suite": "742 passed, 21 skipped, 1 xfailed",
+    "usage": {
+      "input_tokens": 1491408,
+      "cached_input_tokens": 1420288,
+      "output_tokens": 12957,
+      "reasoning_output_tokens": 7782
+    }
+  },
+  "workflow": {
+    "candidate_changed": false,
+    "external_verifier": "fail",
+    "correct_goal_conflict_block": true,
+    "blocked_before_implementation": true,
+    "pending_goal_decision_after_run": true,
+    "keeper_usage": {
+      "invocations": 2,
+      "model_calls": 2,
+      "elapsed_ms": 161892,
+      "input_tokens": 32845,
+      "cached_input_tokens": 0,
+      "output_tokens": 8534,
+      "reasoning_output_tokens": 7438
+    }
+  },
+  "observed_product_failures": [
+    "The operator followed Driftctl's required native-goal handoff, but changing the Codex goal changed the source session and made Driftctl reject the prepared decision as stale.",
+    "The real Codex TUI reported invalid SessionStart hook JSON after the goal handoff.",
+    "ab report rejected the public CLI attach path because it requires a literal in-transcript $driftctl on activation."
+  ],
+  "discarded_setup_attempts": [
+    "A resume using --ignore-user-config ran read-only instead of the recorded workspace-write policy.",
+    "A resume using --ignore-user-config also bypassed the isolated plugin; the apparent activation was not durable."
+  ],
+  "isolation": {
+    "parent_checkout_unchanged": true,
+    "baseline_and_workflow_cross_write": false,
+    "workflow_checkout_clean": true,
+    "normal_codex_profile_unchanged": true,
+    "isolated_installation": true
+  },
+  "reporting": {
+    "built_in_ab_report": "refused_before report generation",
+    "paired_result_source": "direct execution of the same external verifier in both candidates",
+    "post_hoc_activation_added": false
+  },
+  "claim_scope": "One reconstructed real-client case. This is product failure evidence, not statistical evidence and not proof that semantic projection improves coding reliability."
+}
