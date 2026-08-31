@@ -124,15 +124,27 @@ persisted midpoint session
   → persist immutable report + print outcome and secondary metrics
 ```
 
+```text
+historical checkpoint
+  → read exact source session
+  → require selected turn status=completed
+  → truncate semantic source through selected turn
+  → resolve explicit Git ref once to commit
+  → materialize equal committed snapshots
+  → fork A + B with identical lastTurnId
+  → verify source session/repository unchanged
+```
+
 | State | Required fields |
 |---|---|
-| experiment | source head/digest/counts; equal starting digest; arm thread IDs/CWDs; inherited goal; worker policy |
+| experiment | checkpoint kind/turn/commit; source head/digest/counts; equal starting digest; arm thread IDs/CWDs; inherited goal; worker policy |
 | report | command/verifier digests; per-arm status/exit/elapsed; post-fork record counts; keeper usage; invariants |
 
 - State root: `${XDG_STATE_HOME:-$HOME/.local/state}/driftctl/ab/<ab-run-id>/`.
 - Experiment state excludes transcript text.
 - Arm IDs and candidate paths remain private local evidence.
 - A partial prepare is blocked and cannot be reported.
+- Invalid or in-progress historical selection creates no experiment state, workspace, or fork.
 - Once either verifier runs, its evidence is retained; report never silently reruns one arm alone.
 
 ## Failure Rules
