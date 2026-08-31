@@ -55,7 +55,7 @@ The private harness is not required to build, run, or score this repository.
 | Improvement changelog | `IMPROVEMENT-CHANGELOG.md` |
 | Reproduction guide | `REPRODUCING.md` |
 | Evaluation fixtures and results | `evals/cases/`, `evals/results/` |
-| Representative trajectories | `evals/trajectories/` |
+| Representative trajectories and visual timeline | `evals/trajectories/` |
 | Video outline | below; recording/link must be supplied separately |
 
 ## Agent-use disclosure

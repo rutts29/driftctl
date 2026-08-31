@@ -1,0 +1,529 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self'; object-src 'none'; base-uri 'none'">
+  <title>Driftctl agent trajectories</title>
+  <style>
+    :root {
+      --page: #f3f1eb;
+      --panel: #fffdf8;
+      --ink: #20231f;
+      --muted: #62675f;
+      --line: #cac7bd;
+      --accent: #a44724;
+      --accent-soft: #f3ded3;
+      --pass: #246b49;
+      --pass-soft: #dcece3;
+      --warn: #8a5a10;
+      --warn-soft: #f4e8ca;
+      --fail: #982f2f;
+      --fail-soft: #f3dddd;
+      --focus: #145fb5;
+      --radius: 8px;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      background: var(--page);
+      color: var(--ink);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+      line-height: 1.55;
+    }
+
+    a { color: var(--accent); }
+    a:hover { text-decoration-thickness: 2px; }
+
+    button,
+    summary,
+    a { outline-offset: 3px; }
+
+    button:focus-visible,
+    summary:focus-visible,
+    a:focus-visible { outline: 3px solid var(--focus); }
+
+    .shell {
+      width: min(1120px, calc(100% - 2rem));
+      margin: 0 auto;
+      padding: 2rem 0 4rem;
+    }
+
+    header {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 1rem 2rem;
+      align-items: end;
+      border-bottom: 2px solid var(--ink);
+      padding-bottom: 1rem;
+    }
+
+    h1,
+    h2,
+    p { margin-top: 0; }
+
+    h1 {
+      max-width: 18ch;
+      margin-bottom: .5rem;
+      font-family: ui-serif, Georgia, Cambria, "Times New Roman", serif;
+      font-size: clamp(2rem, 7vw, 4.75rem);
+      font-weight: 700;
+      letter-spacing: -.045em;
+      line-height: .96;
+    }
+
+    h2 {
+      margin-bottom: .25rem;
+      font-size: 1.05rem;
+    }
+
+    .lede {
+      max-width: 68ch;
+      margin-bottom: 0;
+      color: var(--muted);
+    }
+
+    .status {
+      min-width: 12rem;
+      padding: .75rem 1rem;
+      border: 1px solid var(--line);
+      background: var(--panel);
+      font-size: .82rem;
+    }
+
+    .status strong {
+      display: block;
+      color: var(--accent);
+      font-size: 1.4rem;
+    }
+
+    .build-path {
+      display: grid;
+      grid-template-columns: repeat(6, minmax(8rem, 1fr));
+      gap: 0;
+      margin: 1.5rem 0;
+      padding: 0;
+      overflow-x: auto;
+      list-style: none;
+      border: 1px solid var(--line);
+      background: var(--panel);
+    }
+
+    .build-path li {
+      position: relative;
+      min-height: 6rem;
+      padding: 2rem .75rem .75rem;
+      border-right: 1px solid var(--line);
+      font-size: .78rem;
+    }
+
+    .build-path li:last-child { border-right: 0; }
+
+    .build-path b {
+      position: absolute;
+      top: .55rem;
+      left: .75rem;
+      color: var(--accent);
+      font-size: .72rem;
+      letter-spacing: .08em;
+    }
+
+    .toolbar {
+      display: flex;
+      flex-wrap: wrap;
+      gap: .5rem;
+      align-items: center;
+      margin-bottom: 1.5rem;
+    }
+
+    .toolbar button {
+      min-height: 2.5rem;
+      padding: .5rem .8rem;
+      border: 1px solid var(--ink);
+      border-radius: 4px;
+      background: transparent;
+      color: var(--ink);
+      font: inherit;
+      cursor: pointer;
+    }
+
+    .toolbar button[aria-pressed="true"] {
+      background: var(--ink);
+      color: var(--panel);
+    }
+
+    .toolbar .secondary {
+      margin-left: auto;
+      border-color: var(--line);
+    }
+
+    #error {
+      display: none;
+      margin-bottom: 1.5rem;
+      padding: 1rem;
+      border-left: 4px solid var(--fail);
+      background: var(--fail-soft);
+    }
+
+    .trajectory {
+      display: grid;
+      grid-template-columns: minmax(12rem, 15rem) minmax(0, 1fr);
+      gap: 1rem 2rem;
+      padding: 1.5rem 0 2rem;
+      border-top: 1px solid var(--line);
+    }
+
+    .trajectory[hidden] { display: none; }
+
+    .trajectory-meta {
+      position: sticky;
+      top: 1rem;
+      align-self: start;
+    }
+
+    .trajectory-meta p {
+      color: var(--muted);
+      font-size: .8rem;
+    }
+
+    .kind {
+      display: inline-block;
+      margin-bottom: .75rem;
+      padding: .2rem .45rem;
+      border: 1px solid var(--line);
+      border-radius: 4px;
+      background: var(--panel);
+      color: var(--muted);
+      font-size: .7rem;
+      text-transform: uppercase;
+      letter-spacing: .04em;
+    }
+
+    .events {
+      position: relative;
+      margin: 0;
+      padding: 0 0 0 1.5rem;
+      list-style: none;
+    }
+
+    .events::before {
+      content: "";
+      position: absolute;
+      top: .75rem;
+      bottom: .75rem;
+      left: .35rem;
+      width: 1px;
+      background: var(--line);
+    }
+
+    .event {
+      position: relative;
+      margin-bottom: .75rem;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--panel);
+    }
+
+    .event::before {
+      content: "";
+      position: absolute;
+      top: 1rem;
+      left: -1.45rem;
+      width: .55rem;
+      height: .55rem;
+      border: 2px solid var(--page);
+      border-radius: 50%;
+      background: var(--accent);
+    }
+
+    .event.pass::before { background: var(--pass); }
+    .event.warning::before { background: var(--warn); }
+    .event.failure::before { background: var(--fail); }
+
+    .event summary {
+      padding: .8rem 1rem;
+      cursor: pointer;
+    }
+
+    .event summary::marker { color: var(--accent); }
+
+    .event-title {
+      display: inline;
+      margin-right: .5rem;
+      font-weight: 700;
+    }
+
+    .event-summary {
+      display: block;
+      margin-top: .35rem;
+      color: var(--muted);
+      font-size: .82rem;
+    }
+
+    .event pre {
+      max-height: 28rem;
+      margin: 0;
+      padding: 1rem;
+      overflow: auto;
+      border-top: 1px solid var(--line);
+      background: #1f2420;
+      color: #f5f3ec;
+      font-size: .76rem;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+    }
+
+    footer {
+      margin-top: 2rem;
+      padding-top: 1rem;
+      border-top: 2px solid var(--ink);
+      color: var(--muted);
+      font-size: .8rem;
+    }
+
+    @media (max-width: 720px) {
+      .shell { width: min(100% - 1rem, 1120px); padding-top: 1rem; }
+      header { grid-template-columns: 1fr; }
+      .status { width: 100%; }
+      .trajectory { grid-template-columns: 1fr; gap: .75rem; }
+      .trajectory-meta { position: static; }
+      .toolbar .secondary { margin-left: 0; }
+    }
+
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --page: #171a17;
+        --panel: #202420;
+        --ink: #f0eee7;
+        --muted: #b8b9b2;
+        --line: #484d47;
+        --accent: #e28a60;
+        --accent-soft: #4b2b20;
+        --pass: #6fc29a;
+        --pass-soft: #1f4936;
+        --warn: #e0b967;
+        --warn-soft: #4a3c1d;
+        --fail: #ee8787;
+        --fail-soft: #4d2525;
+        --focus: #73b8ff;
+      }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { scroll-behavior: auto !important; }
+    }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <header>
+      <div>
+        <h1>How Driftctl got built</h1>
+        <p class="lede">A compact view of the development agent, semantic keeper, coding continuation, and security review. Open any step for the published JSONL record.</p>
+      </div>
+      <div class="status" aria-live="polite">
+        Published records
+        <strong id="record-count">Loading</strong>
+        <span id="file-count">Reading JSONL files</span>
+      </div>
+    </header>
+
+    <ol class="build-path" aria-label="Main development path">
+      <li><b>01</b>Stable same-session requirement</li>
+      <li><b>02</b>Verifier-first extraction drifted</li>
+      <li><b>03</b>Operator caught the mismatch</li>
+      <li><b>04</b>Same-session flow locked</li>
+      <li><b>05</b>Plugin and process tests passed</li>
+      <li><b>06</b>Real A/B exposed open blockers</li>
+    </ol>
+
+    <nav class="toolbar" aria-label="Trajectory filters">
+      <button type="button" data-filter="all" aria-pressed="true">All roles</button>
+      <button type="button" data-filter="development" aria-pressed="false">Development</button>
+      <button type="button" data-filter="keeper" aria-pressed="false">Keeper</button>
+      <button type="button" data-filter="coding" aria-pressed="false">Coding</button>
+      <button type="button" data-filter="security" aria-pressed="false">Security</button>
+      <button type="button" class="secondary" id="toggle-details" aria-pressed="false">Expand details</button>
+    </nav>
+
+    <div id="error" role="alert"></div>
+    <div id="trajectories" aria-busy="true"></div>
+
+    <footer>
+      This page reads the committed sanitized JSONL files. Reconstructed records say so in their metadata. Raw provider and development traces remain private because they include unrelated session context, local paths, and IDs.
+    </footer>
+  </main>
+
+  <script>
+    "use strict";
+
+    const sources = [
+      {
+        file: "development-recovery.sanitized.jsonl",
+        role: "development",
+        title: "Codex development session",
+        kind: "Reconstructed current-session record"
+      },
+      {
+        file: "conflict-gate-flow.sanitized.jsonl",
+        role: "keeper",
+        title: "Luna conflict decision",
+        kind: "Reconstructed flow"
+      },
+      {
+        file: "conflict-compactor.sanitized.jsonl",
+        role: "keeper",
+        title: "Luna provider output",
+        kind: "Sanitized provider events"
+      },
+      {
+        file: "codex-smoke.sanitized.jsonl",
+        role: "coding",
+        title: "Coding continuation",
+        kind: "Normalized synthetic live run"
+      },
+      {
+        file: "security-review.sanitized.jsonl",
+        role: "security",
+        title: "Daybreak security review",
+        kind: "Reconstructed evidence index"
+      }
+    ];
+
+    const state = { filter: "all", expanded: false };
+    const trajectories = document.querySelector("#trajectories");
+    const errorBox = document.querySelector("#error");
+
+    function titleFor(record, index) {
+      const value = record.event || record.source_event || record.type || record.trajectory_kind || `record ${index + 1}`;
+      return String(value).replaceAll("_", " ");
+    }
+
+    function summaryFor(record) {
+      if (typeof record.summary === "string") return record.summary;
+      if (typeof record.feedback === "string") return record.feedback;
+      if (typeof record.instruction === "string") return record.instruction;
+      if (typeof record.decision === "string") return record.decision;
+      if (typeof record.text === "string") return record.text;
+      if (record.item && record.item.type === "agent_message") return "The keeper returned one structured semantic proposal.";
+      if (record.usage) return "The provider reported terminal token usage.";
+      return "Open this record to inspect the published fields.";
+    }
+
+    function toneFor(record) {
+      if (Number(record.exit_code) > 0) return "failure";
+      if (record.severity === "Major" || record.severity === "Critical") return "warning";
+      if (["operator_checkpoint", "human_checkpoint", "joint_design_lock", "joint_decision"].includes(record.event)) return "warning";
+      if (record.event === "tool_result" && record.exit_code === 0) return "pass";
+      return "neutral";
+    }
+
+    function eventNode(record, index) {
+      const item = document.createElement("li");
+      const details = document.createElement("details");
+      const summary = document.createElement("summary");
+      const title = document.createElement("span");
+      const description = document.createElement("span");
+      const raw = document.createElement("pre");
+
+      details.className = `event ${toneFor(record)}`;
+      details.open = state.expanded;
+      title.className = "event-title";
+      description.className = "event-summary";
+      title.textContent = `${String(record.sequence || index + 1).padStart(2, "0")}  ${titleFor(record, index)}`;
+      description.textContent = summaryFor(record);
+      raw.textContent = JSON.stringify(record, null, 2);
+
+      summary.append(title, description);
+      details.append(summary, raw);
+      item.append(details);
+      return item;
+    }
+
+    function trajectoryNode(source, records) {
+      const section = document.createElement("section");
+      const meta = document.createElement("div");
+      const kind = document.createElement("span");
+      const title = document.createElement("h2");
+      const count = document.createElement("p");
+      const link = document.createElement("a");
+      const events = document.createElement("ol");
+
+      section.className = "trajectory";
+      section.dataset.role = source.role;
+      meta.className = "trajectory-meta";
+      kind.className = "kind";
+      kind.textContent = source.kind;
+      title.textContent = source.title;
+      count.textContent = `${records.length} published records`;
+      link.href = source.file;
+      link.textContent = "View JSONL";
+      events.className = "events";
+      records.forEach((record, index) => events.append(eventNode(record, index)));
+
+      meta.append(kind, title, count, link);
+      section.append(meta, events);
+      return section;
+    }
+
+    async function readJsonl(source) {
+      const response = await fetch(source.file, { cache: "no-store" });
+      if (!response.ok) throw new Error(`${source.file} returned HTTP ${response.status}`);
+      const text = await response.text();
+      return text.split(/\r?\n/).filter(Boolean).map((line, index) => {
+        try {
+          return JSON.parse(line);
+        } catch (error) {
+          throw new Error(`${source.file}, line ${index + 1}: ${error.message}`);
+        }
+      });
+    }
+
+    function applyFilter() {
+      document.querySelectorAll(".trajectory").forEach((section) => {
+        section.hidden = state.filter !== "all" && section.dataset.role !== state.filter;
+      });
+    }
+
+    document.querySelectorAll("[data-filter]").forEach((button) => {
+      button.addEventListener("click", () => {
+        state.filter = button.dataset.filter;
+        document.querySelectorAll("[data-filter]").forEach((candidate) => {
+          candidate.setAttribute("aria-pressed", String(candidate === button));
+        });
+        applyFilter();
+      });
+    });
+
+    document.querySelector("#toggle-details").addEventListener("click", (event) => {
+      state.expanded = !state.expanded;
+      event.currentTarget.setAttribute("aria-pressed", String(state.expanded));
+      event.currentTarget.textContent = state.expanded ? "Collapse details" : "Expand details";
+      document.querySelectorAll(".event").forEach((details) => { details.open = state.expanded; });
+    });
+
+    Promise.all(sources.map(async (source) => ({ source, records: await readJsonl(source) })))
+      .then((loaded) => {
+        let recordCount = 0;
+        loaded.forEach(({ source, records }) => {
+          recordCount += records.length;
+          trajectories.append(trajectoryNode(source, records));
+        });
+        applyFilter();
+        trajectories.setAttribute("aria-busy", "false");
+        document.querySelector("#record-count").textContent = String(recordCount);
+        document.querySelector("#file-count").textContent = `${sources.length} sanitized files`;
+      })
+      .catch((error) => {
+        trajectories.setAttribute("aria-busy", "false");
+        errorBox.style.display = "block";
+        errorBox.textContent = `Could not load the JSONL files. Run "python3 -m http.server 8000" at the repository root, then open /evals/trajectories/. ${error.message}`;
+        document.querySelector("#record-count").textContent = "Load failed";
+        document.querySelector("#file-count").textContent = "See the error below";
+      });
+  </script>
+</body>
+</html>
