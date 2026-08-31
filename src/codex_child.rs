@@ -137,6 +137,7 @@ pub struct PreservedForkRequest {
     parent_thread_id: String,
     isolated_cwd: PathBuf,
     worker_policy: WorkerPolicy,
+    last_turn_id: Option<String>,
 }
 
 impl PreservedForkRequest {
@@ -148,12 +149,24 @@ impl PreservedForkRequest {
             parent_thread_id: validate_identifier(parent_thread_id.into(), "parent thread ID")?,
             isolated_cwd: canonical_child_cwd(isolated_cwd.as_ref())?,
             worker_policy: WorkerPolicy::luna_max(),
+            last_turn_id: None,
         })
     }
 
     pub fn with_worker_policy(mut self, worker_policy: WorkerPolicy) -> Self {
         self.worker_policy = worker_policy;
         self
+    }
+
+    pub fn through_turn(
+        mut self,
+        last_turn_id: impl Into<String>,
+    ) -> Result<Self, ChildAdapterError> {
+        self.last_turn_id = Some(validate_identifier(
+            last_turn_id.into(),
+            "selected turn ID",
+        )?);
+        Ok(self)
     }
 }
 
@@ -391,6 +404,7 @@ impl CodexChildAdapter {
                 &request.parent_thread_id,
                 &request.isolated_cwd,
                 &request.worker_policy,
+                None,
             )?;
             server.set_worker_policy(&child.id, &child.cwd, &request.worker_policy)?;
             let initial_child_goal = match server.get_goal(&child.id) {
@@ -483,6 +497,7 @@ impl CodexChildAdapter {
                 &request.parent_thread_id,
                 &request.isolated_cwd,
                 &request.worker_policy,
+                request.last_turn_id.as_deref(),
             )?;
             server.set_worker_policy(&child.id, &child.cwd, &request.worker_policy)?;
             let child_goal = server.get_goal(&child.id)?;
@@ -623,18 +638,23 @@ impl AppServer {
         parent_thread_id: &str,
         isolated_cwd: &Path,
         worker_policy: &WorkerPolicy,
+        last_turn_id: Option<&str>,
     ) -> Result<ForkedChild, ChildAdapterError> {
-        let response = self.request(
-            "thread/fork",
-            json!({
-                "threadId": parent_thread_id,
-                "cwd": isolated_cwd,
-                "ephemeral": false,
-                "model": worker_policy.model,
-                "sandbox": "workspace-write",
-                "approvalPolicy": "never",
-            }),
-        )?;
+        let mut params = json!({
+            "threadId": parent_thread_id,
+            "cwd": isolated_cwd,
+            "ephemeral": false,
+            "model": worker_policy.model,
+            "sandbox": "workspace-write",
+            "approvalPolicy": "never",
+        });
+        if let Some(last_turn_id) = last_turn_id {
+            params
+                .as_object_mut()
+                .expect("fork params are an object")
+                .insert("lastTurnId".to_owned(), json!(last_turn_id));
+        }
+        let response = self.request("thread/fork", params)?;
         let thread = response.get("thread").ok_or_else(|| {
             ChildAdapterError::protocol("thread/fork response has no child thread")
         })?;

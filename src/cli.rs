@@ -42,7 +42,7 @@ Usage:\n\
   driftctl inspect codex (--last | --session <id> [--allow-ancestor-cwd]) [--json] [--compactor luna|terra|sol] [--reasoning high|medium]\n\
   driftctl inspect bundle (--file <path> | --stdin) [--json] [--compactor luna|terra|sol] [--reasoning high|medium]\n\
   driftctl bundle --run <run-id> --json\n\
-  driftctl ab prepare codex (--last | --session <id> [--allow-ancestor-cwd]) [--json]\n\
+  driftctl ab prepare codex (--last | --session <id> [--allow-ancestor-cwd]) [--through-turn <completed-turn-id> --source-ref <git-ref>] [--json]\n\
   driftctl ab report --run <ab-run-id> [--json] -- <program> [args...]\n\
   driftctl compare codex (--last | --session <id> [--allow-ancestor-cwd]) [--arm-order baseline-first|workflow-first] [--json]\n\
   driftctl continue codex (--last | --session <id> [--allow-ancestor-cwd]) [--resolve-conflict <conflict-id> <alternative-id> | --approve-goal | --edit-goal <text> | --retain-goal | --cancel] [--json]\n\
@@ -2068,6 +2068,8 @@ enum OwnedSessionSelection {
 struct AbPrepareOptions {
     selection: OwnedSessionSelection,
     allow_ancestor_cwd: bool,
+    through_turn: Option<String>,
+    source_ref: Option<String>,
     json: bool,
 }
 
@@ -2084,6 +2086,10 @@ impl AbPrepareOptions {
         if self.allow_ancestor_cwd {
             arguments.push("--allow-ancestor-cwd".to_owned());
         }
+        if let Some(through_turn) = &self.through_turn {
+            arguments.push("--through-turn".to_owned());
+            arguments.push(through_turn.clone());
+        }
         arguments.push("--json".to_owned());
         arguments
     }
@@ -2095,6 +2101,8 @@ fn parse_ab_prepare_arguments(arguments: &[String]) -> Result<AbPrepareOptions, 
     }
     let mut selection = None;
     let mut allow_ancestor_cwd = false;
+    let mut through_turn = None;
+    let mut source_ref = None;
     let mut json = false;
     let mut index = 2;
     while index < arguments.len() {
@@ -2109,6 +2117,26 @@ fn parse_ab_prepare_arguments(arguments: &[String]) -> Result<AbPrepareOptions, 
                 selection = Some(OwnedSessionSelection::Session(id.clone()));
             }
             "--allow-ancestor-cwd" if !allow_ancestor_cwd => allow_ancestor_cwd = true,
+            "--through-turn" if through_turn.is_none() => {
+                index += 1;
+                through_turn = Some(
+                    arguments
+                        .get(index)
+                        .filter(|id| !id.is_empty())
+                        .ok_or_else(|| "--through-turn requires an ID".to_owned())?
+                        .clone(),
+                );
+            }
+            "--source-ref" if source_ref.is_none() => {
+                index += 1;
+                source_ref = Some(
+                    arguments
+                        .get(index)
+                        .filter(|reference| !reference.is_empty())
+                        .ok_or_else(|| "--source-ref requires a Git ref".to_owned())?
+                        .clone(),
+                );
+            }
             "--json" if !json => json = true,
             option => {
                 return Err(format!(
@@ -2123,9 +2151,19 @@ fn parse_ab_prepare_arguments(arguments: &[String]) -> Result<AbPrepareOptions, 
     if allow_ancestor_cwd && matches!(selection, OwnedSessionSelection::Last) {
         return Err("--allow-ancestor-cwd requires an explicit --session <id>".to_owned());
     }
+    let historical_shape = matches!(selection, OwnedSessionSelection::Session(_))
+        && through_turn.is_some()
+        && source_ref.is_some();
+    if (through_turn.is_some() || source_ref.is_some()) && !historical_shape {
+        return Err(
+            "--through-turn requires explicit --session <id> and --source-ref <git-ref>".to_owned(),
+        );
+    }
     Ok(AbPrepareOptions {
         selection,
         allow_ancestor_cwd,
+        through_turn,
+        source_ref,
         json,
     })
 }

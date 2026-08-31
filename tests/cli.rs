@@ -52,6 +52,46 @@ fn ab_cli_rejects_ambiguous_or_incomplete_arguments_before_provider_work() {
             .contains("unsupported or repeated ab prepare option")
     );
 
+    for arguments in [
+        vec![
+            "ab",
+            "prepare",
+            "codex",
+            "--session",
+            "thread-1",
+            "--through-turn",
+            "turn-1",
+        ],
+        vec![
+            "ab",
+            "prepare",
+            "codex",
+            "--session",
+            "thread-1",
+            "--source-ref",
+            "HEAD",
+        ],
+        vec![
+            "ab",
+            "prepare",
+            "codex",
+            "--last",
+            "--through-turn",
+            "turn-1",
+            "--source-ref",
+            "HEAD",
+        ],
+    ] {
+        let output = run(&root, &arguments);
+        assert_eq!(output.status.code(), Some(1), "{output:?}");
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains(
+                "--through-turn requires explicit --session <id> and --source-ref <git-ref>"
+            ),
+            "{output:?}"
+        );
+    }
+
     let missing_separator = run(&root, &["ab", "report", "--run", "ab-valid"]);
     assert_eq!(missing_separator.status.code(), Some(1));
     assert!(
