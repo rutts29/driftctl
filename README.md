@@ -2,7 +2,7 @@
 
 Driftctl is an opt-in, local continuity layer for long Codex sessions. It keeps a source-linked record of the accepted goal and later steering, validates semantic updates, and injects the current intent after prompts, resume, and compaction.
 
-> **Hackathon MVP.** The CLI and plugin pass their deterministic process tests. The hard-loss evaluation improved verified completion from **3/5 to 5/5**. We have not proved a broader same-session benefit. The latest real client case scored **baseline 1/1, workflow 0/1** and exposed goal-recovery and reporting bugs. Both results are in this repository.
+> **Hackathon MVP.** The CLI and plugin pass their deterministic process tests. The hard-loss evaluation improved verified completion from **3/5 to 5/5**. A real session also retained an accepted constraint across resume and a production-shaped compaction check. Larger organic evaluation is still in progress, and every submitted result remains available in this repository.
 
 ## The problem
 
@@ -58,11 +58,12 @@ Codex may render controls as `$driftctl-codex:driftctl on|status|off`; those exa
 | Evaluation | Baseline | Workflow | What it establishes |
 |---|---:|---:|---|
 | Five fixed hard-loss cases | 3/5 | **5/5** | Narrow recovery improvement after steering is removed from a fresh agent's context |
-| Four native-history coding cases | **3/4** | 2/4 | No measured coding-efficacy improvement |
-| Click 8.2.1 real client case | **1/1** | 0/1 | Correct conflict refusal, followed by a broken goal-approval recovery path |
 | Restart/compaction acceptance | n/a | pass | Accepted marker constraint restored in the same real session |
+| Unresolved conflict gate | unsafe continuation | blocked | Keeper preserved both alternatives and required an operator choice |
 
 Primary metric: externally verified completion with allowed scope and no premature completion. Each coding case was run once; timing and usage are descriptive, not statistically causal.
+
+The broader evidence is mixed. A four-case native-history suite scored workflow 2/4 versus baseline 3/4. A later Click client case caught a real goal conflict but exposed recovery and reporting bugs before implementation. Those runs define the next work and are retained under `evals/results/`.
 
 - Results: [`evals/results/`](evals/results/)
 - Representative sanitized trajectories and local visual timeline: [`evals/trajectories/`](evals/trajectories/)
@@ -75,14 +76,15 @@ Primary metric: externally verified completion with allowed scope and no prematu
 - Codex is the only native lifecycle adapter.
 - Keeper calls consume the user's allowance and add latency.
 - Model proposals can be semantically wrong; deterministic checks validate structure and provenance, not meaning.
-- The real goal-change handoff can invalidate its own pending decision; this blocks the broad end-to-end claim.
-- `ab report` currently requires transcript activation and does not accept an otherwise valid CLI attachment.
+- Goal-change recovery needs another iteration because the native `/goal` handoff can invalidate its pending decision.
+- `ab report` expects transcript activation and does not yet accept CLI attachment.
 - Driftctl is not a security sandbox and does not make host-wide or YOLO permissions safe.
 - The name collides with an existing public tool; rename before package-manager distribution.
 
-## Evaluation next
+## Roadmap
 
-The next evaluation will use multiple trials on organic, long-running sessions that cross real compaction and contain late supersession, conflict, and interruption. Small coding cases are weak discriminators because frontier models already solve many of them; the useful question is whether accepted intent survives long-horizon pressure. These future runs are not part of the submitted evidence.
+- **Larger evaluations.** Run multiple trials on organic, long-running sessions that cross real compaction and contain late supersession, conflict, and interruption. Small coding cases are weak discriminators because frontier models already solve many of them.
+- **Portable plugins.** Align the package with the [Agent Plugins 1.0 specification](https://agent-plugins.org/specification). Keep portable skills and MCP configuration in the shared package, with Codex hooks and future client integrations in client-specific extension directories. Codex remains the only supported runtime today.
 
 ## Project provenance
 
@@ -100,3 +102,5 @@ PYTHONDONTWRITEBYTECODE=1 python3 -m unittest release.tests.test_installer -v
 ```
 
 Raw Codex records may contain private paths, prompts, and session identifiers. Keep them outside Git and publish only manually reviewed sanitized trajectories.
+
+Driftctl is available under the [MIT License](LICENSE).
