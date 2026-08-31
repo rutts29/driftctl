@@ -42,7 +42,7 @@ driftctl integrate codex status
 The packaged Linux release is checksum-verified by `scripts/install.sh`:
 
 ```bash
-./scripts/install.sh --version v0.4.1
+./scripts/install.sh --version v0.5.0
 driftctl integrate codex install
 ```
 
@@ -87,6 +87,18 @@ Start from a detached, persisted midpoint session in a clean source checkout:
 ```bash
 driftctl ab prepare codex --session <midpoint-session-id> --json
 ```
+
+Or select an earlier completed turn and bind its filesystem checkpoint explicitly:
+
+```bash
+driftctl ab prepare codex \
+  --session <source-session-id> \
+  --through-turn <completed-turn-id> \
+  --source-ref <git-commit> \
+  --json
+```
+
+Both arms receive history through the selected turn only. `source-ref` resolves once to an immutable commit and both candidate repositories start there. If the selected turn is active, prepare creates no experiment, workspace, or fork and reports the preceding completed turn when available. Driftctl cannot reconstruct uncommitted historical files; select a commit that represents the intended checkpoint.
 
 The result contains one run ID plus separate baseline/workflow session IDs and working directories. Both are idle persisted forks with the same inherited prefix, native goal, worker policy, and candidate digest. Prepare enrolls neither arm and does not change the source checkout.
 
@@ -172,7 +184,8 @@ Exact commands and retained evidence are in [REPRODUCING.md](REPRODUCING.md). Th
 
 - Codex is the only native lifecycle adapter in this MVP.
 - Keeper calls add model latency and consume the user's allowance.
-- A/B prepare supports a persisted current checkpoint, not arbitrary slicing at an earlier transcript turn.
+- Historical A/B requires an explicit completed turn and Git commit; Codex rejects an in-progress `lastTurnId`, and uncommitted historical files cannot be reconstructed.
+- A historical fork inherits the native goal observed at prepare time because Codex does not expose turn-versioned goal history; output labels this as `native_goal_basis: current_at_prepare`.
 - A/B execution remains operator-driven; equal starting state does not make asymmetrically steered runs a valid efficacy comparison.
 - Model proposals can be wrong; deterministic checks reject structural errors but cannot guarantee semantic correctness.
 - Hook trust is an operator decision. Untrusted hooks may be skipped by Codex.

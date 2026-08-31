@@ -203,20 +203,45 @@ Then invoke `$driftctl off` in the workflow arm. Use verified completion as the 
 
 The retained sanitized rehearsal is `evals/results/prospective-ab-pipeline-20260830.json`. It proves the fork/enrollment/report lifecycle and records a tie; it does not supersede the negative frozen efficacy evaluation.
 
+### Historical completed-turn checkpoint
+
+Choose a completed Codex turn and the Git commit representing its repository state:
+
+```bash
+driftctl ab prepare codex \
+  --session <source-session-id> \
+  --through-turn <completed-turn-id> \
+  --source-ref <git-commit> \
+  --json
+```
+
+Expected:
+
+- `checkpoint.kind: historical_turn`.
+- `checkpoint.through_turn_id` equals the requested turn.
+- `checkpoint.source_commit` is the resolved immutable commit.
+- Both fork requests use the same `lastTurnId`; later source turns are absent.
+- Both candidate workspaces contain the selected commit, not current or uncommitted files.
+- An in-progress selected turn exits `2` before semantic work or mutation and names the preceding completed turn when available.
+
+Codex does not expose turn-versioned native-goal history. Historical output therefore labels the inherited current goal as `native_goal_basis: current_at_prepare`. Driftctl does not infer a Git checkpoint from conversation text and cannot recover uncommitted historical files.
+
+The sanitized packaged real-provider rehearsal is `evals/results/historical-ab-pipeline-20260831.json`. It proves checkpoint selection, prefix exclusion, commit binding, source preservation, and idle forks; it does not measure coding efficacy.
+
 ## Package rehearsal
 
 Use a disposable path; do not overwrite the normal installed binary:
 
 ```bash
 export DRIFTCTL_REHEARSAL=/tmp/driftctl-reproduction
-mkdir -p "$DRIFTCTL_REHEARSAL/releases/v0.4.1" \
+mkdir -p "$DRIFTCTL_REHEARSAL/releases/v0.5.0" \
   "$DRIFTCTL_REHEARSAL/bin"
 
 sh scripts/package-release.sh \
-  --out "$DRIFTCTL_REHEARSAL/releases/v0.4.1"
+  --out "$DRIFTCTL_REHEARSAL/releases/v0.5.0"
 
 DRIFTCTL_BASE_URL="file://$DRIFTCTL_REHEARSAL/releases" \
-  sh scripts/install.sh --version v0.4.1 \
+  sh scripts/install.sh --version v0.5.0 \
     --bin-dir "$DRIFTCTL_REHEARSAL/bin"
 
 "$DRIFTCTL_REHEARSAL/bin/driftctl" --help

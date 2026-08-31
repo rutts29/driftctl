@@ -58,9 +58,9 @@
 
 ## Historical Paired A/B
 
-- [ ] H01 CLI accepts `--through-turn <id>` only with exact `--session <id>` and `--source-ref <git-ref>`; malformed combinations fail before mutation.
-- [ ] H02 selected turn must exist and have status `completed`; in-progress selection fails actionably before resolver, experiment state, workspace, or fork, with the preceding completed turn when available.
-- [ ] H03 both persisted forks receive the same exact `lastTurnId`, preserve lineage/goal/policy, start no turn, and exclude all later source records.
-- [ ] H04 source ref resolves once to an immutable commit; both candidate repositories start from that commit while the source session, worktree, Git ref, and private configuration remain unchanged.
-- [ ] H05 report compares child tails against the historical prefix, detects later source-session/repository changes, and retains `prospective_paired` with explicit historical checkpoint provenance.
-- [ ] H06 checksum-packaged CLI completes a disposable real Codex multi-turn → historical prepare flow; active Codex profile remains untouched and temporary provider resources are removed.
+- [x] H01 CLI accepts `--through-turn <id>` only with exact `--session <id>` and `--source-ref <git-ref>`; malformed combinations fail before mutation.
+- [x] H02 selected turn must exist and have status `completed`; in-progress selection fails actionably before resolver, experiment state, workspace, or fork, with the preceding completed turn when available.
+- [x] H03 both persisted forks receive the same exact `lastTurnId`, preserve lineage/goal/policy, start no turn, and exclude all later source records.
+- [x] H04 source ref resolves once to an immutable commit; both candidate repositories start from that commit while the source session, worktree, Git ref, and private configuration remain unchanged.
+- [x] H05 report compares child tails against the historical prefix, detects later source-session/repository changes, and retains `prospective_paired` with explicit historical checkpoint provenance.
+- [x] H06 checksum-packaged CLI completes a disposable real Codex multi-turn → historical prepare flow; active Codex profile remains untouched and temporary provider resources are removed.

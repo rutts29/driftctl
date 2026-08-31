@@ -1,0 +1,37 @@
+{
+  "schema_version": 1,
+  "evidence_kind": "historical_ab_pipeline",
+  "date": "2026-08-31",
+  "product_version": "0.5.0",
+  "entrypoint": "checksum_installed_linux_binary",
+  "provider": "codex_app_server_0.151.0",
+  "checkpoint": {
+    "source_turn_count": 2,
+    "selected_turn_ordinal": 1,
+    "selected_turn_status": "completed",
+    "source_commit_bound": true
+  },
+  "result": {
+    "prepare_status": "ready",
+    "experiment_kind": "prospective_paired",
+    "baseline_turn_count": 1,
+    "workflow_turn_count": 1,
+    "exact_selected_prefix_equal": true,
+    "later_source_turn_excluded": true,
+    "candidate_commit_snapshots_equal": true,
+    "source_session_unchanged": true,
+    "source_repository_unchanged": true,
+    "turns_started_by_prepare": 0,
+    "enrollments_created_by_prepare": 0,
+    "active_plugin_profile_changed": false,
+    "elapsed_ms": 17460
+  },
+  "active_turn_boundary": {
+    "installed_process_test": "passed",
+    "semantic_worker_invocations": 0,
+    "experiment_directories_created": 0,
+    "fork_requests_created": 0,
+    "preceding_completed_turn_reported": true
+  },
+  "claim_scope": "provider and packaging pipeline proof; not coding-efficacy evidence"
+}
