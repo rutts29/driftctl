@@ -1,8 +1,10 @@
 use std::collections::BTreeSet;
 use std::env;
+use std::ffi::OsString;
 use std::fmt;
+use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
-use std::path::Path;
+use std::path::{Component, Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 
 use serde_json::{Value, json};
@@ -70,9 +72,6 @@ impl ImportedSession {
         &self,
         repository: &Path,
     ) -> Result<bool, SourceError> {
-        let repository = repository
-            .to_str()
-            .ok_or_else(|| SourceError::new("current repository path is not valid UTF-8"))?;
         if self
             .native_goal
             .text()
@@ -87,7 +86,7 @@ impl ImportedSession {
                 .is_some_and(|items| {
                     items
                         .iter()
-                        .any(|item| value_references_checkout(item, repository))
+                        .any(|item| provider_item_references_checkout(item, repository))
                 })
         }))
     }
@@ -112,29 +111,256 @@ impl ImportedSession {
     }
 }
 
-fn value_references_checkout(value: &Value, repository: &str) -> bool {
+fn provider_item_references_checkout(value: &Value, repository: &Path) -> bool {
+    match value {
+        Value::Object(fields) => fields
+            .iter()
+            .any(|(field, value)| field != "cwd" && value_references_checkout(value, repository)),
+        _ => value_references_checkout(value, repository),
+    }
+}
+
+fn value_references_checkout(value: &Value, repository: &Path) -> bool {
     match value {
         Value::String(text) => text_references_checkout(text, repository),
         Value::Array(values) => values
             .iter()
             .any(|value| value_references_checkout(value, repository)),
         Value::Object(fields) => fields
-            .iter()
-            .any(|(field, value)| field != "cwd" && value_references_checkout(value, repository)),
+            .values()
+            .any(|value| value_references_checkout(value, repository)),
         Value::Null | Value::Bool(_) | Value::Number(_) => false,
     }
 }
 
-fn text_references_checkout(text: &str, repository: &str) -> bool {
-    text.match_indices(repository).any(|(index, _)| {
-        let trailing = &text[index + repository.len()..];
-        trailing.is_empty()
-            || trailing.starts_with('/')
-            || trailing.chars().next().is_some_and(|character| {
-                character.is_whitespace()
-                    || matches!(character, '"' | '\'' | '`' | ':' | ',' | ')' | ']' | '}')
-            })
+fn text_references_checkout(text: &str, repository: &Path) -> bool {
+    absolute_path_candidates(text)
+        .iter()
+        .any(|candidate| path_references_checkout(candidate, repository))
+}
+
+fn absolute_path_candidates(text: &str) -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+    let mut search_from = 0;
+    while let Some(relative_start) = text[search_from..].find('/') {
+        let start = search_from + relative_start;
+        let quote = text[..start]
+            .chars()
+            .next_back()
+            .filter(|character| matches!(character, '\'' | '"'));
+        let mut candidate = String::new();
+        let mut escaped = false;
+        let mut end = start;
+        for (offset, character) in text[start..].char_indices() {
+            let index_after = start + offset + character.len_utf8();
+            if escaped {
+                candidate.push(character);
+                escaped = false;
+                end = index_after;
+                continue;
+            }
+            if character == '\\' && quote != Some('\'') {
+                escaped = true;
+                end = index_after;
+                continue;
+            }
+            if quote.is_some_and(|delimiter| delimiter == character) {
+                end = index_after;
+                break;
+            }
+            if quote.is_none()
+                && (character.is_whitespace()
+                    || matches!(
+                        character,
+                        '\'' | '"'
+                            | '`'
+                            | ':'
+                            | ','
+                            | ';'
+                            | '|'
+                            | '&'
+                            | '<'
+                            | '>'
+                            | '('
+                            | ')'
+                            | '['
+                            | ']'
+                            | '{'
+                            | '}'
+                    ))
+            {
+                end = index_after;
+                break;
+            }
+            candidate.push(character);
+            end = index_after;
+            if candidate.len() >= 16 * 1024 {
+                break;
+            }
+        }
+        if !candidate.is_empty() {
+            candidates.push(PathBuf::from(&candidate));
+            let without_prose_punctuation = candidate.trim_end_matches(['.', '?', '!']);
+            if without_prose_punctuation.len() != candidate.len() {
+                candidates.push(PathBuf::from(without_prose_punctuation));
+            }
+        }
+        search_from = end.max(start + 1);
+    }
+    candidates
+}
+
+fn path_references_checkout(candidate: &Path, repository: &Path) -> bool {
+    if !candidate.is_absolute() {
+        return false;
+    }
+    let normalized = lexically_normalize(candidate);
+    path_has_component_prefix(candidate, repository)
+        || path_has_component_prefix(&normalized, repository)
+        || canonicalize_existing_ancestor(candidate)
+            .is_some_and(|resolved| path_has_component_prefix(&resolved, repository))
+        || canonicalize_existing_ancestor(&normalized)
+            .is_some_and(|resolved| path_has_component_prefix(&resolved, repository))
+}
+
+fn canonicalize_existing_ancestor(path: &Path) -> Option<PathBuf> {
+    let mut ancestor = path.to_path_buf();
+    let mut missing = Vec::<OsString>::new();
+    loop {
+        if let Ok(mut resolved) = fs::canonicalize(&ancestor) {
+            for component in missing.iter().rev() {
+                resolved.push(component);
+            }
+            return Some(lexically_normalize(&resolved));
+        }
+        let name = ancestor.file_name()?.to_os_string();
+        missing.push(name);
+        ancestor = ancestor.parent()?.to_path_buf();
+    }
+}
+
+fn lexically_normalize(path: &Path) -> PathBuf {
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if !normalized.pop() && !path.is_absolute() {
+                    normalized.push(component.as_os_str());
+                }
+            }
+            Component::Prefix(_) | Component::RootDir | Component::Normal(_) => {
+                normalized.push(component.as_os_str());
+            }
+        }
+    }
+    normalized
+}
+
+fn path_has_component_prefix(path: &Path, repository: &Path) -> bool {
+    let mut path_components = path.components();
+    repository.components().all(|repository_component| {
+        path_components.next().is_some_and(|path_component| {
+            path_component
+                .as_os_str()
+                .to_string_lossy()
+                .eq_ignore_ascii_case(&repository_component.as_os_str().to_string_lossy())
+        })
     })
+}
+
+#[cfg(test)]
+mod path_reference_tests {
+    use std::fs;
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    use serde_json::json;
+
+    use super::{provider_item_references_checkout, text_references_checkout};
+
+    static SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+    fn directory(name: &str) -> PathBuf {
+        let directory = std::env::temp_dir().join(format!(
+            "driftctl-path-scan-{}-{}-{name}",
+            std::process::id(),
+            SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir_all(&directory).expect("create path scanner fixture");
+        directory
+    }
+
+    #[test]
+    fn detects_shell_escaped_spaces_and_case_variants() {
+        let parent = directory("case-and-spaces");
+        let repository = parent.join("Mixed Case Repository");
+        fs::create_dir(&repository).expect("create repository fixture");
+        let canonical = repository.canonicalize().expect("canonical repository");
+        let escaped = canonical.to_string_lossy().replace(' ', "\\ ");
+        assert!(text_references_checkout(
+            &format!("sed -n 1p {escaped}/README.md"),
+            &canonical
+        ));
+        assert!(text_references_checkout(
+            &format!(
+                "open \"{}/README.md\"",
+                canonical.to_string_lossy().to_uppercase()
+            ),
+            &canonical
+        ));
+        fs::remove_dir_all(parent).expect("remove path scanner fixture");
+    }
+
+    #[test]
+    fn ignores_only_the_provider_items_structural_cwd() {
+        let parent = directory("structural-cwd");
+        let repository = parent.join("repository");
+        fs::create_dir(&repository).expect("create repository fixture");
+        let canonical = repository.canonicalize().expect("canonical repository");
+        let structural_only = json!({
+            "type":"commandExecution",
+            "command":"pwd",
+            "commandActions":[],
+            "cwd":canonical,
+            "status":"completed"
+        });
+        assert!(!provider_item_references_checkout(
+            &structural_only,
+            &canonical
+        ));
+        let nested_tool_path = json!({
+            "type":"commandExecution",
+            "command":"pwd",
+            "commandActions":[{"cwd":canonical.join("README.md")}],
+            "cwd":canonical,
+            "status":"completed"
+        });
+        assert!(provider_item_references_checkout(
+            &nested_tool_path,
+            &canonical
+        ));
+        fs::remove_dir_all(parent).expect("remove path scanner fixture");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn detects_symlink_aliases() {
+        use std::os::unix::fs::symlink;
+
+        let parent = directory("symlink");
+        let repository = parent.join("repository");
+        fs::create_dir(&repository).expect("create repository fixture");
+        fs::write(repository.join("README.md"), "fixture\n").expect("write fixture");
+        let alias = parent.join("alias");
+        symlink(&repository, &alias).expect("create repository alias");
+        let canonical = repository.canonicalize().expect("canonical repository");
+        assert!(text_references_checkout(
+            &format!("cat {}/README.md", alias.display()),
+            &canonical
+        ));
+        fs::remove_dir_all(parent).expect("remove path scanner fixture");
+    }
 }
 
 impl fmt::Debug for ImportedSession {

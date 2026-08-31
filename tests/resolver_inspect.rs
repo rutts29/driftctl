@@ -1028,6 +1028,95 @@ fn i02_prospective_ab_rejects_parent_absolute_paths_before_workspace_or_fork() {
 }
 
 #[test]
+fn prospective_ab_rejects_parent_path_in_nested_tool_cwd() {
+    let mut fixture = Fixture::new(vec![base_proposal()]);
+    let canonical = fixture.root.canonicalize().expect("canonical source");
+    let mut source: Value =
+        serde_json::from_str(&fixture.environment["DRIFTCTL_FAKE_READ"]).expect("source fixture");
+    source["thread"]["turns"][0]["items"]
+        .as_array_mut()
+        .expect("source items")
+        .push(json!({
+            "type":"commandExecution",
+            "id":"nested-parent-cwd",
+            "command":"pwd",
+            "commandActions":[{"cwd":canonical.join("README.md")}],
+            "cwd":canonical,
+            "status":"completed"
+        }));
+    fixture
+        .environment
+        .insert("DRIFTCTL_FAKE_READ", source.to_string());
+
+    let rejected = fixture.run_ab_prepare();
+
+    assert_eq!(rejected.status.code(), Some(2), "{rejected:?}");
+    assert!(
+        String::from_utf8_lossy(&rejected.stderr).contains("parent checkout"),
+        "{rejected:?}"
+    );
+    assert!(!fixture.state_home.join("driftctl/ab").exists());
+    assert!(
+        !fixture
+            .rpc_calls()
+            .iter()
+            .any(|request| request["method"] == "thread/fork")
+    );
+    fixture.assert_unchanged();
+}
+
+#[test]
+fn prospective_ab_rejects_lexically_equivalent_parent_path() {
+    let mut fixture = Fixture::new(vec![base_proposal()]);
+    let canonical = fixture.root.canonicalize().expect("canonical source");
+    let equivalent = fixture
+        .fake_root
+        .join("..")
+        .join(canonical.file_name().expect("source directory name"))
+        .join("README.md");
+    assert_ne!(
+        equivalent.to_string_lossy(),
+        canonical.join("README.md").to_string_lossy()
+    );
+    assert_eq!(
+        equivalent.canonicalize().expect("equivalent path"),
+        canonical.join("README.md")
+    );
+    let mut source: Value =
+        serde_json::from_str(&fixture.environment["DRIFTCTL_FAKE_READ"]).expect("source fixture");
+    source["thread"]["turns"][0]["items"]
+        .as_array_mut()
+        .expect("source items")
+        .push(json!({
+            "type":"commandExecution",
+            "id":"equivalent-parent-command",
+            "command":format!("sed -n '1,20p' {}", equivalent.display()),
+            "commandActions":[],
+            "cwd":canonical,
+            "status":"completed"
+        }));
+    fixture
+        .environment
+        .insert("DRIFTCTL_FAKE_READ", source.to_string());
+
+    let rejected = fixture.run_ab_prepare();
+
+    assert_eq!(rejected.status.code(), Some(2), "{rejected:?}");
+    assert!(
+        String::from_utf8_lossy(&rejected.stderr).contains("parent checkout"),
+        "{rejected:?}"
+    );
+    assert!(!fixture.state_home.join("driftctl/ab").exists());
+    assert!(
+        !fixture
+            .rpc_calls()
+            .iter()
+            .any(|request| request["method"] == "thread/fork")
+    );
+    fixture.assert_unchanged();
+}
+
+#[test]
 fn prospective_ab_prepare_retains_an_explicit_blocked_partial_run() {
     let mut fixture = Fixture::new(vec![base_proposal()]);
     fixture
