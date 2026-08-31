@@ -33,5 +33,10 @@
     "fork_requests_created": 0,
     "preceding_completed_turn_reported": true
   },
+  "security_gate": {
+    "scope": "historical ref, temporary checkout, thread isolation, evidence, package",
+    "critical_findings": 0,
+    "major_findings": 0
+  },
   "claim_scope": "provider and packaging pipeline proof; not coding-efficacy evidence"
 }
