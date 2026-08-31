@@ -1,5 +1,13 @@
 # Representative agent trajectories
 
+View the step-by-step timeline:
+
+```bash
+python3 -m http.server 8000
+```
+
+Open `http://localhost:8000/evals/trajectories/`. The viewer reads these committed JSONL files and works without a build step or external assets.
+
 | Agent role | Instructions | Trajectory | Kind |
 |---|---|---|---|
 | Codex development agent | `AGENTS.md`, `SPEC.md`, operator steering | `development-recovery.sanitized.jsonl` | Reconstructed current-session record tied to commits and test output |

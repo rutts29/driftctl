@@ -65,7 +65,7 @@ Codex may render controls as `$driftctl-codex:driftctl on|status|off`; those exa
 Primary metric: externally verified completion with allowed scope and no premature completion. Each coding case was run once; timing and usage are descriptive, not statistically causal.
 
 - Results: [`evals/results/`](evals/results/)
-- Representative sanitized trajectories: [`evals/trajectories/`](evals/trajectories/)
+- Representative sanitized trajectories and local visual timeline: [`evals/trajectories/`](evals/trajectories/)
 - Improvement history: [`IMPROVEMENT-CHANGELOG.md`](IMPROVEMENT-CHANGELOG.md)
 - Exact commands: [`REPRODUCING.md`](REPRODUCING.md)
 - Judge summary: [`SUBMISSION.md`](SUBMISSION.md)
