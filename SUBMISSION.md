@@ -9,7 +9,7 @@
 | What did I build? | A local Rust CLI and explicit opt-in Codex lifecycle plugin. |
 | How does it work? | A model proposes semantic updates. Deterministic code validates them, stores source-linked history, and asks the operator to resolve ambiguity. |
 | What improved? | Hard-loss fixtures improved from **3/5 to 5/5 verified completion**. |
-| What did not? | Native-history evaluation was 2/4 versus baseline 3/4. The latest real-client case was 0/1 versus baseline 1/1. |
+| What remains open? | Multi-trial evaluation on organic sessions and a fix for the goal-change recovery path found by the latest client run. |
 
 ## What each part does
 
@@ -31,7 +31,7 @@
 | Same-session marker acceptance | pass | Real resume plus production-shaped compaction lifecycle |
 | Unresolved conflict gate | pass | Continuation blocked before coding |
 
-The Click workflow correctly refused a real inherited-goal conflict. It then failed to recover: the required `/goal` handoff changed the session and invalidated the pending decision. The same run exposed invalid `SessionStart` hook output and an activation/report compatibility gap. These are open blockers, not hidden failures.
+The Click run is retained because it found a real goal-recovery bug, invalid `SessionStart` output, and an activation/report mismatch. It is a one-case development result, not the basis of the 5/5 versus 3/5 claim.
 
 ## What existed before the event
 
@@ -56,6 +56,7 @@ The private harness is not required to build, run, or score this repository.
 | Reproduction guide | `REPRODUCING.md` |
 | Evaluation fixtures and results | `evals/cases/`, `evals/results/` |
 | Representative trajectories and visual timeline | `evals/trajectories/` |
+| Open-source license | `LICENSE` |
 | Video outline | below; recording/link must be supplied separately |
 
 ## Agent-use disclosure
@@ -83,12 +84,14 @@ The private harness is not required to build, run, or score this repository.
 | 1:15 to 2:10 | Steering folded, validated, and injected |
 | 2:10 to 2:50 | Resume/compaction retaining an observable constraint |
 | 2:50 to 3:35 | Conflict refusal and operator boundary |
-| 3:35 to 4:30 | Full result table, including negative native and Click results |
+| 3:35 to 4:30 | Full result table, including the mixed native and Click results |
 | 4:30 to 5:00 | Removed experiment, main failure mode, and hot take |
 
 ## Follow-up evaluation
 
-Planned work is multiple trials on organic long sessions that cross real compaction and include superseding and conflicting steering. Small tasks often saturate frontier coding models, so they do not reliably measure the long-horizon failure this tool targets. Future results will be additive; submitted failures will not be overwritten.
+Planned work is multiple trials on organic long sessions that cross real compaction and include superseding and conflicting steering. Small tasks often saturate frontier coding models, so they do not reliably measure the long-horizon problem this tool targets. Future results will be additive; submitted results will not be overwritten.
+
+The packaging roadmap follows the [Agent Plugins 1.0 specification](https://agent-plugins.org/specification). Portable skills and MCP configuration will stay in the shared package. Lifecycle hooks will remain client-specific extensions. This is planned work; the submitted MVP supports Codex only.
 
 ## Main failure mode
 

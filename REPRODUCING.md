@@ -94,7 +94,7 @@ Detach:
 $driftctl off
 ```
 
-Do not use a consequential repository for this acceptance run. Goal-change recovery has a known blocker described in `evals/results/click-client-ab-20260831.json`.
+Do not use a consequential repository for this acceptance run. Goal-change recovery has a known issue described in `evals/results/click-client-ab-20260831.json`.
 
 ## 5. Package rehearsal
 
@@ -114,8 +114,8 @@ Expected: the installer pins the version, verifies SHA-256, rejects unexpected a
 ## Evidence map
 
 - Five-case result: `evals/results/summary.json`.
-- Native negative result: `evals/results/native-suite-20260830/summary.json`.
-- Latest client failure: `evals/results/click-client-ab-20260831.json`.
+- Native-history result: `evals/results/native-suite-20260830/summary.json`.
+- Latest client result: `evals/results/click-client-ab-20260831.json`.
 - A/B pipeline rehearsals: `evals/results/prospective-ab-pipeline-20260830.json` and `historical-ab-pipeline-20260831.json`.
 - Sanitized trajectories: `evals/trajectories/`.
 
