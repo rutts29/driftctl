@@ -1,6 +1,6 @@
 {
   "name": "driftctl-codex",
-  "version": "0.3.0",
+  "version": "0.3.0+codex.20260831161103",
   "description": "Driftctl Codex plugin",
   "author": {
     "name": "Driftctl"
