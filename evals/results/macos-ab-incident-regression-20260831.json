@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "incident_archive_sha256": "3528725541e7a7145310c8e972cbb0ae76d9469cc397ee4b0a1c05a8c17b0006",
+  "incident_verdict": "invalid_ab_run",
+  "observed_failures": {
+    "parent_checkout_modified": true,
+    "candidate_checkouts_modified": false,
+    "workflow_ui_claimed_enabled": true,
+    "workflow_durable_status": "detached"
+  },
+  "root_causes": [
+    "Codex rendered a qualified plugin control that the v0.5.0 literal-only hook ignored; the skill inferred success without hook context",
+    "inherited absolute parent-checkout paths were followed from isolated child sessions"
+  ],
+  "regressions": {
+    "i01_namespaced_control": {
+      "red_on_v0_5_0": true,
+      "green_on_v0_5_1": true,
+      "durable_on_status_off_proved": true
+    },
+    "i02_parent_path_preflight": {
+      "red_on_v0_5_0": true,
+      "green_on_v0_5_1": true,
+      "experiment_state_created": false,
+      "candidate_workspace_created": false,
+      "provider_fork_created": false
+    }
+  },
+  "packaged_rehearsal": {
+    "version": "0.5.1",
+    "commit": "30b59f4b90ddd81edf6d735373304be010f798f4",
+    "target": "x86_64-unknown-linux-gnu",
+    "archive_sha256": "9a802a06c19fe26c1a8564c194b2c4b1629cdacb6bd7e250e04dd967a590cb92",
+    "binary_sha256": "cf0961ac6438be92a62b6362a84a2347442653beac5904afcf3d7c7b68f3771d",
+    "isolated_codex_plugin_install": "passed",
+    "safe_ab_control": "passed",
+    "active_profile_unchanged": true,
+    "isolated_plugin_removed": true
+  },
+  "claim_scope": "incident diagnosis and safety/process regression proof; not semantic efficacy evidence"
+}
