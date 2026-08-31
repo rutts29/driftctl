@@ -1,41 +1,76 @@
-# Reproduction Guide
+# Reproduction guide
 
-## Recorded environment
+## Environment
 
 - Linux x86_64.
-- Codex CLI 0.150.1 with stable lifecycle hooks.
 - Rust/Cargo 1.97.1.
-- Python 3.14.4; evaluator requires 3.11+.
-- Git 2.53.0.
-- Default keeper: `gpt-5.6-luna`, reasoning `max`.
+- Python 3.11+.
+- Git.
+- Codex CLI 0.150.1 or 0.151.0 plus an existing login for live agent runs.
 
-Live tests use the executing user's Codex authentication and allowance. Semantic calls can take seconds to several minutes. Driftctl has no service or telemetry.
+Live runs consume the executing user's Codex allowance. The deterministic suite requires no credentials or model calls.
 
-## Deterministic checks
+## 1. Build and deterministic checks
 
 ```bash
-git clone <repository-url> driftctl
+git clone https://github.com/rutts29/driftctl.git
 cd driftctl
 
 cargo fmt --check
 cargo clippy --locked --all-targets -- -D warnings
 cargo test --locked
-
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover \
   -s evals/tests -p 'test_*.py' -v
-
 shellcheck scripts/package-release.sh scripts/install.sh
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest \
   release.tests.test_installer -v
 ```
 
-The hook process suite exercises real CLI subprocess, stdin/stdout, filesystem modes, locks, fake App Server protocol, and plugin install/remove boundaries:
+Expected: every command exits `0`. The Rust suite includes real subprocess, filesystem-mode, lock, malformed-input, plugin install/remove, fake App Server, isolation, and verifier-boundary cases.
+
+## 2. Inspect retained results
+
+No model call is required:
 
 ```bash
-cargo test --locked --test hook_process -- --nocapture
+python3 -m json.tool evals/results/summary.json
 ```
 
-## Build and integrate
+Expected primary metric:
+
+```text
+baseline: 3/5 verified (0.60), 2 premature completions
+workflow: 5/5 verified (1.00), 0 premature completions
+```
+
+This displays the immutable historical summary; it does not recompute it. The legacy arm files predate fields now required by the stricter scorer and are retained rather than rewritten. The result is limited to hard transcript-loss recovery, not native resume or ordinary compaction. Section 3 produces fresh, current-schema arms and scores them.
+
+## 3. Rerun baseline and workflow
+
+This uses Codex and can take roughly 35 to 45 minutes sequentially. The retained run used about 5.45 million input tokens across both modes. Much of that input was cached.
+
+```bash
+cargo build --release --locked
+mkdir -p /tmp/driftctl-eval-results
+
+for case in evals/cases/0[1-5]-*; do
+  id=$(basename "$case")
+  python3 evals/runner/run_baseline.py \
+    --case "$case" \
+    > "/tmp/driftctl-eval-results/${id}-baseline.json"
+  python3 evals/runner/run_workflow.py \
+    --case "$case" \
+    --driftctl-bin target/release/driftctl \
+    > "/tmp/driftctl-eval-results/${id}-workflow.json"
+done
+
+python3 evals/runner/score_results.py \
+  /tmp/driftctl-eval-results/*.json
+```
+
+Use the same Codex binary, account, model policy, cases, and ordering for both modes. New runs may differ because the model is nondeterministic; do not overwrite retained results.
+
+## 4. Install the plugin locally
 
 ```bash
 cargo install --path . --locked
@@ -43,234 +78,50 @@ driftctl integrate codex install
 driftctl integrate codex status
 ```
 
-Open Codex and approve the Driftctl hook source in `/hooks`. Do not use a hook-trust bypass for ordinary operation.
-
-Expected integration status:
-
-```text
-plugin: installed
-hooks: enabled
-trust: approve Driftctl hooks with `/hooks` on first use
-```
-
-## Same-session acceptance
-
-Start with an existing persisted Codex session associated with a disposable Git repository. In that session invoke:
+Open Codex, approve the hook source in `/hooks`, then invoke inside one disposable persisted session:
 
 ```text
 $driftctl status
 $driftctl on
+From now on, end every answer with exactly DRIFT_MARKER.
 ```
 
-Codex may render the exact activation as `$driftctl-codex:driftctl on`; the namespaced `on`, `status`, and `off` forms must produce the same durable results.
-
-Expected:
-
-- Status initially reports off without creating state.
-- On bootstraps and injects the existing session's active projection.
-- No session ID or Codex-home path is required.
-- A second session in the same repository remains silent.
-
-The external CLI path remains available for diagnostics:
-
-From that repository:
-
-```bash
-driftctl attach codex --session <exact-session-id> --json
-driftctl status codex --session <exact-session-id> --json
-```
-
-Expected:
-
-- `status: attached`.
-- Redacted session identifier in public output.
-- Private enrollment and run state under `${XDG_STATE_HOME:-$HOME/.local/state}/driftctl`.
-
-In the attached Codex session, add a durable, observable constraint:
-
-```text
-From now on, every answer in this session must end with exactly DRIFT_MARKER.
-```
-
-Expected:
-
-- Driftctl reconciles before the model turn.
-- A valid proposal advances the projection.
-- The reply ends with `DRIFT_MARKER`.
-
-Exit Codex. Resume the same exact session in a new process and ask a normal question without repeating the marker instruction.
-
-Expected:
-
-- `SessionStart(resume)` injects the stored projection.
-- The reply still ends with `DRIFT_MARKER`.
-- `Stop` binds the hook prompt to Codex's persisted provider record without a duplicate semantic call, even when the two IDs differ.
-
-Read the current sanitized projection:
-
-```bash
-driftctl status codex --session <exact-session-id> --json
-driftctl bundle --run <run-id> --json
-```
-
-The bundle must contain the accepted goal and marker constraint with no unresolved conflict.
-
-## Compaction boundary
-
-Normal Codex compaction should trigger the installed `PreCompact` and later `SessionStart(compact)` hooks. For a deterministic production-shaped check, pass the same event payloads through the installed entrypoint and exact attached session:
-
-```text
-PreCompact(auto) → no stdout after durable reconciliation
-SessionStart(compact) → additionalContext containing the same projection
-```
-
-The process case is `k08_k12_user_prompt_is_folded_before_injection_and_duplicate_is_idempotent`. The retained real boundary restored the same goal and marker with zero conflicts.
-
-## Conflict and goal decisions
-
-When a hook blocks, get the run ID and inspect alternatives:
-
-```bash
-driftctl status codex --session <exact-session-id> --json
-driftctl bundle --run <run-id> --json
-```
-
-Resolve one conflict:
-
-```bash
-driftctl resolve codex \
-  --session <exact-session-id> \
-  --conflict <conflict-id> \
-  --alternative <alternative-id> --json
-```
-
-Goal proposal choices:
-
-```bash
-driftctl resolve codex --session <exact-session-id> --reject-goal --json
-driftctl resolve codex --session <exact-session-id> --edit-goal '<replacement>' --json
-driftctl resolve codex --session <exact-session-id> --approve-goal --json
-```
-
-If approval reports a native-goal mismatch, it must exit `2` without a mutating goal RPC. In the exact attached Codex session, run:
-
-```text
-/goal clear
-/goal <replacement>
-```
-
-Rerun `--approve-goal`. It must commit only after read-only exact goal and source-head verification. Edit, reject, concurrent change, stale, wrong-session, and replayed approval must leave the native goal untouched.
+Exit and resume that session. Ask a normal question without repeating the constraint. Expected: the answer still ends with `DRIFT_MARKER`; another session in the same repository remains unaffected.
 
 Detach:
 
-```bash
-driftctl detach codex --session <exact-session-id> --json
+```text
+$driftctl off
 ```
 
-A later hook for that session must emit nothing and create no state.
+Do not use a consequential repository for this acceptance run. Goal-change recovery has a known blocker described in `evals/results/click-client-ab-20260831.json`.
 
-## Prospective paired A/B
-
-Use a clean disposable repository and a detached Codex session persisted at the intended midpoint:
-
-```bash
-driftctl ab prepare codex --session <midpoint-session-id> --json
-```
-
-Expected:
-
-- `experiment_kind: prospective_paired` and `status: ready`.
-- Distinct baseline/workflow session IDs and working directories.
-- Equal starting candidate digest, inherited goal, and worker policy.
-- No started turn, enrollment, or source-checkout mutation.
-
-Resume the baseline from `baseline.cwd` and continue normally. Resume the workflow from `workflow.cwd`, invoke `$driftctl on`, then provide the same continuation task. Do not enroll the baseline or source session.
-
-Create one executable verifier outside both candidate workspaces that exits zero only when the user-visible task is complete. Run it before detaching the workflow. Driftctl resolves a relative program from this invocation directory, canonicalizes it before changing into either candidate, and pins its content digest:
-
-```bash
-cd <source-repository>
-driftctl ab report --run <run-id> --json -- <verifier> [args...]
-```
-
-Expected:
-
-- Baseline `detached`; workflow `attached_exact`; source unchanged.
-- The same verifier command executes once in each candidate.
-- Candidate-local verifier programs or inputs are rejected before execution.
-- Per-arm exit status, candidate/verifier digests, timing, post-checkpoint records/prompts, and workflow keeper overhead.
-- A repeated identical report returns `cached: true`; a different verifier is rejected.
-
-Then invoke `$driftctl off` in the workflow arm. Use verified completion as the primary outcome. Treat turns, corrections, elapsed time, and keeper usage as secondary. If prompts or operator interventions differed, label the run a pipeline rehearsal rather than a controlled efficacy result.
-
-The retained sanitized rehearsal is `evals/results/prospective-ab-pipeline-20260830.json`. It proves the fork/enrollment/report lifecycle and records a tie; it does not supersede the negative frozen efficacy evaluation.
-
-An unsafe checkpoint containing an absolute parent-checkout path must exit `2` before creating `driftctl/ab` state or sending `thread/fork`. The process regression is `i02_prospective_ab_rejects_parent_absolute_paths_before_workspace_or_fork`.
-
-### Historical completed-turn checkpoint
-
-Choose a completed Codex turn and the Git commit representing its repository state:
-
-```bash
-driftctl ab prepare codex \
-  --session <source-session-id> \
-  --through-turn <completed-turn-id> \
-  --source-ref <git-commit> \
-  --json
-```
-
-Expected:
-
-- `checkpoint.kind: historical_turn`.
-- `checkpoint.through_turn_id` equals the requested turn.
-- `checkpoint.source_commit` is the resolved immutable commit.
-- Both fork requests use the same `lastTurnId`; later source turns are absent.
-- Both candidate workspaces contain the selected commit, not current or uncommitted files.
-- An in-progress selected turn exits `2` before semantic work or mutation and names the preceding completed turn when available.
-
-Codex does not expose turn-versioned native-goal history. Historical output therefore labels the inherited current goal as `native_goal_basis: current_at_prepare`. Driftctl does not infer a Git checkpoint from conversation text and cannot recover uncommitted historical files.
-
-The sanitized packaged real-provider rehearsal is `evals/results/historical-ab-pipeline-20260831.json`. It proves checkpoint selection, prefix exclusion, commit binding, source preservation, and idle forks; it does not measure coding efficacy.
-
-## Package rehearsal
-
-Use a disposable path; do not overwrite the normal installed binary:
+## 5. Package rehearsal
 
 ```bash
 export DRIFTCTL_REHEARSAL=/tmp/driftctl-reproduction
-mkdir -p "$DRIFTCTL_REHEARSAL/releases/v0.5.1" \
-  "$DRIFTCTL_REHEARSAL/bin"
+mkdir -p "$DRIFTCTL_REHEARSAL/releases/v0.5.1" "$DRIFTCTL_REHEARSAL/bin"
 
-sh scripts/package-release.sh \
-  --out "$DRIFTCTL_REHEARSAL/releases/v0.5.1"
-
+sh scripts/package-release.sh --out "$DRIFTCTL_REHEARSAL/releases/v0.5.1"
 DRIFTCTL_BASE_URL="file://$DRIFTCTL_REHEARSAL/releases" \
   sh scripts/install.sh --version v0.5.1 \
-    --bin-dir "$DRIFTCTL_REHEARSAL/bin"
-
+  --bin-dir "$DRIFTCTL_REHEARSAL/bin"
 "$DRIFTCTL_REHEARSAL/bin/driftctl" --help
 ```
 
-The installer pins the version, verifies SHA-256, rejects unexpected archive entries, invokes the installed entrypoint, and supports only `x86_64-unknown-linux-gnu`. GitHub download works after the private release is published.
+Expected: the installer pins the version, verifies SHA-256, rejects unexpected archive entries, and installs one executable. Only `x86_64-unknown-linux-gnu` is supported.
 
-## Retained evaluation evidence
+## Evidence map
 
-- Frozen coding comparison: baseline 3/4; projected workflow 2/4; no measured efficacy improvement.
-- Safety case: unresolved ambiguity blocked before coding.
-- Archived hard-loss cases are historical fault-injection evidence and are not the same-session baseline.
+- Five-case result: `evals/results/summary.json`.
+- Native negative result: `evals/results/native-suite-20260830/summary.json`.
+- Latest client failure: `evals/results/click-client-ab-20260831.json`.
+- A/B pipeline rehearsals: `evals/results/prospective-ab-pipeline-20260830.json` and `historical-ab-pipeline-20260831.json`.
+- Sanitized trajectories: `evals/trajectories/`.
 
-Re-score immutable native results without overwriting them:
+## Privacy and cleanup
 
-```bash
-python3 evals/runner/score_results.py \
-  evals/results/native-suite-20260830/*-native-*.json
-```
-
-Do not selectively rerun or overwrite retained cases. Store new same-session baseline/workflow runs under new result paths.
-
-## Privacy
-
-- Keep XDG state, raw trajectories, provider session IDs, and artifacts private.
-- Raw Codex records can include local paths, prompts, tools, and private context.
-- Sanitize selected trajectories with `evals/runner/sanitize_trajectory.py`, then inspect them manually before publication.
-- Never publish authentication files, credentials, the broader private engineering harness, or unrelated observability data.
+- Do not publish `$CODEX_HOME`, XDG Driftctl state, raw trajectories, session IDs, or authentication files.
+- Use only disposable repositories for live reproduction.
+- `driftctl integrate codex remove` removes the integration; `$driftctl off` detaches only the invoking session.
+- Manually inspect every sanitized trajectory before publication.
