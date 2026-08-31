@@ -62,6 +62,8 @@ $driftctl status
 $driftctl on
 ```
 
+Codex may render the exact activation as `$driftctl-codex:driftctl on`; the namespaced `on`, `status`, and `off` forms must produce the same durable results.
+
 Expected:
 
 - Status initially reports off without creating state.
@@ -203,6 +205,8 @@ Then invoke `$driftctl off` in the workflow arm. Use verified completion as the 
 
 The retained sanitized rehearsal is `evals/results/prospective-ab-pipeline-20260830.json`. It proves the fork/enrollment/report lifecycle and records a tie; it does not supersede the negative frozen efficacy evaluation.
 
+An unsafe checkpoint containing an absolute parent-checkout path must exit `2` before creating `driftctl/ab` state or sending `thread/fork`. The process regression is `i02_prospective_ab_rejects_parent_absolute_paths_before_workspace_or_fork`.
+
 ### Historical completed-turn checkpoint
 
 Choose a completed Codex turn and the Git commit representing its repository state:
@@ -234,14 +238,14 @@ Use a disposable path; do not overwrite the normal installed binary:
 
 ```bash
 export DRIFTCTL_REHEARSAL=/tmp/driftctl-reproduction
-mkdir -p "$DRIFTCTL_REHEARSAL/releases/v0.5.0" \
+mkdir -p "$DRIFTCTL_REHEARSAL/releases/v0.5.1" \
   "$DRIFTCTL_REHEARSAL/bin"
 
 sh scripts/package-release.sh \
-  --out "$DRIFTCTL_REHEARSAL/releases/v0.5.0"
+  --out "$DRIFTCTL_REHEARSAL/releases/v0.5.1"
 
 DRIFTCTL_BASE_URL="file://$DRIFTCTL_REHEARSAL/releases" \
-  sh scripts/install.sh --version v0.5.0 \
+  sh scripts/install.sh --version v0.5.1 \
     --bin-dir "$DRIFTCTL_REHEARSAL/bin"
 
 "$DRIFTCTL_REHEARSAL/bin/driftctl" --help

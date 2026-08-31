@@ -7,7 +7,7 @@ Primary flow:
 ```text
 install plugin
   → plugin remains inert
-  → user invokes $driftctl on inside one existing session
+  → user invokes $driftctl on or its Codex-qualified form inside one existing session
   → hook binds the exact session_id supplied by Codex
   → reconcile prompt
   → Luna proposes semantic change
@@ -42,7 +42,7 @@ driftctl integrate codex status
 The packaged Linux release is checksum-verified by `scripts/install.sh`:
 
 ```bash
-./scripts/install.sh --version v0.5.0
+./scripts/install.sh --version v0.5.1
 driftctl integrate codex install
 ```
 
@@ -57,6 +57,8 @@ Inside the existing Codex session:
 ```text
 $driftctl on
 ```
+
+Codex may render the same exact control as `$driftctl-codex:driftctl on`; Driftctl accepts both forms. The corresponding `status` and `off` forms are also supported.
 
 Installation alone never enrolls a session. The literal command is handled by `UserPromptSubmit`, which supplies the exact current session ID and working directory. Other sessions—including sessions in the same repository—remain strict no-ops.
 
@@ -99,6 +101,8 @@ driftctl ab prepare codex \
 ```
 
 Both arms receive history through the selected turn only. `source-ref` resolves once to an immutable commit and both candidate repositories start there. If the selected turn is active, prepare creates no experiment, workspace, or fork and reports the preceding completed turn when available. Driftctl cannot reconstruct uncommitted historical files; select a commit that represents the intended checkpoint.
+
+Prepare also rejects a selected history whose provider content or native goal embeds an absolute path into the parent checkout. Codex can follow such inherited paths despite a different fork working directory, so this case fails before A/B state, candidates, or forks are created.
 
 The result contains one run ID plus separate baseline/workflow session IDs and working directories. Both are idle persisted forks with the same inherited prefix, native goal, worker policy, and candidate digest. Prepare enrolls neither arm and does not change the source checkout.
 
@@ -167,7 +171,7 @@ driftctl detach codex --session <exact-session-id>
 ## Verified behavior
 
 - Unenrolled sessions are strict no-ops.
-- Plugin installation never enrolls a session; activation requires exact `$driftctl on`.
+- Plugin installation never enrolls a session; activation requires an exact literal or Codex-qualified Driftctl control.
 - `$driftctl status` is read-only and `$driftctl off` detaches only the invoking session.
 - Attach is exact and idempotent; unknown sessions create no enrollment.
 - Different hook and persisted provider IDs bind one-to-one without duplicate semantic calls.
@@ -185,6 +189,7 @@ Exact commands and retained evidence are in [REPRODUCING.md](REPRODUCING.md). Th
 - Codex is the only native lifecycle adapter in this MVP.
 - Keeper calls add model latency and consume the user's allowance.
 - Historical A/B requires an explicit completed turn and Git commit; Codex rejects an in-progress `lastTurnId`, and uncommitted historical files cannot be reconstructed.
+- A/B preparation blocks inherited absolute references into the parent checkout; use a checkpoint without those references rather than relying on the child sandbox to contain them.
 - A historical fork inherits the native goal observed at prepare time because Codex does not expose turn-versioned goal history; output labels this as `native_goal_basis: current_at_prepare`.
 - A/B execution remains operator-driven; equal starting state does not make asymmetrically steered runs a valid efficacy comparison.
 - Model proposals can be wrong; deterministic checks reject structural errors but cannot guarantee semantic correctness.
