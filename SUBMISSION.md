@@ -69,7 +69,7 @@ The private harness is not required to build, run, or score this repository.
 
 ## Security check
 
-- The current tree and full Git history contain no credential-shaped tokens, private keys, authentication files, or tracked symlinks.
+- The current tree and submitted source archive contain no credential-shaped tokens, private keys, authentication files, or tracked symlinks.
 - References to `.codex/auth.json` are test fixtures that verify protected-file isolation. They contain no real credentials.
 - The release archive contains one executable. Checksum verification and a clean-directory installation passed.
 - The binary string scan found no GitHub, OpenAI, AWS, or private-key patterns.
