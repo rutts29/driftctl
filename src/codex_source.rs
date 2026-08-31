@@ -34,9 +34,14 @@ pub(crate) struct ImportedSession {
     thread_snapshot: Value,
     records: Vec<ImportedRecord>,
     allow_ancestor_cwd: bool,
+    through_turn_id: Option<String>,
 }
 
 impl ImportedSession {
+    pub(crate) fn session_id(&self) -> &str {
+        &self.session_id
+    }
+
     pub(crate) fn imported_user_record_count(&self) -> usize {
         self.records
             .iter()
@@ -120,17 +125,34 @@ pub(crate) enum SessionSelection<'a> {
 }
 
 #[derive(Debug)]
-pub(crate) struct SourceError(String);
+pub(crate) struct SourceError {
+    message: String,
+    blocked: bool,
+}
 
 impl SourceError {
     fn new(message: impl Into<String>) -> Self {
-        Self(message.into())
+        Self {
+            message: message.into(),
+            blocked: false,
+        }
+    }
+
+    fn blocked(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            blocked: true,
+        }
+    }
+
+    pub(crate) fn is_blocked(&self) -> bool {
+        self.blocked
     }
 }
 
 impl fmt::Display for SourceError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(&self.0)
+        formatter.write_str(&self.message)
     }
 }
 
@@ -139,6 +161,23 @@ impl std::error::Error for SourceError {}
 pub(crate) fn inspect(
     root: &Path,
     selection: SessionSelection<'_>,
+) -> Result<ImportedSession, SourceError> {
+    inspect_at(root, selection, None)
+}
+
+pub(crate) fn inspect_through_turn(
+    root: &Path,
+    selection: SessionSelection<'_>,
+    through_turn_id: &str,
+) -> Result<ImportedSession, SourceError> {
+    let through_turn_id = validate_explicit_turn_id(through_turn_id)?;
+    inspect_at(root, selection, Some(&through_turn_id))
+}
+
+fn inspect_at(
+    root: &Path,
+    selection: SessionSelection<'_>,
+    through_turn_id: Option<&str>,
 ) -> Result<ImportedSession, SourceError> {
     let canonical_root = root.canonicalize().map_err(|error| {
         SourceError::new(format!("could not canonicalize current directory: {error}"))
@@ -164,6 +203,7 @@ pub(crate) fn inspect(
             &selected_id,
             native_goal,
             allow_ancestor_cwd,
+            through_turn_id,
         )?;
         // Convert at the provider boundary. This validates the exact neutral
         // handoff without classifying intent or changing public inspect output.
@@ -177,13 +217,14 @@ pub(crate) fn inspect(
 /// Re-import the exact selected parent after a paid resolver call and reject
 /// a stale result without exposing the private session locator.
 pub(crate) fn verify_unchanged(root: &Path, expected: &ImportedSession) -> Result<(), SourceError> {
-    let observed = inspect(
-        root,
-        SessionSelection::Explicit {
-            id: &expected.session_id,
-            allow_ancestor_cwd: expected.allow_ancestor_cwd,
-        },
-    )?;
+    let selection = SessionSelection::Explicit {
+        id: &expected.session_id,
+        allow_ancestor_cwd: expected.allow_ancestor_cwd,
+    };
+    let observed = match expected.through_turn_id.as_deref() {
+        Some(turn_id) => inspect_through_turn(root, selection, turn_id)?,
+        None => inspect(root, selection)?,
+    };
     if &observed == expected {
         Ok(())
     } else {
@@ -196,6 +237,13 @@ pub(crate) fn verify_unchanged(root: &Path, expected: &ImportedSession) -> Resul
 fn validate_explicit_session_id(id: &str) -> Result<String, SourceError> {
     if id.is_empty() || id.len() > 512 || id.chars().any(char::is_control) {
         return Err(SourceError::new("invalid explicit Codex session ID"));
+    }
+    Ok(id.to_owned())
+}
+
+fn validate_explicit_turn_id(id: &str) -> Result<String, SourceError> {
+    if id.is_empty() || id.len() > 512 || id.chars().any(char::is_control) {
+        return Err(SourceError::new("invalid explicit Codex turn ID"));
     }
     Ok(id.to_owned())
 }
@@ -478,19 +526,27 @@ fn parse_thread_page(
 }
 
 fn parse_imported_session(
-    response: Value,
+    mut response: Value,
     canonical_root: &str,
     requested_id: &str,
     native_goal: NativeGoal,
     allow_ancestor_cwd: bool,
+    through_turn_id: Option<&str>,
 ) -> Result<ImportedSession, SourceError> {
     let thread = response
-        .get("thread")
+        .get_mut("thread")
+        .and_then(Value::as_object_mut)
         .ok_or_else(|| SourceError::new("thread/read.result.thread is missing"))?;
-    let id = required_string(thread, "id", "thread/read.result.thread")?;
+    let id = required_object_string(thread, "id", "thread/read.result.thread")?;
     if id != requested_id {
         return Err(SourceError::new("thread/read returned a different session"));
     }
+    if let Some(through_turn_id) = through_turn_id {
+        truncate_through_completed_turn(thread, through_turn_id)?;
+    }
+    let thread = response
+        .get("thread")
+        .ok_or_else(|| SourceError::new("thread/read.result.thread is missing"))?;
     let cwd = required_string(thread, "cwd", "thread/read.result.thread")?;
     let turns = required_array(thread, "turns", "thread/read.result.thread")?;
     if cwd != canonical_root {
@@ -546,7 +602,62 @@ fn parse_imported_session(
         thread_snapshot: thread.clone(),
         records,
         allow_ancestor_cwd,
+        through_turn_id: through_turn_id.map(str::to_owned),
     })
+}
+
+fn required_object_string(
+    object: &serde_json::Map<String, Value>,
+    field: &str,
+    location: &str,
+) -> Result<String, SourceError> {
+    object
+        .get(field)
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty() && value.len() <= 4096)
+        .map(str::to_owned)
+        .ok_or_else(|| SourceError::new(format!("{location}.{field} must be a non-empty string")))
+}
+
+fn truncate_through_completed_turn(
+    thread: &mut serde_json::Map<String, Value>,
+    selected_turn_id: &str,
+) -> Result<(), SourceError> {
+    let turns = thread
+        .get_mut("turns")
+        .and_then(Value::as_array_mut)
+        .ok_or_else(|| SourceError::new("thread/read.result.thread.turns must be an array"))?;
+    let selected_index = turns
+        .iter()
+        .position(|turn| turn.get("id").and_then(Value::as_str) == Some(selected_turn_id))
+        .ok_or_else(|| {
+            SourceError::blocked(format!(
+                "selected Codex turn {selected_turn_id} does not exist in the source session"
+            ))
+        })?;
+    let location = format!("thread/read.result.thread.turns[{selected_index}]");
+    let status = required_string(&turns[selected_index], "status", &location)?;
+    if status == "inProgress" {
+        let preceding = turns[..selected_index].iter().rev().find_map(|turn| {
+            (turn.get("status").and_then(Value::as_str) == Some("completed"))
+                .then(|| turn.get("id").and_then(Value::as_str))
+                .flatten()
+        });
+        let hint = preceding.map_or_else(
+            || "wait for it to complete before preparing the pair".to_owned(),
+            |turn_id| format!("wait, or select preceding completed turn {turn_id}"),
+        );
+        return Err(SourceError::blocked(format!(
+            "selected Codex turn {selected_turn_id} is still in progress; {hint}"
+        )));
+    }
+    if status != "completed" {
+        return Err(SourceError::blocked(format!(
+            "selected Codex turn {selected_turn_id} has status {status}; choose a completed turn"
+        )));
+    }
+    turns.truncate(selected_index + 1);
+    Ok(())
 }
 
 fn has_repository_command_evidence(

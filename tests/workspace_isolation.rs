@@ -8,7 +8,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use driftctl::workspace::{
-    WorkspaceError, candidate_diff, isolate_workspace, verify_source_attestation,
+    WorkspaceError, candidate_diff, isolate_workspace, isolate_workspace_at_ref,
+    resolve_source_ref, verify_source_attestation,
 };
 
 static TEMPORARY_DIRECTORY_SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -216,6 +217,50 @@ fn isolates_an_equal_read_only_snapshot_with_dirty_untracked_ignored_and_symlink
             .is_empty()
     );
 
+    fs::remove_dir_all(root).expect("remove isolated test directory");
+}
+
+#[test]
+fn isolates_an_exact_resolved_commit_without_copying_later_or_uncommitted_state() {
+    let (root, source, candidates) = repository("historical-commit");
+    fs::write(source.join("tracked.txt"), "historical\n").expect("write historical fixture");
+    git(&source, &["add", "tracked.txt"]);
+    git(&source, &["commit", "--quiet", "-m", "historical"]);
+    let historical = git(&source, &["rev-parse", "HEAD"]).trim().to_owned();
+    fs::write(source.join("tracked.txt"), "current\n").expect("write current fixture");
+    git(&source, &["add", "tracked.txt"]);
+    git(&source, &["commit", "--quiet", "-m", "current"]);
+    fs::write(source.join("uncommitted.txt"), "not historical\n")
+        .expect("write uncommitted fixture");
+    let source_head = git(&source, &["rev-parse", "HEAD"]);
+    let source_status = git(&source, &["status", "--porcelain=v1"]);
+
+    let resolved = resolve_source_ref(&source, &historical).expect("resolve historical commit");
+    assert_eq!(resolved.commit(), historical);
+    let pair = isolate_workspace_at_ref(&source, &candidates, &resolved)
+        .expect("isolate historical commit");
+
+    for candidate in [pair.baseline(), pair.workflow()] {
+        assert_eq!(
+            fs::read_to_string(candidate.root().join("tracked.txt"))
+                .expect("read historical candidate"),
+            "historical\n"
+        );
+        assert!(!candidate.root().join("uncommitted.txt").exists());
+        assert_eq!(candidate.manifest().head(), historical);
+    }
+    assert_eq!(git(&source, &["rev-parse", "HEAD"]), source_head);
+    assert_eq!(git(&source, &["status", "--porcelain=v1"]), source_status);
+    assert!(
+        fs::read_dir(&candidates)
+            .expect("read candidates")
+            .all(|entry| !entry
+                .expect("candidate entry")
+                .file_name()
+                .to_string_lossy()
+                .contains("source-checkout")),
+        "temporary source checkout was retained"
+    );
     fs::remove_dir_all(root).expect("remove isolated test directory");
 }
 
