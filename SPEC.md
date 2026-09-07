@@ -124,8 +124,6 @@ src/                 Rust CLI, state, semantic core, Codex adapter
 plugins/             installable Codex lifecycle integration
 tests/               unit, process, and installed-entrypoint tests
 evals/               retained evaluation fixtures and results
-tasks/plan.md         ordered implementation slices
-tasks/todo.md         locked acceptance matrix
 ```
 
 ## Code Style
@@ -147,7 +145,7 @@ pub fn handle(event: HookEvent, state: &mut SessionState) -> Result<HookOutput, 
 - Filesystem, lock, App Server, plugin, and hook protocol: process tests.
 - Each completed slice: checksum-installed binary through the real process/filesystem/permission boundary.
 - Final acceptance: one real attached Codex session across prompt and process restart/resume; production-shaped installed hook boundaries for compaction, conflict, goal approval, isolation, and detach.
-- Frozen cases: `tasks/todo.md`; no deletion or weakening.
+- Frozen evaluation cases: `evals/cases/`; no deletion or weakening.
 
 ## Boundaries
 
@@ -157,7 +155,7 @@ pub fn handle(event: HookEvent, state: &mut SessionState) -> Result<HookOutput, 
 
 ## Success Criteria
 
-- Every test in `tasks/todo.md` passes.
+- The deterministic test suite and installed lifecycle checks described above pass.
 - Exact `$driftctl on` injects a validated projection into the invoking session before the model runs.
 - Restart and resume restore the same attachment and projection; `PreCompact` followed by `SessionStart(compact)` restores it through the installed hook entrypoint.
 - Two concurrent sessions in one repository remain isolated.

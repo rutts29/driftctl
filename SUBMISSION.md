@@ -51,7 +51,7 @@ The private harness is not required to build, run, or score this repository.
 
 | Deliverable | Location |
 |---|---|
-| Solution code and agent instructions | `src/`, `plugins/`, `AGENTS.md` |
+| Solution code and runtime agent instructions | `src/`, `plugins/` |
 | Improvement changelog | `IMPROVEMENT-CHANGELOG.md` |
 | Reproduction guide | `REPRODUCING.md` |
 | Evaluation fixtures and results | `evals/cases/`, `evals/results/` |
