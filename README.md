@@ -2,7 +2,7 @@
 
 Driftctl is an opt-in, local continuity layer for long Codex sessions. It keeps a source-linked record of the accepted goal and later steering, validates semantic updates, and injects the current intent after prompts, resume, and compaction.
 
-> **Hackathon MVP.** The CLI and plugin pass their deterministic process tests. The hard-loss evaluation improved verified completion from **3/5 to 5/5**. A real session also retained an accepted constraint across resume and a production-shaped compaction check. Larger organic evaluation is still in progress, and every submitted result remains available in this repository.
+This standalone Rust CLI and Codex plugin was developed during a hackathon. Its continuity work later grew into [Keeping Agents Honest](https://github.com/rutts29/keeping-agents-honest).
 
 ## The problem
 
@@ -57,13 +57,13 @@ Codex may render controls as `$driftctl-codex:driftctl on|status|off`; those exa
 
 | Evaluation | Baseline | Workflow | What it establishes |
 |---|---:|---:|---|
-| Five fixed hard-loss cases | 3/5 | **5/5** | Narrow recovery improvement after steering is removed from a fresh agent's context |
+| Five fixed hard-transcript-loss cases | 3/5 | **5/5** | Narrow recovery improvement after steering is removed from a fresh agent's context |
 | Restart/compaction acceptance | n/a | pass | Accepted marker constraint restored in the same real session |
 | Unresolved conflict gate | unsafe continuation | blocked | Keeper preserved both alternatives and required an operator choice |
 
-Primary metric: externally verified completion with allowed scope and no premature completion. Each coding case was run once; timing and usage are descriptive, not statistically causal.
+Primary metric: externally verified completion with allowed scope and no premature completion. Each hard-loss case was run once per arm; timing and usage are descriptive, not statistically causal.
 
-The broader evidence is mixed. A four-case native-history suite scored workflow 2/4 versus baseline 3/4. A later Click client case caught a real goal conflict but exposed recovery and reporting bugs before implementation. Those runs define the next work and are retained under `evals/results/`.
+The [full evaluation record](SUBMISSION.md#measured-results) includes the mixed native-history and Click client results alongside this hard-loss result. The fixtures, outcomes, and reproduction instructions remain available below.
 
 - Results: [`evals/results/`](evals/results/)
 - Representative sanitized trajectories and local visual timeline: [`evals/trajectories/`](evals/trajectories/)
@@ -88,7 +88,9 @@ The broader evidence is mixed. A four-case native-history suite scored workflow 
 
 ## Project provenance
 
-The continuity idea and supporting infrastructure existed in a broader private engineering harness before the event. During the hackathon, the workflow was extracted and adapted into this standalone Rust CLI/plugin, reproducible fixtures, installer, and public evidence package. Claims here apply only to this repository; the private harness is neither required nor submitted.
+The continuity idea and supporting infrastructure predated the hackathon. During the event, that work was extracted and adapted into this standalone Rust CLI and Codex plugin, reproducible fixtures, installer, and public evaluation package. The continuity work continued in Keeping Agents Honest. No separate harness checkout is required to build, run, or evaluate Driftctl.
+
+Shared for others to run, study and adapt.
 
 ## Development checks
 
