@@ -3,7 +3,7 @@ name = "driftctl"
 version = "0.5.1"
 edition = "2024"
 rust-version = "1.97.1"
-license = "MIT"
+license = "Apache-2.0"
 publish = false
 
 [lints.rust]

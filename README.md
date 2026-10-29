@@ -105,4 +105,4 @@ PYTHONDONTWRITEBYTECODE=1 python3 -m unittest release.tests.test_installer -v
 
 Raw Codex records may contain private paths, prompts, and session identifiers. Keep them outside Git and publish only manually reviewed sanitized trajectories.
 
-Driftctl is available under the [MIT License](LICENSE).
+Driftctl is available under the [Apache License 2.0](LICENSE).
